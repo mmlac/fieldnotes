@@ -74,12 +74,29 @@ TOOLS: list[Tool] = [
     ),
     Tool(
         name="list_topics",
-        description="List all topics in the knowledge graph with document counts.",
-        inputSchema={"type": "object", "properties": {}},
+        description=(
+            "List all topics in the knowledge graph with document counts. "
+            "Topics come from two sources: cluster-discovered (automatic) "
+            "and user-tagged (from Obsidian #tags)."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "source": {
+                    "type": "string",
+                    "enum": ["all", "cluster", "user"],
+                    "default": "all",
+                    "description": "Filter by topic source",
+                },
+            },
+        },
     ),
     Tool(
         name="show_topic",
-        description="Show details and linked documents for a specific topic.",
+        description=(
+            "Show detailed information about a specific topic, including "
+            "linked documents, entities, and related topics."
+        ),
         inputSchema={
             "type": "object",
             "properties": {
@@ -94,8 +111,9 @@ TOOLS: list[Tool] = [
     Tool(
         name="topic_gaps",
         description=(
-            "Find cluster-discovered topics that are missing from the user's "
-            "manual taxonomy."
+            "Find cluster-discovered topics that don't correspond to any "
+            "user-defined tag. These represent knowledge areas the system "
+            "found but the user hasn't explicitly organized."
         ),
         inputSchema={"type": "object", "properties": {}},
     ),
@@ -155,7 +173,7 @@ class FieldnotesServer:
             if name == "search":
                 return await self._handle_search(arguments)
             if name == "list_topics":
-                return self._handle_list_topics()
+                return self._handle_list_topics(arguments)
             if name == "show_topic":
                 return self._handle_show_topic(arguments)
             if name == "topic_gaps":
@@ -250,9 +268,12 @@ class FieldnotesServer:
 
         return [TextContent(type="text", text="\n\n".join(parts))]
 
-    def _handle_list_topics(self) -> list[TextContent]:
+    def _handle_list_topics(self, arguments: dict) -> list[TextContent]:
+        source = arguments.get("source", "all")
         with TopicQuerier(self._cfg.neo4j) as querier:
             topics = querier.list_topics()
+            if source != "all":
+                topics = [t for t in topics if t.source == source]
             text = format_topics_list(topics, use_json=True)
         return [TextContent(type="text", text=text)]
 
