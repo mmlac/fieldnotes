@@ -175,6 +175,15 @@ class BaseHandler(FileSystemEventHandler):
                 digest, size = result
                 ingest["meta"]["sha256"] = digest
                 ingest["meta"]["size_bytes"] = size
+
+                # Read text content for text MIME types so downstream
+                # parsers (FileParser, ObsidianParser) receive the file body.
+                if ingest["mime_type"].startswith("text/"):
+                    try:
+                        ingest["text"] = p.read_text(encoding="utf-8", errors="replace")
+                    except OSError:
+                        logger.warning("Failed to read text content from %s", src_path)
+                        ingest["text"] = ""
             except OSError:
                 logger.warning("Failed to read %s, emitting event without content hash", src_path)
                 ingest["source_modified_at"] = now

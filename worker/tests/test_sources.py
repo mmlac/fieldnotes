@@ -142,6 +142,73 @@ async def test_file_source_detects_create(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_file_source_populates_text_for_text_files(tmp_path: Path):
+    """Text MIME type files must have their content loaded into event['text']."""
+    fs = FileSource()
+    fs.configure({"watch_paths": [str(tmp_path)]})
+    q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+
+    task = asyncio.create_task(fs.start(q))
+    await asyncio.sleep(0.5)
+
+    test_file = tmp_path / "note.md"
+    test_file.write_text("# Hello\n\nSome content here.")
+
+    events = []
+    try:
+        for _ in range(10):
+            await asyncio.sleep(0.3)
+            while not q.empty():
+                events.append(q.get_nowait())
+            if events:
+                break
+    finally:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    assert len(events) >= 1
+    ev = events[0]
+    assert ev["mime_type"] == "text/markdown"
+    assert ev["text"] == "# Hello\n\nSome content here."
+
+
+@pytest.mark.asyncio
+async def test_file_source_no_text_for_binary_files(tmp_path: Path):
+    """Binary files should not have a 'text' key in the event."""
+    fs = FileSource()
+    fs.configure({"watch_paths": [str(tmp_path)], "include_extensions": [".png"]})
+    q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+
+    task = asyncio.create_task(fs.start(q))
+    await asyncio.sleep(0.5)
+
+    test_file = tmp_path / "image.png"
+    test_file.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 20)
+
+    events = []
+    try:
+        for _ in range(10):
+            await asyncio.sleep(0.3)
+            while not q.empty():
+                events.append(q.get_nowait())
+            if events:
+                break
+    finally:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    assert len(events) >= 1
+    ev = events[0]
+    assert "text" not in ev
+
+
+@pytest.mark.asyncio
 async def test_file_source_respects_extension_filter(tmp_path: Path):
     fs = FileSource()
     fs.configure({
