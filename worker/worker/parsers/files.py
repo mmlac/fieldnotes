@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import logging
 import os
 from typing import Any
 
@@ -18,10 +19,23 @@ import pymupdf
 from .base import BaseParser, ParsedDocument
 from .registry import register
 
+log = logging.getLogger(__name__)
+
+_DEFAULT_MAX_PDF_BYTES = 100 * 1024 * 1024  # 100 MiB
+_DEFAULT_MAX_PDF_PAGES = 2000
+
 
 @register
 class FileParser(BaseParser):
     """Parses file-system events into ParsedDocuments."""
+
+    def __init__(self) -> None:
+        self._max_pdf_bytes: int = _DEFAULT_MAX_PDF_BYTES
+        self._max_pdf_pages: int = _DEFAULT_MAX_PDF_PAGES
+
+    def configure(self, cfg: dict[str, Any]) -> None:
+        self._max_pdf_bytes = int(cfg.get("max_pdf_bytes", _DEFAULT_MAX_PDF_BYTES))
+        self._max_pdf_pages = int(cfg.get("max_pdf_pages", _DEFAULT_MAX_PDF_PAGES))
 
     @property
     def source_type(self) -> str:
@@ -85,18 +99,46 @@ class FileParser(BaseParser):
     ) -> list[ParsedDocument]:
         raw = event.get("raw_bytes")
         if isinstance(raw, str):
+            # Check encoded size before decoding — base64 inflates ~33%,
+            # so encoded len < limit guarantees decoded len < limit.
+            if len(raw) > self._max_pdf_bytes:
+                log.warning(
+                    "PDF %s exceeds max size (%d > %d bytes encoded), skipping",
+                    source_id, len(raw), self._max_pdf_bytes,
+                )
+                return []
             raw = base64.b64decode(raw)
         if not raw:
+            return []
+
+        if len(raw) > self._max_pdf_bytes:
+            log.warning(
+                "PDF %s exceeds max size (%d > %d bytes), skipping",
+                source_id, len(raw), self._max_pdf_bytes,
+            )
             return []
 
         props = self._node_props(source_id, event)
         props["sha256"] = self._sha256(raw)
 
-        doc = pymupdf.open(stream=raw, filetype="pdf")
-        pages = []
-        for page in doc:
-            pages.append(page.get_text())
-        doc.close()
+        try:
+            doc = pymupdf.open(stream=raw, filetype="pdf")
+        except Exception:
+            log.exception("Failed to open PDF %s", source_id)
+            return []
+
+        try:
+            pages: list[str] = []
+            for i, page in enumerate(doc):
+                if i >= self._max_pdf_pages:
+                    log.warning(
+                        "PDF %s truncated at %d pages (limit %d)",
+                        source_id, i, self._max_pdf_pages,
+                    )
+                    break
+                pages.append(page.get_text())
+        finally:
+            doc.close()
 
         text = "\n".join(pages)
 
