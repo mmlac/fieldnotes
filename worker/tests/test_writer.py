@@ -18,11 +18,12 @@ from worker.pipeline.writer import (
     WriteUnit,
     Writer,
     _chunk_node_id,
-    _upsert_source_node,
-    _upsert_entity,
-    _merge_mentions_edge,
     _merge_entity_edge,
+    _merge_mentions_edge,
     _upsert_chunk,
+    _upsert_entity,
+    _upsert_source_node,
+    _validate_cypher_identifier,
     _write_graph_hint,
 )
 
@@ -504,3 +505,80 @@ class TestWriterClose:
         writer.close()
         mock_neo4j.close.assert_called_once()
         mock_qdrant.close.assert_called_once()
+
+
+# ------------------------------------------------------------------
+# Cypher injection prevention
+# ------------------------------------------------------------------
+
+
+class TestCypherIdentifierValidation:
+    def test_valid_identifiers(self):
+        assert _validate_cypher_identifier("File", "test") == "File"
+        assert _validate_cypher_identifier("RELATED_TO", "test") == "RELATED_TO"
+        assert _validate_cypher_identifier("_private", "test") == "_private"
+        assert _validate_cypher_identifier("Node123", "test") == "Node123"
+
+    @pytest.mark.parametrize("bad_value", [
+        "}) DETACH DELETE n //",
+        "File})--(n:Admin",
+        "RELATED TO",
+        "name; DROP",
+        "",
+        "123start",
+        "has-dash",
+        "has.dot",
+    ])
+    def test_rejects_injection_payloads(self, bad_value):
+        with pytest.raises(ValueError, match="Unsafe Cypher identifier"):
+            _validate_cypher_identifier(bad_value, "test")
+
+    def test_upsert_source_node_rejects_bad_label(self):
+        tx = MagicMock()
+        doc = _doc(node_label="}) DETACH DELETE n //")
+        with pytest.raises(ValueError, match="node_label"):
+            _upsert_source_node(tx, doc)
+        tx.run.assert_not_called()
+
+    def test_upsert_source_node_rejects_bad_prop_key(self):
+        tx = MagicMock()
+        doc = _doc(node_props={"valid": "ok", "bad; DROP": "evil"})
+        with pytest.raises(ValueError, match="node_props key"):
+            _upsert_source_node(tx, doc)
+
+    def test_merge_entity_edge_rejects_bad_predicate(self):
+        tx = MagicMock()
+        triple = {"subject": "A", "predicate": "REL})--(n:Admin", "object": "B"}
+        with pytest.raises(ValueError, match="triple predicate"):
+            _merge_entity_edge(tx, triple)
+        tx.run.assert_not_called()
+
+    def test_write_graph_hint_rejects_bad_subject_label(self):
+        tx = MagicMock()
+        hint = GraphHint(
+            subject_id="a", subject_label="Bad Label",
+            predicate="LINKS_TO", object_id="b", object_label="File",
+            object_props={}, confidence=1.0,
+        )
+        with pytest.raises(ValueError, match="hint subject_label"):
+            _write_graph_hint(tx, hint)
+
+    def test_write_graph_hint_rejects_bad_predicate(self):
+        tx = MagicMock()
+        hint = GraphHint(
+            subject_id="a", subject_label="File",
+            predicate="BAD; DROP", object_id="b", object_label="File",
+            object_props={}, confidence=1.0,
+        )
+        with pytest.raises(ValueError, match="hint predicate"):
+            _write_graph_hint(tx, hint)
+
+    def test_write_graph_hint_rejects_bad_object_props_key(self):
+        tx = MagicMock()
+        hint = GraphHint(
+            subject_id="a", subject_label="File",
+            predicate="LINKS_TO", object_id="b", object_label="File",
+            object_props={"evil}//": "value"}, confidence=1.0,
+        )
+        with pytest.raises(ValueError, match="hint object_props key"):
+            _write_graph_hint(tx, hint)

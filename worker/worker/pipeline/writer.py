@@ -23,6 +23,7 @@ Deletions:
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from dataclasses import dataclass, field
 from typing import Any
@@ -52,6 +53,8 @@ from worker.pipeline.chunker import Chunk
 
 logger = logging.getLogger(__name__)
 
+_SAFE_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
 VECTOR_SIZE = 768
 COLLECTION_NAME = "fieldnotes"
 
@@ -74,6 +77,22 @@ _qdrant_retry = retry(
     ),
     reraise=True,
 )
+
+
+def _validate_cypher_identifier(value: str, context: str) -> str:
+    """Validate that a value is safe for use as a Cypher label, type, or property key.
+
+    Neo4j parameters cannot bind labels, relationship types, or property keys,
+    so these must be interpolated into query strings. This function ensures only
+    safe identifier characters are present to prevent Cypher injection.
+
+    Raises ValueError if the value does not match ^[A-Za-z_][A-Za-z0-9_]*$.
+    """
+    if not _SAFE_IDENTIFIER_RE.match(value):
+        raise ValueError(
+            f"Unsafe Cypher identifier in {context}: {value!r}"
+        )
+    return value
 
 
 @dataclass
@@ -364,15 +383,18 @@ class Writer:
 
 def _upsert_source_node(tx: Any, doc: ParsedDocument) -> None:
     """MERGE a source node on source_id and set its properties."""
+    label = _validate_cypher_identifier(doc.node_label, "node_label")
     props = {
         "source_id": doc.source_id,
         "source_type": doc.source_type,
         **doc.node_props,
     }
+    for k in props:
+        _validate_cypher_identifier(k, "node_props key")
     # Build a dynamic SET clause from node_props
     set_parts = ", ".join(f"s.{k} = ${k}" for k in props)
     query = (
-        f"MERGE (s:{doc.node_label} {{source_id: $source_id}}) "
+        f"MERGE (s:{label} {{source_id: $source_id}}) "
         f"SET {set_parts}"
     )
     tx.run(query, **props)
@@ -408,6 +430,7 @@ def _merge_mentions_edge(tx: Any, source_id: str, entity_name: str) -> None:
 def _merge_entity_edge(tx: Any, triple: dict[str, str]) -> None:
     """Create a relationship edge between two entities from a triple."""
     predicate = triple["predicate"].replace(" ", "_").upper()
+    _validate_cypher_identifier(predicate, "triple predicate")
     tx.run(
         f"""
         MERGE (s:Entity {{name: $subject}})
@@ -442,25 +465,31 @@ def _upsert_chunk(
 
 def _write_graph_hint(tx: Any, hint: GraphHint) -> None:
     """Write a pre-extracted graph fact directly to Neo4j."""
+    subject_label = _validate_cypher_identifier(hint.subject_label, "hint subject_label")
+    object_label = _validate_cypher_identifier(hint.object_label, "hint object_label")
+    predicate = hint.predicate.replace(" ", "_").upper()
+    _validate_cypher_identifier(predicate, "hint predicate")
+
     # Ensure subject node exists
     tx.run(
-        f"MERGE (s:{hint.subject_label} {{source_id: $sid}})",
+        f"MERGE (s:{subject_label} {{source_id: $sid}})",
         sid=hint.subject_id,
     )
     # Ensure object node exists with its properties
     obj_props = {"source_id": hint.object_id, **hint.object_props}
+    for k in obj_props:
+        _validate_cypher_identifier(k, "hint object_props key")
     set_parts = ", ".join(f"o.{k} = ${k}" for k in obj_props)
     tx.run(
-        f"MERGE (o:{hint.object_label} {{source_id: $oid}}) SET {set_parts}",
+        f"MERGE (o:{object_label} {{source_id: $oid}}) SET {set_parts}",
         oid=hint.object_id,
         **obj_props,
     )
     # Create the relationship
-    predicate = hint.predicate.replace(" ", "_").upper()
     tx.run(
         f"""
-        MATCH (s:{hint.subject_label} {{source_id: $sid}})
-        MATCH (o:{hint.object_label} {{source_id: $oid}})
+        MATCH (s:{subject_label} {{source_id: $sid}})
+        MATCH (o:{object_label} {{source_id: $oid}})
         MERGE (s)-[:{predicate}]->(o)
         """,
         sid=hint.subject_id,
