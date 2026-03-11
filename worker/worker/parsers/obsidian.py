@@ -24,6 +24,10 @@ _EMBED_RE = re.compile(r"\!\[\[([^\]]+\.(?:png|jpg|jpeg|gif|svg|webp|bmp))\]\]",
 # #tag but not inside code fences or frontmatter; simplified inline match
 _TAG_RE = re.compile(r"(?:^|\s)#([\w][\w/\-]*)", re.MULTILINE)
 
+# Patterns for stripping code before tag extraction
+_FENCED_CODE_RE = re.compile(r"^(`{3,}|~{3,}).*?\n[\s\S]*?\n\1\s*$", re.MULTILINE)
+_INLINE_CODE_RE = re.compile(r"`[^`]+`")
+
 
 @register
 class ObsidianParser(BaseParser):
@@ -90,7 +94,10 @@ class ObsidianParser(BaseParser):
             )
 
         # --- Extract tags → TAGGED_BY_USER GraphHints ------------------------
-        for tag in _TAG_RE.findall(body):
+        # Strip fenced code blocks and inline code so #tags inside them are ignored
+        body_no_code = _FENCED_CODE_RE.sub("", body)
+        body_no_code = _INLINE_CODE_RE.sub("", body_no_code)
+        for tag in _TAG_RE.findall(body_no_code):
             graph_hints.append(
                 GraphHint(
                     subject_id=source_id,

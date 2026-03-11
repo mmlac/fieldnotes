@@ -110,6 +110,34 @@ class TestObsidianParser:
         assert docs[0].operation == "deleted"
         assert docs[0].text == ""
 
+    def test_tags_inside_inline_code_ignored(self):
+        """#tags inside backtick inline code should not produce hints."""
+        note = "---\n---\nSome `# this is a comment` and real #valid tag."
+        docs = self.parser.parse(_make_event(note))
+        tag_hints = [h for h in docs[0].graph_hints if h.predicate == "TAGGED_BY_USER"]
+        tag_ids = {h.object_id for h in tag_hints}
+        assert "tag:valid" in tag_ids
+        assert "tag:this" not in tag_ids
+
+    def test_tags_inside_fenced_code_ignored(self):
+        """#tags inside fenced code blocks should not produce hints."""
+        note = "---\n---\nBefore\n```python\n# this is a comment\nx = #notag\n```\nAfter #real"
+        docs = self.parser.parse(_make_event(note))
+        tag_hints = [h for h in docs[0].graph_hints if h.predicate == "TAGGED_BY_USER"]
+        tag_ids = {h.object_id for h in tag_hints}
+        assert "tag:real" in tag_ids
+        assert "tag:this" not in tag_ids
+        assert "tag:notag" not in tag_ids
+
+    def test_tags_inside_tilde_fenced_code_ignored(self):
+        """#tags inside ~~~ fenced code blocks should not produce hints."""
+        note = "---\n---\n~~~\n#inside\n~~~\n#outside here"
+        docs = self.parser.parse(_make_event(note))
+        tag_hints = [h for h in docs[0].graph_hints if h.predicate == "TAGGED_BY_USER"]
+        tag_ids = {h.object_id for h in tag_hints}
+        assert "tag:outside" in tag_ids
+        assert "tag:inside" not in tag_ids
+
     def test_registry_registration(self):
         from worker.parsers.registry import get
 
