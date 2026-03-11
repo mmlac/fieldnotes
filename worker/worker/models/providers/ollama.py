@@ -25,10 +25,19 @@ from ..registry import register
 
 logger = logging.getLogger(__name__)
 
-# Cloud metadata and link-local CIDRs that must never be reached via base_url.
+# Private, reserved, and internal CIDRs that must never be reached via
+# user-supplied base_url.  The built-in default (localhost:11434) bypasses
+# validation, so blocking loopback here does not break normal usage.
 _BLOCKED_NETWORKS = [
-    ipaddress.ip_network("169.254.0.0/16"),   # AWS/GCP metadata & link-local
+    ipaddress.ip_network("10.0.0.0/8"),        # RFC 1918
+    ipaddress.ip_network("172.16.0.0/12"),     # RFC 1918
+    ipaddress.ip_network("192.168.0.0/16"),    # RFC 1918
+    ipaddress.ip_network("127.0.0.0/8"),       # Loopback
+    ipaddress.ip_network("169.254.0.0/16"),    # Link-local / cloud metadata
+    ipaddress.ip_network("100.64.0.0/10"),     # CGNAT (RFC 6598)
+    ipaddress.ip_network("::1/128"),           # IPv6 loopback
     ipaddress.ip_network("fe80::/10"),         # IPv6 link-local
+    ipaddress.ip_network("fd00::/8"),          # IPv6 ULA
 ]
 
 _ALLOWED_SCHEMES = {"http", "https"}
@@ -103,8 +112,11 @@ class OllamaProvider(ModelProvider):
         return "ollama"
 
     def configure(self, cfg: dict[str, Any]) -> None:
-        raw_url = cfg.get("base_url", self._base_url).rstrip("/")
-        self._base_url = _validate_ollama_url(raw_url)
+        raw_url = cfg.get("base_url")
+        if raw_url is not None:
+            self._base_url = _validate_ollama_url(raw_url.rstrip("/"))
+        # When no base_url is provided the built-in default
+        # (http://localhost:11434) is trusted and skips validation.
         self._completion_timeout = float(cfg.get("completion_timeout", self._completion_timeout))
         self._embed_timeout = float(cfg.get("embed_timeout", self._embed_timeout))
 
