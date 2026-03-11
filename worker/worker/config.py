@@ -88,6 +88,18 @@ class SourceConfig:
 
 
 @dataclass
+class VisionConfig:
+    enabled: bool = True
+    concurrency: int = 2
+    min_file_size_kb: int = 1
+    max_file_size_mb: int = 20
+    skip_patterns: list[str] = field(default_factory=lambda: [
+        "icon", "avatar", "favicon", "logo", "badge", "emoji", "thumb",
+    ])
+    queue_size: int = 256
+
+
+@dataclass
 class ClusteringConfig:
     enabled: bool = True
     cron: str = "0 3 * * 0"
@@ -108,6 +120,7 @@ class Config:
     models: dict[str, ModelConfig] = field(default_factory=dict)
     roles: RolesConfig = field(default_factory=RolesConfig)
     sources: dict[str, SourceConfig] = field(default_factory=dict)
+    vision: VisionConfig = field(default_factory=VisionConfig)
     clustering: ClusteringConfig = field(default_factory=ClusteringConfig)
     mcp: McpConfig = field(default_factory=McpConfig)
 
@@ -171,6 +184,18 @@ def _parse(raw: dict[str, Any]) -> Config:
     # [sources.*]
     for name, scfg in raw.get("sources", {}).items():
         cfg.sources[name] = SourceConfig(name=name, settings=dict(scfg))
+
+    # [vision]
+    if "vision" in raw:
+        vi = raw["vision"]
+        cfg.vision = VisionConfig(
+            enabled=vi.get("enabled", cfg.vision.enabled),
+            concurrency=vi.get("concurrency", cfg.vision.concurrency),
+            min_file_size_kb=vi.get("min_file_size_kb", cfg.vision.min_file_size_kb),
+            max_file_size_mb=vi.get("max_file_size_mb", cfg.vision.max_file_size_mb),
+            skip_patterns=vi.get("skip_patterns", cfg.vision.skip_patterns),
+            queue_size=vi.get("queue_size", cfg.vision.queue_size),
+        )
 
     # [clustering]
     if "clustering" in raw:

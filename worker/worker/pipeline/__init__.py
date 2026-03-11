@@ -13,6 +13,7 @@ from typing import Any
 
 from neo4j import Driver
 
+from worker.config import VisionConfig
 from worker.models.resolver import ModelRegistry
 from worker.parsers.base import ParsedDocument
 from worker.pipeline.chunker import Chunk, chunk_text
@@ -22,6 +23,7 @@ from worker.pipeline.resolver import (
     ResolutionResult,
     resolve_entities_from_registry,
 )
+from worker.pipeline.vision_queue import VisionQueue
 from worker.pipeline.writer import WriteUnit, Writer
 
 logger = logging.getLogger(__name__)
@@ -44,9 +46,11 @@ class Pipeline:
         self,
         registry: ModelRegistry,
         writer: Writer,
+        vision_queue: VisionQueue | None = None,
     ) -> None:
         self._registry = registry
         self._writer = writer
+        self._vision_queue = vision_queue
 
     def process(self, parsed_doc: ParsedDocument) -> None:
         """Process a single parsed document through the full pipeline.
@@ -64,12 +68,22 @@ class Pipeline:
             )
             return
 
-        # Image-only documents: Phase 2, skip for now
+        # Image documents: route to vision queue if available
         if parsed_doc.image_bytes and not parsed_doc.text:
-            logger.debug(
-                "Skipping image-only document %s (Phase 2)",
-                parsed_doc.source_id,
-            )
+            if self._vision_queue is not None:
+                import asyncio
+
+                try:
+                    loop = asyncio.get_running_loop()
+                    loop.create_task(self._vision_queue.submit(parsed_doc))
+                except RuntimeError:
+                    # No running event loop — run synchronously
+                    asyncio.run(self._vision_queue.submit(parsed_doc))
+            else:
+                logger.debug(
+                    "Skipping image-only document %s (vision queue not configured)",
+                    parsed_doc.source_id,
+                )
             return
 
         # Text pipeline: chunk → embed → extract → resolve → write
