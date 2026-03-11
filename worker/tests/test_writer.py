@@ -312,6 +312,29 @@ class TestWriterWrite:
         session.execute_write.assert_called_once()
         mock_qdrant.upsert.assert_called_once()
 
+    def test_write_no_pre_deletion(self, writer, mock_neo4j, mock_qdrant):
+        """Upsert should NOT pre-delete vectors (idempotent via UUID5 IDs)."""
+        unit = _unit(
+            chunks=[Chunk(text="hello", index=0)],
+            vectors=[[0.1] * 768],
+        )
+        session = MagicMock()
+        mock_neo4j.session.return_value.__enter__ = MagicMock(return_value=session)
+        mock_neo4j.session.return_value.__exit__ = MagicMock(return_value=False)
+
+        writer.write(unit)
+
+        # delete is called for stale chunk cleanup, not blanket pre-deletion
+        delete_calls = mock_qdrant.delete.call_args_list
+        for c in delete_calls:
+            filt = c[1].get("points_selector") or c[0][0] if c[0] else c[1].get("points_selector")
+            # Stale cleanup filter has a Range condition on chunk_index
+            conditions = filt.must
+            has_range = any(
+                getattr(cond, "range", None) is not None for cond in conditions
+            )
+            assert has_range, "delete should only be for stale chunk cleanup, not blanket deletion"
+
     def test_write_skips_qdrant_when_no_vectors(self, writer, mock_neo4j, mock_qdrant):
         """No qdrant upsert when there are no vectors."""
         unit = _unit()
@@ -362,6 +385,61 @@ class TestWriterWrite:
         points = mock_qdrant.upsert.call_args[1]["points"]
         ids = [p.id for p in points]
         assert len(set(ids)) == 2  # two distinct IDs
+
+    def test_qdrant_retry_on_failure(self, writer, mock_neo4j, mock_qdrant):
+        """Qdrant write should be retried on transient failure via tenacity."""
+        unit = _unit(
+            chunks=[Chunk(text="a", index=0)],
+            vectors=[[0.1] * 768],
+        )
+        session = MagicMock()
+        mock_neo4j.session.return_value.__enter__ = MagicMock(return_value=session)
+        mock_neo4j.session.return_value.__exit__ = MagicMock(return_value=False)
+
+        # Fail first upsert, succeed on retry
+        mock_qdrant.upsert.side_effect = [ConnectionError("timeout"), None]
+
+        writer.write(unit)
+
+        assert mock_qdrant.upsert.call_count == 2
+
+    def test_qdrant_raises_after_max_retries(self, writer, mock_neo4j, mock_qdrant):
+        """Should reraise ConnectionError after exhausting tenacity retries."""
+        unit = _unit(
+            chunks=[Chunk(text="a", index=0)],
+            vectors=[[0.1] * 768],
+        )
+        session = MagicMock()
+        mock_neo4j.session.return_value.__enter__ = MagicMock(return_value=session)
+        mock_neo4j.session.return_value.__exit__ = MagicMock(return_value=False)
+
+        mock_qdrant.upsert.side_effect = ConnectionError("timeout")
+
+        with pytest.raises(ConnectionError):
+            writer.write(unit)
+
+        # tenacity _qdrant_retry uses stop_after_attempt(4)
+        assert mock_qdrant.upsert.call_count == 4
+
+    def test_stale_chunk_cleanup_after_upsert(self, writer, mock_neo4j, mock_qdrant):
+        """Stale chunks with higher indices should be deleted after upsert."""
+        unit = _unit(
+            chunks=[Chunk(text="a", index=0), Chunk(text="b", index=1)],
+            vectors=[[0.1] * 768, [0.2] * 768],
+        )
+        session = MagicMock()
+        mock_neo4j.session.return_value.__enter__ = MagicMock(return_value=session)
+        mock_neo4j.session.return_value.__exit__ = MagicMock(return_value=False)
+
+        writer.write(unit)
+
+        # Verify stale cleanup was called (delete with Range filter)
+        mock_qdrant.delete.assert_called_once()
+        filt = mock_qdrant.delete.call_args[1]["points_selector"]
+        conditions = filt.must
+        range_conds = [c for c in conditions if getattr(c, "range", None) is not None]
+        assert len(range_conds) == 1
+        assert range_conds[0].range.gte == 2  # chunk count
 
 
 # ------------------------------------------------------------------

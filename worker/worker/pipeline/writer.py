@@ -36,6 +36,7 @@ from qdrant_client.models import (
     Filter,
     MatchValue,
     PointStruct,
+    Range,
     VectorParams,
 )
 from tenacity import (
@@ -159,6 +160,11 @@ class Writer:
         For deletions, removes all data associated with the source_id.
         For creates/modifications, upserts the source node, entities,
         edges, chunks, and vectors.
+
+        Neo4j is written first (ACID transaction). Qdrant is retried on
+        failure to avoid cross-store inconsistency. If Qdrant still fails
+        after retries, the error is raised so the caller can re-process
+        the document (Neo4j upserts are idempotent).
         """
         doc = unit.doc
 
@@ -231,15 +237,17 @@ class Writer:
 
     @_qdrant_retry
     def _write_qdrant(self, unit: WriteUnit) -> None:
-        """Upsert chunk vectors to Qdrant."""
+        """Upsert chunk vectors to Qdrant.
+
+        Uses deterministic UUID5 point IDs so upserts are idempotent —
+        no pre-deletion required. Stale chunks (from a previous version
+        with more chunks) are cleaned up AFTER the upsert succeeds, so
+        a crash never leaves the source with zero vectors.
+        """
         doc = unit.doc
 
         if not unit.vectors:
             return
-
-        # First remove any existing vectors for this source_id so stale
-        # chunks from previous versions are cleaned up.
-        self._delete_qdrant_vectors(doc.source_id)
 
         points = []
         for chunk, vector in zip(unit.chunks, unit.vectors):
@@ -265,6 +273,36 @@ class Writer:
                 collection_name=self._collection,
                 points=points,
             )
+
+        # Clean up stale chunks from previous versions that had more
+        # chunks than the current version. This runs AFTER upsert so
+        # a crash here leaves extra (not missing) vectors — safe.
+        self._delete_stale_qdrant_chunks(doc.source_id, len(unit.chunks))
+
+    def _delete_stale_qdrant_chunks(
+        self, source_id: str, current_chunk_count: int
+    ) -> None:
+        """Remove Qdrant vectors for chunk indices >= current_chunk_count.
+
+        After a document is re-chunked with fewer chunks, old higher-index
+        vectors become stale. This is safe to run after upsert — if it
+        fails, we have extra vectors but no missing ones.
+        """
+        self._qdrant.delete(
+            collection_name=self._collection,
+            points_selector=Filter(
+                must=[
+                    FieldCondition(
+                        key="source_id",
+                        match=MatchValue(value=source_id),
+                    ),
+                    FieldCondition(
+                        key="chunk_index",
+                        range=Range(gte=current_chunk_count),
+                    ),
+                ]
+            ),
+        )
 
     # ------------------------------------------------------------------
     # Deletions
