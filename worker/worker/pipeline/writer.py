@@ -55,7 +55,7 @@ logger = logging.getLogger(__name__)
 
 _SAFE_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
-VECTOR_SIZE = 768
+VECTOR_SIZE = 768  # Default; prefer QdrantConfig.vector_size for runtime use
 COLLECTION_NAME = "fieldnotes"
 
 _neo4j_retry = retry(
@@ -131,6 +131,7 @@ class Writer:
             port=qdrant_cfg.port,
         )
         self._collection = qdrant_cfg.collection or COLLECTION_NAME
+        self._vector_size = qdrant_cfg.vector_size or VECTOR_SIZE
         self._ensure_qdrant_collection()
 
     @_qdrant_retry
@@ -143,7 +144,7 @@ class Writer:
             self._qdrant.create_collection(
                 collection_name=self._collection,
                 vectors_config=VectorParams(
-                    size=VECTOR_SIZE,
+                    size=self._vector_size,
                     distance=Distance.COSINE,
                 ),
             )

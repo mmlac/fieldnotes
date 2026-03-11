@@ -9,10 +9,14 @@ Parses ~/.fieldnotes/config.toml into typed dataclasses covering:
 
 from __future__ import annotations
 
+import logging
+import os
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 DEFAULT_CONFIG_PATH = Path.home() / ".fieldnotes" / "config.toml"
@@ -27,8 +31,20 @@ class CoreConfig:
 @dataclass
 class Neo4jConfig:
     uri: str = "bolt://localhost:7687"
-    user: str = "neo4j"
-    password: str = "fieldnotes"
+    user: str = ""
+    password: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.user:
+            self.user = os.environ.get("NEO4J_USER", "neo4j")
+        if not self.password:
+            self.password = os.environ.get("NEO4J_PASSWORD", "")
+        if not self.password:
+            logger.warning(
+                "Neo4j password not set via config or NEO4J_PASSWORD env var; "
+                "falling back to default — do NOT use in production"
+            )
+            self.password = "fieldnotes"
 
 
 @dataclass
@@ -36,6 +52,7 @@ class QdrantConfig:
     host: str = "localhost"
     port: int = 6333
     collection: str = "fieldnotes"
+    vector_size: int = 768
 
 
 @dataclass
@@ -129,6 +146,7 @@ def _parse(raw: dict[str, Any]) -> Config:
             host=q.get("host", cfg.qdrant.host),
             port=q.get("port", cfg.qdrant.port),
             collection=q.get("collection", cfg.qdrant.collection),
+            vector_size=q.get("vector_size", cfg.qdrant.vector_size),
         )
 
     # [modelproviders.*]
