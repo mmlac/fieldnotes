@@ -15,6 +15,8 @@ from worker.pipeline import Pipeline, _resolved_to_entity_dicts
 from worker.pipeline.chunker import Chunk
 from worker.pipeline.extractor import ExtractionResult
 from worker.pipeline.resolver import ResolvedEntity, ResolutionResult
+from worker.pipeline.vision import VisionResult as VisionModuleResult
+from worker.pipeline.vision_queue import VisionResult as VisionQueueResult
 from worker.pipeline.writer import WriteUnit, Writer
 
 
@@ -75,18 +77,52 @@ class TestDeletion:
 
 
 # ------------------------------------------------------------------
-# Image-only (Phase 2 skip)
+# Image documents: route to vision queue
 # ------------------------------------------------------------------
 
 
-class TestImageOnly:
-    def test_image_only_doc_skipped(self):
+class TestImageRouting:
+    def test_image_only_doc_not_written_directly(self):
+        """Image-only docs go to vision queue, not directly to writer."""
         pipeline, _, writer = _make_pipeline()
         doc = _doc(text="", image_bytes=b"\x89PNG")
 
         pipeline.process(doc)
 
         writer.write.assert_not_called()
+
+    def test_image_doc_submitted_to_vision_queue(self):
+        """Image docs are submitted to the vision queue when available."""
+        import asyncio
+
+        async def _fake_submit(doc):
+            return True
+
+        registry = MagicMock()
+        writer = MagicMock(spec=Writer)
+        vision_queue = MagicMock()
+        vision_queue.submit = _fake_submit
+
+        pipeline = Pipeline(
+            registry=registry, writer=writer, vision_queue=vision_queue
+        )
+        doc = _doc(text="", image_bytes=b"\x89PNG")
+
+        with patch("asyncio.get_running_loop", side_effect=RuntimeError):
+            with patch("asyncio.run") as mock_run:
+                pipeline.process(doc)
+                mock_run.assert_called_once()
+
+    def test_image_with_text_uses_text_pipeline(self):
+        """Docs with both text and image_bytes use the text pipeline."""
+        pipeline, _, writer = _make_pipeline()
+        doc = _doc(text="Some text", image_bytes=b"\x89PNG")
+
+        with patch("worker.pipeline.chunk_text", return_value=[]):
+            pipeline.process(doc)
+
+        # Goes through text pipeline (chunk_text returns [], so source-only write)
+        writer.write.assert_called_once()
 
 
 # ------------------------------------------------------------------
@@ -354,6 +390,156 @@ class TestResolvedToEntityDicts:
         )
         dicts = _resolved_to_entity_dicts(result)
         assert dicts[0]["name"] == "Bar"
+
+
+# ------------------------------------------------------------------
+# Vision pipeline callbacks
+# ------------------------------------------------------------------
+
+
+class TestVisionProcessFn:
+    @patch("worker.pipeline.extract_image_from_registry")
+    def test_returns_vision_queue_result(self, mock_extract):
+        pipeline, registry, _ = _make_pipeline()
+
+        mock_extract.return_value = VisionModuleResult(
+            description="A photo of a cat.",
+            visible_text="MEOW",
+            entities=[{"name": "Cat", "type": "Concept"}],
+        )
+
+        doc = _doc(
+            text="",
+            image_bytes=b"\x89PNG\x00" * 16,
+            mime_type="image/png",
+        )
+
+        result = pipeline.vision_process_fn(doc)
+
+        assert isinstance(result, VisionQueueResult)
+        assert result.source_id == doc.source_id
+        assert result.text == "A photo of a cat.\n\nMEOW"
+        assert len(result.entities) == 1
+        assert result.entities[0]["name"] == "Cat"
+        assert result.entities[0]["confidence"] == 0.80
+        assert len(result.sha256) == 64  # SHA256 hex digest
+
+    @patch("worker.pipeline.extract_image_from_registry")
+    def test_empty_vision_result(self, mock_extract):
+        pipeline, _, _ = _make_pipeline()
+        mock_extract.return_value = VisionModuleResult()
+
+        doc = _doc(text="", image_bytes=b"\x89PNG\x00" * 16)
+        result = pipeline.vision_process_fn(doc)
+
+        assert result.text == ""
+        assert result.entities == []
+
+
+class TestOnVisionResult:
+    @patch("worker.pipeline.resolve_entities_from_registry")
+    @patch("worker.pipeline.embed_chunks")
+    def test_processes_vision_result_through_embed_resolve_write(
+        self, mock_embed, mock_resolve
+    ):
+        pipeline, registry, writer = _make_pipeline()
+
+        mock_embed.return_value = [
+            ("A photo of a cat.\n\nMEOW", [0.1, 0.2, 0.3])
+        ]
+        mock_resolve.return_value = ResolutionResult(
+            entities=[
+                ResolvedEntity(name="Cat", type="Concept", confidence=0.80)
+            ]
+        )
+
+        result = VisionQueueResult(
+            source_id="images/cat.png",
+            sha256="abc123" * 10 + "abcd",
+            text="A photo of a cat.\n\nMEOW",
+            entities=[{"name": "Cat", "type": "Concept", "confidence": 0.80}],
+        )
+
+        pipeline.on_vision_result(result)
+
+        # Verify embed was called with synthetic chunk text
+        mock_embed.assert_called_once_with(
+            ["A photo of a cat.\n\nMEOW"], registry
+        )
+
+        # Verify resolve was called with vision entities
+        mock_resolve.assert_called_once()
+
+        # Verify writer was called with DEPICTS entities
+        writer.write.assert_called_once()
+        unit = writer.write.call_args[0][0]
+        assert unit.doc.node_label == "Image"
+        assert unit.doc.source_id == "images/cat.png"
+        assert unit.doc.node_props["vision_processed"] is True
+        assert len(unit.chunks) == 1
+        assert unit.vectors == [[0.1, 0.2, 0.3]]
+        assert len(unit.depicts_entities) == 1
+        assert unit.depicts_entities[0]["name"] == "Cat"
+        # DEPICTS entities, not regular entities
+        assert unit.entities == []
+
+    def test_empty_result_skipped(self):
+        pipeline, _, writer = _make_pipeline()
+
+        result = VisionQueueResult(
+            source_id="images/empty.png",
+            sha256="abc123" * 10 + "abcd",
+            text="",
+            entities=[],
+        )
+
+        pipeline.on_vision_result(result)
+        writer.write.assert_not_called()
+
+    @patch("worker.pipeline.embed_chunks")
+    def test_text_only_no_entities(self, mock_embed):
+        pipeline, _, writer = _make_pipeline()
+        mock_embed.return_value = [("desc", [0.5, 0.6])]
+
+        result = VisionQueueResult(
+            source_id="images/simple.png",
+            sha256="def456" * 10 + "defg",
+            text="desc",
+            entities=[],
+        )
+
+        pipeline.on_vision_result(result)
+
+        writer.write.assert_called_once()
+        unit = writer.write.call_args[0][0]
+        assert len(unit.chunks) == 1
+        assert unit.depicts_entities == []
+
+    @patch("worker.pipeline.resolve_entities_from_registry")
+    def test_entities_only_no_text(self, mock_resolve):
+        pipeline, _, writer = _make_pipeline()
+        mock_resolve.return_value = ResolutionResult(
+            entities=[
+                ResolvedEntity(name="Alice", type="Person", confidence=0.80)
+            ]
+        )
+
+        result = VisionQueueResult(
+            source_id="images/person.png",
+            sha256="ghi789" * 10 + "ghij",
+            text="",
+            entities=[
+                {"name": "Alice", "type": "Person", "confidence": 0.80}
+            ],
+        )
+
+        pipeline.on_vision_result(result)
+
+        writer.write.assert_called_once()
+        unit = writer.write.call_args[0][0]
+        assert unit.chunks == []
+        assert unit.vectors == []
+        assert len(unit.depicts_entities) == 1
 
 
 # ------------------------------------------------------------------

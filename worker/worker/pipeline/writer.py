@@ -109,6 +109,7 @@ class WriteUnit:
     vectors: list[list[float]] = field(default_factory=list)
     entities: list[dict[str, Any]] = field(default_factory=list)
     triples: list[dict[str, str]] = field(default_factory=list)
+    depicts_entities: list[dict[str, Any]] = field(default_factory=list)
 
 
 class Writer:
@@ -256,6 +257,11 @@ class Writer:
         # 5. Write GraphHints directly (bypass LLM)
         for hint in doc.graph_hints:
             _write_graph_hint(tx, hint)
+
+        # 6. Upsert DEPICTS edges (vision-extracted entities)
+        for entity in unit.depicts_entities:
+            _upsert_entity(tx, entity)
+            _merge_depicts_edge(tx, doc.source_id, entity["name"])
 
     # ------------------------------------------------------------------
     # Qdrant writes
@@ -428,6 +434,19 @@ def _merge_mentions_edge(tx: Any, source_id: str, entity_name: str) -> None:
         MATCH (s {source_id: $sid})
         MATCH (e:Entity {name: $name})
         MERGE (s)-[:MENTIONS]->(e)
+        """,
+        sid=source_id,
+        name=entity_name,
+    )
+
+
+def _merge_depicts_edge(tx: Any, source_id: str, entity_name: str) -> None:
+    """Create a DEPICTS edge from a source node to an Entity."""
+    tx.run(
+        """
+        MATCH (s {source_id: $sid})
+        MATCH (e:Entity {name: $name})
+        MERGE (s)-[:DEPICTS]->(e)
         """,
         sid=source_id,
         name=entity_name,
