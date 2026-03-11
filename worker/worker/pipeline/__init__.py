@@ -172,7 +172,9 @@ class Pipeline:
             all_triples.extend(result.triples)
 
         # 4. Resolve entities against existing entities in Neo4j
-        existing = self._writer.fetch_existing_entities()
+        # Use full-text index pre-filtering to avoid loading all entities
+        entity_names = [e["name"] for e in all_entities]
+        existing = self._writer.fetch_candidate_entities(entity_names)
         resolved = resolve_entities_from_registry(
             all_entities, existing, self._registry
         )
@@ -250,7 +252,8 @@ class Pipeline:
         # Resolve vision entities against existing graph
         depicts_entities: list[dict[str, Any]] = []
         if result.entities:
-            existing = self._writer.fetch_existing_entities()
+            vision_entity_names = [e["name"] for e in result.entities]
+            existing = self._writer.fetch_candidate_entities(vision_entity_names)
             resolved = resolve_entities_from_registry(
                 result.entities, existing, self._registry
             )

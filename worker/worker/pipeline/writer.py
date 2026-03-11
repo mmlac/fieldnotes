@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any
@@ -57,6 +58,10 @@ _SAFE_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 VECTOR_SIZE = 768  # Default; prefer QdrantConfig.vector_size for runtime use
 COLLECTION_NAME = "fieldnotes"
+ENTITY_CACHE_TTL = 60  # seconds — avoid repeated full scans during batch processing
+FULLTEXT_INDEX_NAME = "entity_name_fulltext"
+
+_LUCENE_SPECIAL_RE = re.compile(r'([+\-&|!(){}[\]^"~*?:\\/])')
 
 _neo4j_retry = retry(
     retry=retry_if_exception_type((TransientError, ServiceUnavailable, OSError)),
@@ -133,7 +138,10 @@ class Writer:
         )
         self._collection = qdrant_cfg.collection or COLLECTION_NAME
         self._vector_size = qdrant_cfg.vector_size or VECTOR_SIZE
+        self._entity_cache: list[dict[str, Any]] | None = None
+        self._entity_cache_ts: float = 0.0
         self._ensure_qdrant_collection()
+        self._ensure_entity_fulltext_index()
 
     @_qdrant_retry
     def _ensure_qdrant_collection(self) -> None:
@@ -175,17 +183,26 @@ class Writer:
             )
 
     def fetch_existing_entities(self) -> list[dict[str, Any]]:
-        """Query Neo4j for all existing Entity nodes.
+        """Query Neo4j for all existing Entity nodes, with TTL cache.
 
         Returns a list of dicts with 'name', 'type', and 'confidence' keys,
-        suitable for passing to the entity resolver.
+        suitable for passing to the entity resolver. Results are cached for
+        ENTITY_CACHE_TTL seconds to avoid repeated full table scans during
+        batch processing.
         """
+        now = time.monotonic()
+        if (
+            self._entity_cache is not None
+            and (now - self._entity_cache_ts) < ENTITY_CACHE_TTL
+        ):
+            return self._entity_cache
+
         with self._neo4j_driver.session() as session:
             result = session.run(
                 "MATCH (e:Entity) RETURN e.name AS name, e.type AS type, "
                 "e.confidence AS confidence"
             )
-            return [
+            entities = [
                 {
                     "name": record["name"],
                     "type": record["type"] or "Concept",
@@ -193,6 +210,84 @@ class Writer:
                 }
                 for record in result
             ]
+
+        self._entity_cache = entities
+        self._entity_cache_ts = now
+        return entities
+
+    def invalidate_entity_cache(self) -> None:
+        """Clear the entity cache so the next fetch hits Neo4j."""
+        self._entity_cache = None
+        self._entity_cache_ts = 0.0
+
+    def fetch_candidate_entities(self, names: list[str]) -> list[dict[str, Any]]:
+        """Fetch entities similar to the given names using full-text index.
+
+        Uses Neo4j full-text index with Lucene fuzzy queries for pre-filtering,
+        reducing the candidate set for fuzzy matching. Falls back to the cached
+        full entity list if the full-text query fails.
+        """
+        if not names:
+            return []
+
+        # Build Lucene fuzzy query from extracted entity name tokens
+        words: set[str] = set()
+        for name in names:
+            for word in name.split():
+                escaped = _LUCENE_SPECIAL_RE.sub(r"\\\1", word)
+                if escaped:
+                    words.add(escaped)
+        if not words:
+            return self.fetch_existing_entities()
+
+        query = " ".join(f"{w}~" for w in words)
+
+        try:
+            with self._neo4j_driver.session() as session:
+                result = session.run(
+                    "CALL db.index.fulltext.queryNodes("
+                    "$index_name, $query"
+                    ") YIELD node "
+                    "RETURN node.name AS name, node.type AS type, "
+                    "node.confidence AS confidence",
+                    index_name=FULLTEXT_INDEX_NAME,
+                    query=query,
+                )
+                candidates = [
+                    {
+                        "name": record["name"],
+                        "type": record["type"] or "Concept",
+                        "confidence": record["confidence"] or 0.75,
+                    }
+                    for record in result
+                ]
+            if candidates:
+                return candidates
+            # No candidates found — fall back to full list (handles edge cases
+            # where full-text tokenization misses valid matches)
+            return self.fetch_existing_entities()
+        except Exception:
+            logger.debug(
+                "Full-text index query failed, falling back to cached full scan",
+                exc_info=True,
+            )
+            return self.fetch_existing_entities()
+
+    @_neo4j_retry
+    def _ensure_entity_fulltext_index(self) -> None:
+        """Create full-text index on Entity.name if it doesn't exist."""
+        try:
+            with self._neo4j_driver.session() as session:
+                session.run(
+                    "CREATE FULLTEXT INDEX entity_name_fulltext IF NOT EXISTS "
+                    "FOR (e:Entity) ON EACH [e.name]"
+                )
+        except Exception:
+            logger.debug(
+                "Could not create full-text index (may already exist or "
+                "Neo4j version doesn't support IF NOT EXISTS)",
+                exc_info=True,
+            )
 
     def write(self, unit: WriteUnit) -> None:
         """Write a single processed document to both stores.

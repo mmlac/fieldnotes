@@ -19,7 +19,7 @@ from typing import Any
 
 import numpy as np
 
-from rapidfuzz import fuzz
+from rapidfuzz import fuzz, process
 
 from worker.models.base import EmbedRequest
 from worker.models.resolver import ModelRegistry, ResolvedModel
@@ -176,47 +176,55 @@ def _fuzzy_match(
 
     Anchors (wikilink-sourced, confidence >= 0.95) are preferred targets.
     Returns None if no match meets the threshold.
+
+    Uses rapidfuzz.process.extractOne for C-optimized matching with
+    score_cutoff early termination instead of manual O(N) iteration.
     """
-    name = entity["name"]
-    best_score = 0.0
-    best_target: dict[str, Any] | None = None
+    name_lower = entity["name"].lower()
 
     # Check anchors first — prefer merging into them
-    for anchor in anchors:
-        score = fuzz.token_sort_ratio(name.lower(), anchor["name"].lower())
-        if score > best_score:
-            best_score = score
-            best_target = anchor
-
-    # If anchor match is good enough, use it
-    if best_score >= FUZZY_THRESHOLD and best_target is not None:
-        return ResolvedEntity(
-            name=best_target["name"],
-            type=entity.get("type", best_target.get("type", "Concept")),
-            confidence=max(
-                entity.get("confidence", 0.75),
-                best_target.get("confidence", 0.75),
-            ),
-            merged_into=best_target["name"],
+    if anchors:
+        anchor_names_lower = [a["name"].lower() for a in anchors]
+        result = process.extractOne(
+            name_lower,
+            anchor_names_lower,
+            scorer=fuzz.token_sort_ratio,
+            score_cutoff=FUZZY_THRESHOLD,
         )
+        if result is not None:
+            _, _, idx = result
+            best_target = anchors[idx]
+            return ResolvedEntity(
+                name=best_target["name"],
+                type=entity.get("type", best_target.get("type", "Concept")),
+                confidence=max(
+                    entity.get("confidence", 0.75),
+                    best_target.get("confidence", 0.75),
+                ),
+                merged_into=best_target["name"],
+            )
 
     # Check all existing entities
-    for existing_ent in existing:
-        score = fuzz.token_sort_ratio(name.lower(), existing_ent["name"].lower())
-        if score > best_score:
-            best_score = score
-            best_target = existing_ent
-
-    if best_score >= FUZZY_THRESHOLD and best_target is not None:
-        return ResolvedEntity(
-            name=best_target["name"],
-            type=entity.get("type", best_target.get("type", "Concept")),
-            confidence=max(
-                entity.get("confidence", 0.75),
-                best_target.get("confidence", 0.75),
-            ),
-            merged_into=best_target["name"],
+    if existing:
+        existing_names_lower = [e["name"].lower() for e in existing]
+        result = process.extractOne(
+            name_lower,
+            existing_names_lower,
+            scorer=fuzz.token_sort_ratio,
+            score_cutoff=FUZZY_THRESHOLD,
         )
+        if result is not None:
+            _, _, idx = result
+            best_target = existing[idx]
+            return ResolvedEntity(
+                name=best_target["name"],
+                type=entity.get("type", best_target.get("type", "Concept")),
+                confidence=max(
+                    entity.get("confidence", 0.75),
+                    best_target.get("confidence", 0.75),
+                ),
+                merged_into=best_target["name"],
+            )
 
     return None
 

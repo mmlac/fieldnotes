@@ -44,6 +44,7 @@ def _make_pipeline() -> tuple[Pipeline, MagicMock, MagicMock]:
     registry = MagicMock()
     writer = MagicMock(spec=Writer)
     writer.fetch_existing_entities.return_value = []
+    writer.fetch_candidate_entities.return_value = []
     pipeline = Pipeline(registry=registry, writer=writer)
     return pipeline, registry, writer
 
@@ -229,7 +230,7 @@ class TestTextPipeline:
         doc = _doc()
 
         existing = [{"name": "Alice", "type": "Person", "confidence": 0.95}]
-        writer.fetch_existing_entities.return_value = existing
+        writer.fetch_candidate_entities.return_value = existing
 
         chunks = [Chunk(text="Hello Alice.", index=0)]
         mock_chunk.return_value = chunks
@@ -251,9 +252,11 @@ class TestTextPipeline:
 
         pipeline.process(doc)
 
-        # The resolver should receive the existing entities from Neo4j
+        # The resolver should receive candidate entities from Neo4j
         call_args = mock_resolve.call_args[0]
         assert call_args[1] is existing
+        # Verify fetch_candidate_entities was called with extracted entity names
+        writer.fetch_candidate_entities.assert_called_once_with(["alice"])
 
     @patch("worker.pipeline.resolve_entities_from_registry")
     @patch("worker.pipeline.extract_chunks")
