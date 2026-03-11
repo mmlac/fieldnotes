@@ -1,4 +1,4 @@
-"""CLI entry point: ``fieldnotes search <query>``.
+"""CLI entry point: ``fieldnotes search <query>`` and ``fieldnotes topics``.
 
 Loads config, connects to Neo4j + Qdrant via ModelRegistry, runs a
 hybrid query (graph + vector), and prints formatted results to stdout.
@@ -53,6 +53,26 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Max vector results (default: 10)",
     )
 
+    # ── topics ──────────────────────────────────────────────────────
+    topics_p = sub.add_parser("topics", help="Browse and inspect topics")
+    topics_p.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="Machine-readable JSON output",
+    )
+    topics_sub = topics_p.add_subparsers(dest="topics_command")
+
+    topics_sub.add_parser("list", help="List all topics with document counts")
+
+    show_p = topics_sub.add_parser("show", help="Show topic details + linked docs")
+    show_p.add_argument("name", help="Topic name")
+
+    topics_sub.add_parser(
+        "gaps",
+        help="Cluster-discovered topics missing from user taxonomy",
+    )
+
     return parser
 
 
@@ -89,6 +109,40 @@ def _run_search(
         vector_querier.close()
 
 
+def _run_topics(
+    args: argparse.Namespace,
+    *,
+    config_path: Path | None,
+) -> int:
+    """Execute a topics subcommand. Returns exit code."""
+    from worker.query.topics import (
+        TopicQuerier,
+        format_topic_detail,
+        format_topic_gaps,
+        format_topics_list,
+    )
+
+    cfg = load_config(config_path)
+    use_json = args.json_output
+
+    with TopicQuerier(cfg.neo4j) as querier:
+        if args.topics_command == "list":
+            topics = querier.list_topics()
+            print(format_topics_list(topics, use_json=use_json))
+        elif args.topics_command == "show":
+            detail = querier.show_topic(args.name)
+            print(format_topic_detail(detail, use_json=use_json))
+        elif args.topics_command == "gaps":
+            gaps = querier.topic_gaps()
+            print(format_topic_gaps(gaps, use_json=use_json))
+        else:
+            # No subcommand given — show topics help
+            print("Usage: fieldnotes topics {list,show,gaps}", file=sys.stderr)
+            return 1
+
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     """CLI entry point."""
     parser = _build_parser()
@@ -110,6 +164,9 @@ def main(argv: list[str] | None = None) -> int:
             config_path=args.config,
             top_k=args.top_k,
         )
+
+    if args.command == "topics":
+        return _run_topics(args, config_path=args.config)
 
     return 0
 
