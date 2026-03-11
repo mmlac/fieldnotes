@@ -303,6 +303,14 @@ class TestTypeValidation:
         with pytest.raises(TypeError, match=r"\[clustering\] cron: expected str"):
             _parse({"clustering": {"cron": 12345}})
 
+    def test_clustering_min_interval_seconds_wrong_type(self) -> None:
+        with pytest.raises(TypeError, match=r"\[clustering\] min_interval_seconds: expected float"):
+            _parse({"clustering": {"min_interval_seconds": "fast"}})
+
+    def test_clustering_min_interval_seconds_accepts_int(self) -> None:
+        cfg = _parse({"clustering": {"min_interval_seconds": 30}})
+        assert cfg.clustering.min_interval_seconds == 30
+
     def test_mcp_port_wrong_type(self) -> None:
         with pytest.raises(TypeError, match=r"\[mcp\] port: expected int"):
             _parse({"mcp": {"port": "3456"}})

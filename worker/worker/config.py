@@ -251,10 +251,18 @@ def _parse(raw: dict[str, Any]) -> Config:
             _check_type("clustering", "cron", cl["cron"], str)
         if "min_corpus_size" in cl:
             _check_type("clustering", "min_corpus_size", cl["min_corpus_size"], int)
+        if "min_interval_seconds" in cl:
+            if not isinstance(cl["min_interval_seconds"], (int, float)):
+                raise TypeError(
+                    f"[clustering] min_interval_seconds: expected float, "
+                    f"got {type(cl['min_interval_seconds']).__name__} "
+                    f"({cl['min_interval_seconds']!r})"
+                )
         cfg.clustering = ClusteringConfig(
             enabled=cl.get("enabled", cfg.clustering.enabled),
             cron=cl.get("cron", cfg.clustering.cron),
             min_corpus_size=cl.get("min_corpus_size", cfg.clustering.min_corpus_size),
+            min_interval_seconds=cl.get("min_interval_seconds", cfg.clustering.min_interval_seconds),
         )
 
     # [mcp]
