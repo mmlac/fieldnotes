@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -60,6 +61,7 @@ VECTOR_SIZE = 768  # Default; prefer QdrantConfig.vector_size for runtime use
 COLLECTION_NAME = "fieldnotes"
 ENTITY_CACHE_TTL = 60  # seconds — avoid repeated full scans during batch processing
 FULLTEXT_INDEX_NAME = "entity_name_fulltext"
+MAX_ENTITY_NAME_LEN = 256
 
 # Allowed relationship types for LLM-generated entity triples.
 # Predicates not in this set are mapped to RELATED_TO to prevent
@@ -199,6 +201,7 @@ class Writer:
         self._vector_size = qdrant_cfg.vector_size or VECTOR_SIZE
         self._entity_cache: list[dict[str, Any]] | None = None
         self._entity_cache_ts: float = 0.0
+        self._entity_cache_lock = threading.Lock()
         self._ensure_qdrant_collection()
         self._ensure_entity_fulltext_index()
 
@@ -249,35 +252,37 @@ class Writer:
         ENTITY_CACHE_TTL seconds to avoid repeated full table scans during
         batch processing.
         """
-        now = time.monotonic()
-        if (
-            self._entity_cache is not None
-            and (now - self._entity_cache_ts) < ENTITY_CACHE_TTL
-        ):
-            return self._entity_cache
+        with self._entity_cache_lock:
+            now = time.monotonic()
+            if (
+                self._entity_cache is not None
+                and (now - self._entity_cache_ts) < ENTITY_CACHE_TTL
+            ):
+                return self._entity_cache
 
-        with self._neo4j_driver.session() as session:
-            result = session.run(
-                "MATCH (e:Entity) RETURN e.name AS name, e.type AS type, "
-                "e.confidence AS confidence"
-            )
-            entities = [
-                {
-                    "name": record["name"],
-                    "type": record["type"] or "Concept",
-                    "confidence": record["confidence"] or 0.75,
-                }
-                for record in result
-            ]
+            with self._neo4j_driver.session() as session:
+                result = session.run(
+                    "MATCH (e:Entity) RETURN e.name AS name, e.type AS type, "
+                    "e.confidence AS confidence"
+                )
+                entities = [
+                    {
+                        "name": record["name"],
+                        "type": record["type"] or "Concept",
+                        "confidence": record["confidence"] or 0.75,
+                    }
+                    for record in result
+                ]
 
-        self._entity_cache = entities
-        self._entity_cache_ts = now
-        return entities
+            self._entity_cache = entities
+            self._entity_cache_ts = now
+            return entities
 
     def invalidate_entity_cache(self) -> None:
         """Clear the entity cache so the next fetch hits Neo4j."""
-        self._entity_cache = None
-        self._entity_cache_ts = 0.0
+        with self._entity_cache_lock:
+            self._entity_cache = None
+            self._entity_cache_ts = 0.0
 
     def fetch_candidate_entities(self, names: list[str]) -> list[dict[str, Any]]:
         """Fetch entities similar to the given names using full-text index.
@@ -623,9 +628,9 @@ def _upsert_source_node(tx: Any, doc: ParsedDocument) -> None:
     """MERGE a source node on source_id and set its properties."""
     label = _validate_cypher_identifier(doc.node_label, "node_label")
     props = {
+        **doc.node_props,
         "source_id": doc.source_id,
         "source_type": doc.source_type,
-        **doc.node_props,
     }
     for k in props:
         _validate_cypher_identifier(k, "node_props key")
@@ -640,13 +645,14 @@ def _upsert_source_node(tx: Any, doc: ParsedDocument) -> None:
 
 def _upsert_entity(tx: Any, entity: dict[str, Any]) -> None:
     """MERGE an Entity node on name, setting type and confidence."""
+    name = entity["name"][:MAX_ENTITY_NAME_LEN]
     tx.run(
         """
         MERGE (e:Entity {name: $name})
         SET e.type = $type,
             e.confidence = $confidence
         """,
-        name=entity["name"],
+        name=name,
         type=entity.get("type", "Concept"),
         confidence=entity.get("confidence", 0.75),
     )
@@ -661,7 +667,7 @@ def _merge_mentions_edge(tx: Any, source_id: str, entity_name: str) -> None:
         MERGE (s)-[:MENTIONS]->(e)
         """,
         sid=source_id,
-        name=entity_name,
+        name=entity_name[:MAX_ENTITY_NAME_LEN],
     )
 
 
@@ -674,7 +680,7 @@ def _merge_depicts_edge(tx: Any, source_id: str, entity_name: str) -> None:
         MERGE (s)-[:DEPICTS]->(e)
         """,
         sid=source_id,
-        name=entity_name,
+        name=entity_name[:MAX_ENTITY_NAME_LEN],
     )
 
 
@@ -699,7 +705,16 @@ def _merge_entity_edge(tx: Any, triple: dict[str, str]) -> None:
     LLM output.
     """
     predicate = triple["predicate"].replace(" ", "_").upper()
-    _validate_cypher_identifier(predicate, "triple predicate")
+    try:
+        _validate_cypher_identifier(predicate, "triple predicate")
+    except ValueError:
+        logger.warning(
+            "Invalid predicate %r mapped to RELATED_TO (subject=%r, object=%r)",
+            triple["predicate"],
+            triple["subject"],
+            triple["object"],
+        )
+        predicate = "RELATED_TO"
     if predicate not in ALLOWED_PREDICATES:
         logger.warning(
             "Unknown predicate %r mapped to RELATED_TO (subject=%r, object=%r)",
@@ -714,8 +729,8 @@ def _merge_entity_edge(tx: Any, triple: dict[str, str]) -> None:
         MERGE (o:Entity {{name: $object}})
         MERGE (s)-[:{predicate}]->(o)
         """,
-        subject=triple["subject"],
-        object=triple["object"],
+        subject=triple["subject"][:MAX_ENTITY_NAME_LEN],
+        object=triple["object"][:MAX_ENTITY_NAME_LEN],
     )
 
 

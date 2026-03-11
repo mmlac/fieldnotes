@@ -571,12 +571,13 @@ class TestCypherIdentifierValidation:
         with pytest.raises(ValueError, match="node_props key"):
             _upsert_source_node(tx, doc)
 
-    def test_merge_entity_edge_rejects_bad_predicate(self):
+    def test_merge_entity_edge_maps_bad_predicate_to_related_to(self):
         tx = MagicMock()
         triple = {"subject": "A", "predicate": "REL})--(n:Admin", "object": "B"}
-        with pytest.raises(ValueError, match="triple predicate"):
-            _merge_entity_edge(tx, triple)
-        tx.run.assert_not_called()
+        _merge_entity_edge(tx, triple)
+        # Bad predicate should be mapped to RELATED_TO, not raise
+        call_args = tx.run.call_args
+        assert "RELATED_TO" in call_args[0][0]
 
     def test_write_graph_hint_rejects_bad_subject_label(self):
         tx = MagicMock()
