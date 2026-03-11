@@ -5,14 +5,10 @@ services:
     environment:
       NEO4J_AUTH: ${NEO4J_USER:-neo4j}/${NEO4J_PASSWORD:-fieldnotes}
     volumes:
-      - neo4j_data:/data
+      - ${FIELDNOTES_DATA:-~/.fieldnotes/data}/neo4j:/data
 
   qdrant:
     image: qdrant/qdrant:latest
     ports: ["6333:6333"]
     volumes:
-      - qdrant_data:/qdrant/storage
-
-volumes:
-  neo4j_data:
-  qdrant_data:
+      - ${FIELDNOTES_DATA:-~/.fieldnotes/data}/qdrant:/qdrant/storage
