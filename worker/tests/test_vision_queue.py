@@ -14,6 +14,7 @@ from worker.pipeline.vision_queue import (
     VisionQueue,
     VisionResult,
     VisionQueueStats,
+    _SEEN_HASHES_MAX,
     _compute_sha256,
     check_vision_processed_neo4j,
 )
@@ -199,6 +200,27 @@ class TestSha256Dedup:
 
         assert await q.submit(doc1)
         assert await q.submit(doc2)
+
+    @pytest.mark.asyncio
+    async def test_seen_hashes_lru_eviction(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """_seen_hashes should evict the oldest entry when it exceeds the cap."""
+        monkeypatch.setattr(
+            "worker.pipeline.vision_queue._SEEN_HASHES_MAX", 2
+        )
+        q = _make_queue()
+
+        img_a = b"image-a" * 200
+        img_b = b"image-b" * 200
+        img_c = b"image-c" * 200
+
+        await q.submit(_image_doc(source_id="a.png", image_bytes=img_a))
+        await q.submit(_image_doc(source_id="b.png", image_bytes=img_b))
+        await q.submit(_image_doc(source_id="c.png", image_bytes=img_c))
+
+        # Cap is 2, so hash for img_a should have been evicted.
+        assert len(q._seen_hashes) == 2
+        sha_a = hashlib.sha256(img_a).hexdigest()
+        assert sha_a not in q._seen_hashes
 
 
 # ------------------------------------------------------------------

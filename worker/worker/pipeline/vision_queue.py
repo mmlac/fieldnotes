@@ -18,9 +18,11 @@ Dedup strategy:
 from __future__ import annotations
 
 import asyncio
+import collections
 import hashlib
 import logging
 import re
+import threading
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -41,16 +43,39 @@ class VisionResult:
     triples: list[dict[str, str]] = field(default_factory=list)
 
 
-@dataclass
 class VisionQueueStats:
-    """Running statistics for the vision queue."""
+    """Thread-safe running statistics for the vision queue.
 
-    submitted: int = 0
-    processed: int = 0
-    skipped_dedup: int = 0
-    skipped_size: int = 0
-    skipped_pattern: int = 0
-    failed: int = 0
+    Counters are guarded by a lock so they can be safely incremented
+    from both the asyncio event-loop and ``run_in_executor`` threads.
+    """
+
+    __slots__ = (
+        "_lock",
+        "submitted",
+        "processed",
+        "skipped_dedup",
+        "skipped_size",
+        "skipped_pattern",
+        "failed",
+    )
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.submitted = 0
+        self.processed = 0
+        self.skipped_dedup = 0
+        self.skipped_size = 0
+        self.skipped_pattern = 0
+        self.failed = 0
+
+    def increment(self, counter: str, n: int = 1) -> None:
+        """Atomically increment *counter* by *n*."""
+        with self._lock:
+            setattr(self, counter, getattr(self, counter) + n)
+
+
+_SEEN_HASHES_MAX = 100_000
 
 
 class VisionQueue:
@@ -88,7 +113,11 @@ class VisionQueue:
         )
         self._workers: list[asyncio.Task[None]] = []
         self._stats = VisionQueueStats()
-        self._seen_hashes: set[str] = set()
+        # LRU-bounded set: OrderedDict used as an ordered set (values ignored).
+        # Evicts oldest entries when the cap is reached.
+        self._seen_hashes: collections.OrderedDict[str, None] = (
+            collections.OrderedDict()
+        )
         self._skip_patterns = [
             re.compile(pat, re.IGNORECASE) for pat in config.skip_patterns
         ]
@@ -152,7 +181,7 @@ class VisionQueue:
         if not doc.image_bytes:
             return False
 
-        self._stats.submitted += 1
+        self._stats.increment("submitted")
 
         # Size filtering
         size_bytes = len(doc.image_bytes)
@@ -166,7 +195,7 @@ class VisionQueue:
                 size_bytes,
                 self._config.min_file_size_kb,
             )
-            self._stats.skipped_size += 1
+            self._stats.increment("skipped_size")
             return False
 
         if size_bytes > max_bytes:
@@ -176,7 +205,7 @@ class VisionQueue:
                 size_bytes,
                 self._config.max_file_size_mb,
             )
-            self._stats.skipped_size += 1
+            self._stats.increment("skipped_size")
             return False
 
         # Skip pattern filtering (check source_id for icon/avatar patterns)
@@ -184,28 +213,34 @@ class VisionQueue:
             logger.debug(
                 "Vision skip %s: matches skip pattern", doc.source_id
             )
-            self._stats.skipped_pattern += 1
+            self._stats.increment("skipped_pattern")
             return False
 
         # SHA256 dedup — in-memory check first, then external
         sha256 = _compute_sha256(doc.image_bytes)
 
         if sha256 in self._seen_hashes:
+            self._seen_hashes.move_to_end(sha256)
             logger.debug(
                 "Vision skip %s: SHA256 already seen in session", doc.source_id
             )
-            self._stats.skipped_dedup += 1
+            self._stats.increment("skipped_dedup")
             return False
 
-        if self._dedup_checker(sha256):
+        # Blocking dedup checker (e.g. Neo4j query) — run off the event loop.
+        loop = asyncio.get_running_loop()
+        already_processed = await loop.run_in_executor(
+            None, self._dedup_checker, sha256
+        )
+        if already_processed:
             logger.debug(
                 "Vision skip %s: SHA256 %s already processed", doc.source_id, sha256[:12]
             )
-            self._seen_hashes.add(sha256)
-            self._stats.skipped_dedup += 1
+            self._record_seen(sha256)
+            self._stats.increment("skipped_dedup")
             return False
 
-        self._seen_hashes.add(sha256)
+        self._record_seen(sha256)
 
         await self._queue.put(doc)
         logger.debug(
@@ -215,6 +250,12 @@ class VisionQueue:
             size_bytes,
         )
         return True
+
+    def _record_seen(self, sha256: str) -> None:
+        """Add *sha256* to the LRU seen-set, evicting the oldest if full."""
+        self._seen_hashes[sha256] = None
+        if len(self._seen_hashes) > _SEEN_HASHES_MAX:
+            self._seen_hashes.popitem(last=False)
 
     def _matches_skip_pattern(self, source_id: str) -> bool:
         """Check if the source_id matches any skip pattern."""
@@ -239,12 +280,12 @@ class VisionQueue:
                     None, self._process_fn, doc
                 )
                 self._result_callback(result)
-                self._stats.processed += 1
+                self._stats.increment("processed")
                 logger.debug(
                     "Vision worker %d processed %s", worker_id, doc.source_id
                 )
             except Exception:
-                self._stats.failed += 1
+                self._stats.increment("failed")
                 logger.exception(
                     "Vision worker %d failed processing %s",
                     worker_id,
