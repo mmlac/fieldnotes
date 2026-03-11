@@ -13,6 +13,7 @@ Usage::
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import signal
 from pathlib import Path
@@ -20,6 +21,9 @@ from pathlib import Path
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
+
+from neo4j import GraphDatabase
+from qdrant_client import QdrantClient
 
 from worker.config import Config, load_config
 from worker.models.resolver import ModelRegistry
@@ -117,6 +121,14 @@ TOOLS: list[Tool] = [
         ),
         inputSchema={"type": "object", "properties": {}},
     ),
+    Tool(
+        name="ingest_status",
+        description=(
+            "Check the health and sync status of the fieldnotes ingestion "
+            "pipeline. Returns source counts, last sync times, and any errors."
+        ),
+        inputSchema={"type": "object", "properties": {}},
+    ),
 ]
 
 
@@ -178,6 +190,8 @@ class FieldnotesServer:
                 return self._handle_show_topic(arguments)
             if name == "topic_gaps":
                 return self._handle_topic_gaps()
+            if name == "ingest_status":
+                return self._handle_ingest_status()
             raise ValueError(f"Unknown tool: {name}")
         except Exception as exc:
             logger.exception("Tool %s failed", name)
@@ -289,6 +303,95 @@ class FieldnotesServer:
             gaps = querier.topic_gaps()
             text = format_topic_gaps(gaps, use_json=True)
         return [TextContent(type="text", text=text)]
+
+    def _handle_ingest_status(self) -> list[TextContent]:
+        result: dict = {}
+
+        # --- Neo4j stats ---
+        neo4j_cfg = self._cfg.neo4j
+        neo4j_health = "ok"
+        try:
+            driver = GraphDatabase.driver(
+                neo4j_cfg.uri,
+                auth=(neo4j_cfg.user, neo4j_cfg.password),
+            )
+            try:
+                with driver.session() as session:
+                    sources: dict = {}
+                    for label in (
+                        "File", "Email", "Commit", "Entity",
+                        "Topic", "Chunk", "Image", "Repository",
+                    ):
+                        row = session.run(
+                            f"MATCH (n:`{label}`) "
+                            "RETURN count(n) AS cnt, "
+                            "max(n.modified_at) AS last_sync"
+                        ).single()
+                        sources[label.lower()] = {
+                            "count": row["cnt"],
+                            "last_sync": str(row["last_sync"]) if row["last_sync"] else None,
+                        }
+
+                    # Entity counts by type
+                    entity_rows = session.run(
+                        "MATCH (e:Entity) "
+                        "RETURN e.type AS type, count(e) AS cnt "
+                        "ORDER BY cnt DESC"
+                    ).data()
+                    entities_by_type = {
+                        r["type"]: r["cnt"] for r in entity_rows
+                    }
+                    entity_total = sum(entities_by_type.values())
+
+                    # Topic counts by source (cluster vs user)
+                    topic_rows = session.run(
+                        "MATCH (t:Topic) "
+                        "RETURN t.source AS source, count(t) AS cnt"
+                    ).data()
+                    topics_by_source = {
+                        r["source"]: r["cnt"] for r in topic_rows
+                    }
+            finally:
+                driver.close()
+        except Exception as exc:
+            logger.exception("ingest_status: Neo4j query failed")
+            neo4j_health = f"error: {exc}"
+            sources = {}
+            entities_by_type = {}
+            entity_total = 0
+            topics_by_source = {}
+
+        result["sources"] = sources
+        result["entities"] = {
+            "total": entity_total,
+            "by_type": entities_by_type,
+        }
+        result["topics"] = topics_by_source
+
+        # --- Qdrant stats ---
+        qdrant_cfg = self._cfg.qdrant
+        qdrant_health = "ok"
+        try:
+            client = QdrantClient(host=qdrant_cfg.host, port=qdrant_cfg.port)
+            try:
+                info = client.get_collection(qdrant_cfg.collection)
+                result["vectors"] = {
+                    "count": info.points_count,
+                    "collection": qdrant_cfg.collection,
+                }
+            finally:
+                client.close()
+        except Exception as exc:
+            logger.exception("ingest_status: Qdrant query failed")
+            qdrant_health = f"error: {exc}"
+            result["vectors"] = {"count": 0, "collection": qdrant_cfg.collection}
+
+        result["health"] = {
+            "neo4j": neo4j_health,
+            "qdrant": qdrant_health,
+        }
+
+        return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
 
     # -- run ----------------------------------------------------------------
 
