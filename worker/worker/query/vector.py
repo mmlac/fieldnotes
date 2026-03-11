@@ -15,12 +15,28 @@ from typing import Any
 
 from qdrant_client import QdrantClient
 from qdrant_client.models import FieldCondition, Filter, MatchValue
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential_jitter,
+)
 
 from worker.config import QdrantConfig
 from worker.models.base import EmbedRequest
 from worker.models.resolver import ModelRegistry
 
 logger = logging.getLogger(__name__)
+
+_network_retry = retry(
+    retry=retry_if_exception_type((ConnectionError, TimeoutError, OSError)),
+    stop=stop_after_attempt(4),
+    wait=wait_exponential_jitter(initial=0.5, max=10),
+    before_sleep=lambda rs: logger.warning(
+        "Query call failed (%s), retry %d", rs.outcome.exception(), rs.attempt_number
+    ),
+    reraise=True,
+)
 
 DEFAULT_TOP_K = 10
 
@@ -87,7 +103,7 @@ class VectorQuerier:
             If set, filter results to only this source type (e.g. "file").
         """
         try:
-            # Embed the query text.
+            # Embed the query text (retry handled by provider).
             model = self._registry.for_role("embed")
             resp = model.embed(EmbedRequest(texts=[question]))
             query_vector = resp.vectors[0]
@@ -104,14 +120,8 @@ class VectorQuerier:
                     ]
                 )
 
-            # Search Qdrant.
-            hits = self._qdrant.search(
-                collection_name=self._collection,
-                query_vector=query_vector,
-                limit=top_k,
-                query_filter=query_filter,
-                with_payload=True,
-            )
+            # Search Qdrant with retry.
+            hits = self._search_qdrant(query_vector, top_k, query_filter)
 
             results = [
                 VectorResult(
@@ -136,6 +146,22 @@ class VectorQuerier:
         except Exception as exc:
             logger.exception("Vector search failed for: %s", question)
             return VectorQueryResult(question=question, error=str(exc))
+
+    @_network_retry
+    def _search_qdrant(
+        self,
+        query_vector: list[float],
+        top_k: int,
+        query_filter: Filter | None,
+    ) -> list[Any]:
+        """Run Qdrant similarity search with retry on transient errors."""
+        return self._qdrant.search(
+            collection_name=self._collection,
+            query_vector=query_vector,
+            limit=top_k,
+            query_filter=query_filter,
+            with_payload=True,
+        )
 
     def close(self) -> None:
         """Release the Qdrant connection."""

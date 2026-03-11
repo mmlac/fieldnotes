@@ -1,8 +1,15 @@
 """OllamaProvider — calls a local Ollama HTTP API for completions and embeddings."""
 
+import logging
 from typing import Any
 
 import httpx
+from tenacity import (
+    retry,
+    retry_if_exception,
+    stop_after_attempt,
+    wait_exponential_jitter,
+)
 
 from ..base import (
     CompletionRequest,
@@ -12,6 +19,28 @@ from ..base import (
     ModelProvider,
 )
 from ..registry import register
+
+logger = logging.getLogger(__name__)
+
+
+def _is_retryable_httpx(exc: BaseException) -> bool:
+    """Return True for transient httpx errors worth retrying."""
+    if isinstance(exc, httpx.TransportError):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code >= 500:
+        return True
+    return False
+
+
+_ollama_retry = retry(
+    retry=retry_if_exception(_is_retryable_httpx),
+    stop=stop_after_attempt(4),
+    wait=wait_exponential_jitter(initial=0.5, max=10),
+    before_sleep=lambda rs: logger.warning(
+        "Ollama call failed (%s), retry %d", rs.outcome.exception(), rs.attempt_number
+    ),
+    reraise=True,
+)
 
 
 @register
@@ -31,6 +60,7 @@ class OllamaProvider(ModelProvider):
         self._completion_timeout = float(cfg.get("completion_timeout", self._completion_timeout))
         self._embed_timeout = float(cfg.get("embed_timeout", self._embed_timeout))
 
+    @_ollama_retry
     def complete(self, model: str, req: CompletionRequest) -> CompletionResponse:
         messages: list[dict[str, Any]] = []
         if req.system:
@@ -66,6 +96,7 @@ class OllamaProvider(ModelProvider):
             output_tokens=data.get("eval_count", 0),
         )
 
+    @_ollama_retry
     def embed(self, model: str, req: EmbedRequest) -> EmbedResponse:
         vectors: list[list[float]] = []
         total_tokens = 0

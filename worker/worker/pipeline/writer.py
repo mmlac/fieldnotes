@@ -28,6 +28,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from neo4j import GraphDatabase, Driver, Session as Neo4jSession
+from neo4j.exceptions import ServiceUnavailable, TransientError
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance,
@@ -36,6 +37,12 @@ from qdrant_client.models import (
     MatchValue,
     PointStruct,
     VectorParams,
+)
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential_jitter,
 )
 
 from worker.config import Neo4jConfig, QdrantConfig
@@ -46,6 +53,26 @@ logger = logging.getLogger(__name__)
 
 VECTOR_SIZE = 768
 COLLECTION_NAME = "fieldnotes"
+
+_neo4j_retry = retry(
+    retry=retry_if_exception_type((TransientError, ServiceUnavailable, OSError)),
+    stop=stop_after_attempt(4),
+    wait=wait_exponential_jitter(initial=0.5, max=10),
+    before_sleep=lambda rs: logger.warning(
+        "Neo4j call failed (%s), retry %d", rs.outcome.exception(), rs.attempt_number
+    ),
+    reraise=True,
+)
+
+_qdrant_retry = retry(
+    retry=retry_if_exception_type((ConnectionError, TimeoutError, OSError)),
+    stop=stop_after_attempt(4),
+    wait=wait_exponential_jitter(initial=0.5, max=10),
+    before_sleep=lambda rs: logger.warning(
+        "Qdrant call failed (%s), retry %d", rs.outcome.exception(), rs.attempt_number
+    ),
+    reraise=True,
+)
 
 
 @dataclass
@@ -86,6 +113,7 @@ class Writer:
         self._collection = qdrant_cfg.collection or COLLECTION_NAME
         self._ensure_qdrant_collection()
 
+    @_qdrant_retry
     def _ensure_qdrant_collection(self) -> None:
         """Create the Qdrant collection if it does not exist."""
         collections = [
@@ -118,11 +146,7 @@ class Writer:
             self._delete(doc.source_id, doc.source_type)
             return
 
-        with self._neo4j_driver.session() as session:
-            session.execute_write(
-                self._write_neo4j_tx, unit
-            )
-
+        self._write_neo4j(unit)
         self._write_qdrant(unit)
 
         logger.info(
@@ -148,6 +172,12 @@ class Writer:
     # ------------------------------------------------------------------
     # Neo4j writes
     # ------------------------------------------------------------------
+
+    @_neo4j_retry
+    def _write_neo4j(self, unit: WriteUnit) -> None:
+        """Write to Neo4j with retry on transient errors."""
+        with self._neo4j_driver.session() as session:
+            session.execute_write(self._write_neo4j_tx, unit)
 
     @staticmethod
     def _write_neo4j_tx(tx: Any, unit: WriteUnit) -> None:
@@ -179,6 +209,7 @@ class Writer:
     # Qdrant writes
     # ------------------------------------------------------------------
 
+    @_qdrant_retry
     def _write_qdrant(self, unit: WriteUnit) -> None:
         """Upsert chunk vectors to Qdrant."""
         doc = unit.doc
@@ -221,12 +252,16 @@ class Writer:
 
     def _delete(self, source_id: str, source_type: str) -> None:
         """Remove all Neo4j nodes and Qdrant vectors for a source_id."""
-        with self._neo4j_driver.session() as session:
-            session.execute_write(self._delete_neo4j_tx, source_id)
-
+        self._delete_neo4j(source_id)
         self._delete_qdrant_vectors(source_id)
 
         logger.info("Deleted %s %s", source_type, source_id)
+
+    @_neo4j_retry
+    def _delete_neo4j(self, source_id: str) -> None:
+        """Delete Neo4j nodes for a source_id with retry."""
+        with self._neo4j_driver.session() as session:
+            session.execute_write(self._delete_neo4j_tx, source_id)
 
     @staticmethod
     def _delete_neo4j_tx(tx: Any, source_id: str) -> None:
@@ -248,6 +283,7 @@ class Writer:
             sid=source_id,
         )
 
+    @_qdrant_retry
     def _delete_qdrant_vectors(self, source_id: str) -> None:
         """Remove all Qdrant vectors matching a source_id."""
         self._qdrant.delete(
