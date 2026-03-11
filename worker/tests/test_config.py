@@ -13,6 +13,7 @@ from worker.config import (
     QdrantConfig,
     RolesConfig,
     SourceConfig,
+    VisionConfig,
     load_config,
     _parse,
 )
@@ -241,3 +242,90 @@ class TestFullRoundtrip:
         assert len(cfg.models) == 2
         assert cfg.roles.get("extraction") == "llm"
         assert cfg.roles.get("embedding") == "emb"
+
+
+class TestTypeValidation:
+    """_parse rejects values with wrong types."""
+
+    def test_core_data_dir_wrong_type(self) -> None:
+        with pytest.raises(TypeError, match=r"\[core\] data_dir: expected str, got int"):
+            _parse({"core": {"data_dir": 123}})
+
+    def test_core_log_level_wrong_type(self) -> None:
+        with pytest.raises(TypeError, match=r"\[core\] log_level: expected str"):
+            _parse({"core": {"log_level": True}})
+
+    def test_neo4j_uri_wrong_type(self) -> None:
+        with pytest.raises(TypeError, match=r"\[neo4j\] uri: expected str"):
+            _parse({"neo4j": {"uri": 42}})
+
+    def test_qdrant_port_wrong_type(self) -> None:
+        with pytest.raises(TypeError, match=r"\[qdrant\] port: expected int, got str"):
+            _parse({"qdrant": {"port": "not-a-number"}})
+
+    def test_qdrant_vector_size_wrong_type(self) -> None:
+        with pytest.raises(TypeError, match=r"\[qdrant\] vector_size: expected int"):
+            _parse({"qdrant": {"vector_size": "big"}})
+
+    def test_qdrant_host_wrong_type(self) -> None:
+        with pytest.raises(TypeError, match=r"\[qdrant\] host: expected str"):
+            _parse({"qdrant": {"host": 999}})
+
+    def test_vision_enabled_wrong_type(self) -> None:
+        with pytest.raises(TypeError, match=r"\[vision\] enabled: expected bool"):
+            _parse({"vision": {"enabled": "yes"}})
+
+    def test_vision_concurrency_wrong_type(self) -> None:
+        with pytest.raises(TypeError, match=r"\[vision\] concurrency: expected int"):
+            _parse({"vision": {"concurrency": "fast"}})
+
+    def test_vision_queue_size_wrong_type(self) -> None:
+        with pytest.raises(TypeError, match=r"\[vision\] queue_size: expected int"):
+            _parse({"vision": {"queue_size": 25.5}})
+
+    def test_vision_skip_patterns_wrong_type(self) -> None:
+        with pytest.raises(TypeError, match=r"\[vision\] skip_patterns: expected list"):
+            _parse({"vision": {"skip_patterns": "icon,avatar"}})
+
+    def test_vision_skip_patterns_bad_item(self) -> None:
+        with pytest.raises(TypeError, match=r"\[vision\] skip_patterns\[1\]: expected str"):
+            _parse({"vision": {"skip_patterns": ["icon", 42]}})
+
+    def test_clustering_enabled_wrong_type(self) -> None:
+        with pytest.raises(TypeError, match=r"\[clustering\] enabled: expected bool"):
+            _parse({"clustering": {"enabled": 1}})
+
+    def test_clustering_min_corpus_size_wrong_type(self) -> None:
+        with pytest.raises(TypeError, match=r"\[clustering\] min_corpus_size: expected int"):
+            _parse({"clustering": {"min_corpus_size": "many"}})
+
+    def test_clustering_cron_wrong_type(self) -> None:
+        with pytest.raises(TypeError, match=r"\[clustering\] cron: expected str"):
+            _parse({"clustering": {"cron": 12345}})
+
+    def test_mcp_port_wrong_type(self) -> None:
+        with pytest.raises(TypeError, match=r"\[mcp\] port: expected int"):
+            _parse({"mcp": {"port": "3456"}})
+
+    def test_mcp_enabled_wrong_type(self) -> None:
+        with pytest.raises(TypeError, match=r"\[mcp\] enabled: expected bool"):
+            _parse({"mcp": {"enabled": "true"}})
+
+    def test_valid_types_still_accepted(self) -> None:
+        """Ensure valid configs still parse without errors."""
+        cfg = _parse({
+            "qdrant": {"port": 6334, "host": "db", "vector_size": 1024},
+            "vision": {
+                "enabled": False,
+                "concurrency": 4,
+                "queue_size": 512,
+                "skip_patterns": ["icon", "thumb"],
+            },
+            "clustering": {"enabled": True, "cron": "0 0 * * *", "min_corpus_size": 50},
+            "mcp": {"enabled": False, "port": 9999},
+        })
+        assert cfg.qdrant.port == 6334
+        assert cfg.vision.concurrency == 4
+        assert cfg.vision.skip_patterns == ["icon", "thumb"]
+        assert cfg.clustering.min_corpus_size == 50
+        assert cfg.mcp.port == 9999

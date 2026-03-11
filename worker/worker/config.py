@@ -22,6 +22,26 @@ logger = logging.getLogger(__name__)
 DEFAULT_CONFIG_PATH = Path.home() / ".fieldnotes" / "config.toml"
 
 
+def _check_type(section: str, key: str, value: Any, expected: type) -> None:
+    """Raise TypeError if *value* is not an instance of *expected*."""
+    if not isinstance(value, expected):
+        raise TypeError(
+            f"[{section}] {key}: expected {expected.__name__}, "
+            f"got {type(value).__name__} ({value!r})"
+        )
+
+
+def _check_list_of(section: str, key: str, value: Any, item_type: type) -> None:
+    """Raise TypeError if *value* is not a list of *item_type*."""
+    _check_type(section, key, value, list)
+    for i, item in enumerate(value):
+        if not isinstance(item, item_type):
+            raise TypeError(
+                f"[{section}] {key}[{i}]: expected {item_type.__name__}, "
+                f"got {type(item).__name__} ({item!r})"
+            )
+
+
 @dataclass
 class CoreConfig:
     data_dir: str = "~/.fieldnotes/data"
@@ -144,6 +164,9 @@ def _parse(raw: dict[str, Any]) -> Config:
     # [core]
     if "core" in raw:
         c = raw["core"]
+        for k in ("data_dir", "log_level"):
+            if k in c:
+                _check_type("core", k, c[k], str)
         cfg.core = CoreConfig(
             data_dir=c.get("data_dir", cfg.core.data_dir),
             log_level=c.get("log_level", cfg.core.log_level),
@@ -152,6 +175,9 @@ def _parse(raw: dict[str, Any]) -> Config:
     # [neo4j]
     if "neo4j" in raw:
         n = raw["neo4j"]
+        for k in ("uri", "user", "password"):
+            if k in n:
+                _check_type("neo4j", k, n[k], str)
         cfg.neo4j = Neo4jConfig(
             uri=n.get("uri", cfg.neo4j.uri),
             user=n.get("user", cfg.neo4j.user),
@@ -161,6 +187,12 @@ def _parse(raw: dict[str, Any]) -> Config:
     # [qdrant]
     if "qdrant" in raw:
         q = raw["qdrant"]
+        for k in ("host", "collection"):
+            if k in q:
+                _check_type("qdrant", k, q[k], str)
+        for k in ("port", "vector_size"):
+            if k in q:
+                _check_type("qdrant", k, q[k], int)
         cfg.qdrant = QdrantConfig(
             host=q.get("host", cfg.qdrant.host),
             port=q.get("port", cfg.qdrant.port),
@@ -194,6 +226,13 @@ def _parse(raw: dict[str, Any]) -> Config:
     # [vision]
     if "vision" in raw:
         vi = raw["vision"]
+        if "enabled" in vi:
+            _check_type("vision", "enabled", vi["enabled"], bool)
+        for k in ("concurrency", "min_file_size_kb", "max_file_size_mb", "queue_size"):
+            if k in vi:
+                _check_type("vision", k, vi[k], int)
+        if "skip_patterns" in vi:
+            _check_list_of("vision", "skip_patterns", vi["skip_patterns"], str)
         cfg.vision = VisionConfig(
             enabled=vi.get("enabled", cfg.vision.enabled),
             concurrency=vi.get("concurrency", cfg.vision.concurrency),
@@ -206,6 +245,12 @@ def _parse(raw: dict[str, Any]) -> Config:
     # [clustering]
     if "clustering" in raw:
         cl = raw["clustering"]
+        if "enabled" in cl:
+            _check_type("clustering", "enabled", cl["enabled"], bool)
+        if "cron" in cl:
+            _check_type("clustering", "cron", cl["cron"], str)
+        if "min_corpus_size" in cl:
+            _check_type("clustering", "min_corpus_size", cl["min_corpus_size"], int)
         cfg.clustering = ClusteringConfig(
             enabled=cl.get("enabled", cfg.clustering.enabled),
             cron=cl.get("cron", cfg.clustering.cron),
@@ -215,6 +260,10 @@ def _parse(raw: dict[str, Any]) -> Config:
     # [mcp]
     if "mcp" in raw:
         m = raw["mcp"]
+        if "enabled" in m:
+            _check_type("mcp", "enabled", m["enabled"], bool)
+        if "port" in m:
+            _check_type("mcp", "port", m["port"], int)
         cfg.mcp = McpConfig(
             enabled=m.get("enabled", cfg.mcp.enabled),
             port=m.get("port", cfg.mcp.port),
