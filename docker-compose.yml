@@ -1,6 +1,6 @@
 services:
   neo4j:
-    image: neo4j:5-community
+    image: neo4j:5.26.22-community
     ports: ["127.0.0.1:7687:7687"]
     environment:
       NEO4J_AUTH: ${NEO4J_USER:-neo4j}/${NEO4J_PASSWORD:?NEO4J_PASSWORD must be set}
@@ -8,7 +8,7 @@ services:
       - ${FIELDNOTES_DATA:-~/.fieldnotes/data}/neo4j:/data
 
   qdrant:
-    image: qdrant/qdrant:latest
+    image: qdrant/qdrant:v1.17.0
     ports: ["127.0.0.1:6333:6333"]
     volumes:
       - ${FIELDNOTES_DATA:-~/.fieldnotes/data}/qdrant:/qdrant/storage

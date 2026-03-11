@@ -1866,7 +1866,7 @@ For local development and personal use, all dependencies run in Docker:
 # docker-compose.yml
 services:
   neo4j:
-    image: neo4j:5-community
+    image: neo4j:5.26.22-community
     ports: ["7474:7474", "7687:7687"]
     environment:
       NEO4J_AUTH: neo4j/fieldnotes
@@ -1874,7 +1874,7 @@ services:
       - neo4j_data:/data
 
   qdrant:
-    image: qdrant/qdrant:latest
+    image: qdrant/qdrant:v1.17.0
     ports: ["6333:6333"]
     volumes:
       - qdrant_data:/qdrant/storage
