@@ -53,6 +53,14 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Max vector results (default: 10)",
     )
 
+    # ── serve ───────────────────────────────────────────────────────
+    serve_p = sub.add_parser("serve", help="Run fieldnotes as a server")
+    serve_p.add_argument(
+        "--mcp",
+        action="store_true",
+        help="Start MCP server over stdio transport",
+    )
+
     # ── topics ──────────────────────────────────────────────────────
     topics_p = sub.add_parser("topics", help="Browse and inspect topics")
     topics_p.add_argument(
@@ -156,6 +164,19 @@ def main(argv: list[str] | None = None) -> int:
     if args.command is None:
         parser.print_help()
         return 1
+
+    if args.command == "serve":
+        if not args.mcp:
+            print("error: specify --mcp to start the MCP server", file=sys.stderr)
+            return 1
+        from worker.mcp_server import run_server
+
+        try:
+            run_server(config_path=args.config)
+            return 0
+        except Exception as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
 
     if args.command == "search":
         if args.top_k < 1:
