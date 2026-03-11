@@ -32,6 +32,7 @@ from worker.pipeline.writer import Writer
 from worker.sources.files import FileSource
 from worker.sources.gmail import GmailSource
 from worker.sources.obsidian import ObsidianSource
+from worker.sources.repositories import RepositorySource
 from worker.sources.base import PythonSource
 
 # Importing parsers triggers @register decorators
@@ -47,6 +48,7 @@ SOURCE_CLASSES: dict[str, type[PythonSource]] = {
     "files": FileSource,
     "gmail": GmailSource,
     "obsidian": ObsidianSource,
+    "repositories": RepositorySource,
 }
 
 
