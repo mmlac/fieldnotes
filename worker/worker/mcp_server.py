@@ -27,9 +27,9 @@ from worker.models.resolver import ModelRegistry
 # Ensure provider registration side-effects run.
 import worker.models.providers.ollama  # noqa: F401
 
-from worker.query.graph import GraphQuerier
+from worker.query.graph import GraphQuerier, GraphQueryResult
 from worker.query.hybrid import merge
-from worker.query.vector import VectorQuerier
+from worker.query.vector import VectorQuerier, VectorQueryResult
 from worker.query.topics import (
     TopicQuerier,
     format_topic_detail,
@@ -47,21 +47,26 @@ TOOLS: list[Tool] = [
     Tool(
         name="search",
         description=(
-            "Hybrid graph + vector search across the user's personal knowledge "
-            "graph.  Returns structured context from both graph traversal and "
-            "semantic similarity."
+            "Search the fieldnotes knowledge graph using natural language. "
+            "Combines graph traversal (Neo4j) with semantic vector search "
+            "(Qdrant) and returns structured context."
         ),
         inputSchema={
             "type": "object",
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "Natural-language search query",
+                    "description": "Natural language search query",
                 },
                 "top_k": {
                     "type": "integer",
-                    "description": "Maximum vector results (default 10)",
+                    "description": "Maximum number of results to return",
                     "default": 10,
+                },
+                "source_type": {
+                    "type": "string",
+                    "description": "Filter results by source type",
+                    "enum": ["file", "email", "obsidian", "repositories"],
                 },
             },
             "required": ["query"],
@@ -148,7 +153,7 @@ class FieldnotesServer:
     ) -> list[TextContent]:
         try:
             if name == "search":
-                return self._handle_search(arguments)
+                return await self._handle_search(arguments)
             if name == "list_topics":
                 return self._handle_list_topics()
             if name == "show_topic":
@@ -162,23 +167,85 @@ class FieldnotesServer:
 
     # -- tool implementations -----------------------------------------------
 
-    def _handle_search(self, arguments: dict) -> list[TextContent]:
+    async def _handle_search(self, arguments: dict) -> list[TextContent]:
         query = arguments["query"]
         top_k = arguments.get("top_k", 10)
+        source_type: str | None = arguments.get("source_type")
 
         assert self._graph_querier is not None
         assert self._vector_querier is not None
 
-        graph_result = self._graph_querier.query(query)
-        vector_result = self._vector_querier.query(query, top_k=top_k)
+        loop = asyncio.get_running_loop()
+
+        # Run graph and vector queries concurrently in the thread pool.
+        graph_future = loop.run_in_executor(
+            None, self._graph_querier.query, query
+        )
+        vector_future = loop.run_in_executor(
+            None,
+            lambda: self._vector_querier.query(
+                query, top_k=top_k, source_type=source_type
+            ),
+        )
+
+        graph_result, vector_result = await asyncio.gather(
+            graph_future, vector_future, return_exceptions=True
+        )
+
+        # Handle partial failures: if one query raised, build an error result.
+        if isinstance(graph_result, BaseException):
+            logger.exception("Graph query raised", exc_info=graph_result)
+            graph_result = GraphQueryResult(
+                question=query, cypher="", error=str(graph_result)
+            )
+        if isinstance(vector_result, BaseException):
+            logger.exception("Vector query raised", exc_info=vector_result)
+            vector_result = VectorQueryResult(
+                question=query, error=str(vector_result)
+            )
+
         hybrid = merge(query, graph_result, vector_result)
 
+        # Build structured response with [Graph context], [Semantic context],
+        # [Answer], and source_ids sections.
         parts: list[str] = []
+
         if hybrid.errors:
             parts.append("Warnings: " + "; ".join(hybrid.errors))
+
         if hybrid.context:
             parts.append(hybrid.context)
-        else:
+
+        # [Answer] section from graph chain synthesis.
+        if graph_result.answer:
+            parts.append(f"[Answer]\n{graph_result.answer}")
+
+        # [Sources] section for traceability.
+        source_ids: list[str] = []
+        for row in hybrid.graph_results:
+            for value in row.values():
+                if isinstance(value, dict):
+                    sid = value.get("source_id")
+                    if sid:
+                        source_ids.append(str(sid))
+            sid = row.get("source_id")
+            if sid:
+                source_ids.append(str(sid))
+        for vr in hybrid.vector_results:
+            if vr.source_id:
+                source_ids.append(vr.source_id)
+
+        if source_ids:
+            # Deduplicate while preserving order.
+            seen: set[str] = set()
+            unique_ids: list[str] = []
+            for sid in source_ids:
+                if sid not in seen:
+                    seen.add(sid)
+                    unique_ids.append(sid)
+            parts.append("[Sources]\n" + "\n".join(unique_ids))
+
+        if not parts or (len(parts) == 1 and parts[0].startswith("Warnings")):
             parts.append("No results found.")
 
         return [TextContent(type="text", text="\n\n".join(parts))]
