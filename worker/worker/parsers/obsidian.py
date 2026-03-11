@@ -200,7 +200,14 @@ class ObsidianParser(BaseParser):
             # Load image bytes from disk when vault_path is available
             image_bytes: bytes | None = None
             if vault_path:
-                image_file = Path(vault_path) / embed_path
+                image_file = (Path(vault_path) / embed_path).resolve()
+                vault_resolved = Path(vault_path).resolve()
+                if not image_file.is_relative_to(vault_resolved):
+                    logger.warning(
+                        "Embed path %r escapes vault directory, skipping",
+                        embed_path,
+                    )
+                    continue
                 image_bytes = _read_image_bytes(image_file)
 
             docs.append(

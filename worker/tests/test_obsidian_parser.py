@@ -193,6 +193,22 @@ class TestObsidianParser:
         link_hints = [h for h in docs[0].graph_hints if h.predicate == "LINKS_TO"]
         assert len(link_hints) == 0
 
+    def test_path_traversal_embed_rejected(self, tmp_path: Path):
+        """Embed paths that escape the vault directory must be skipped."""
+        secret = tmp_path / "outside" / "secret.png"
+        secret.parent.mkdir()
+        secret.write_bytes(b"SECRET")
+
+        vault = tmp_path / "vault"
+        vault.mkdir()
+
+        note = "---\n---\n![[../outside/secret.png]]"
+        event = _make_event(note, meta={"vault_path": str(vault)})
+        docs = self.parser.parse(event)
+        # Only the text document should be returned; the traversal embed is skipped
+        assert len(docs) == 1
+        assert docs[0].mime_type == "text/plain"
+
     def test_registry_registration(self):
         from worker.parsers.registry import get
 
