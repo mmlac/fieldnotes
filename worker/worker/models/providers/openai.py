@@ -88,15 +88,18 @@ class OpenAIProvider(ModelProvider):
 
         tool_calls = None
         if choice.message.tool_calls:
-            tool_calls = [
-                {
-                    "function": {
-                        "name": tc.function.name,
-                        "arguments": json.loads(tc.function.arguments),
-                    }
-                }
-                for tc in choice.message.tool_calls
-            ]
+            parsed: list[dict[str, Any]] = []
+            for tc in choice.message.tool_calls:
+                try:
+                    args = json.loads(tc.function.arguments)
+                except (json.JSONDecodeError, TypeError):
+                    logger.warning(
+                        "Malformed tool-call JSON from model (name=%s), using raw string",
+                        tc.function.name,
+                    )
+                    args = tc.function.arguments
+                parsed.append({"function": {"name": tc.function.name, "arguments": args}})
+            tool_calls = parsed
 
         usage = response.usage
         return CompletionResponse(

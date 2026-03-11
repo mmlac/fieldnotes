@@ -150,6 +150,25 @@ class TestOpenAIComplete:
         resp = provider.complete("m", req)
         assert resp.tool_calls == [{"function": {"name": "search", "arguments": {"q": "test"}}}]
 
+    def test_malformed_tool_call_json_uses_raw_string(self, provider: OpenAIProvider) -> None:
+        tc = SimpleNamespace(
+            function=SimpleNamespace(
+                name="search",
+                arguments="{bad json",
+            )
+        )
+        provider._client.chat.completions.create.return_value = _make_completion_response(
+            content="", tool_calls=[tc],
+        )
+
+        req = CompletionRequest(
+            system="sys",
+            messages=[{"role": "user", "content": "search"}],
+            tools=[{"type": "function", "function": {"name": "search"}}],
+        )
+        resp = provider.complete("m", req)
+        assert resp.tool_calls == [{"function": {"name": "search", "arguments": "{bad json"}}]
+
     def test_tools_in_kwargs_when_provided(self, provider: OpenAIProvider) -> None:
         provider._client.chat.completions.create.return_value = _make_completion_response()
 
