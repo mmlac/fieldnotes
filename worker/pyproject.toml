@@ -9,6 +9,7 @@ description = "ML pipeline worker for the Fieldnotes personal knowledge graph"
 requires-python = ">=3.11"
 dependencies = [
     "anthropic>=0.39",
+    "beautifulsoup4>=4.12",
     "httpx>=0.27",
     "neo4j>=5.0",
     "qdrant-client>=1.7",
