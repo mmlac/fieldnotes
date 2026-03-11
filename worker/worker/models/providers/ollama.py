@@ -121,6 +121,7 @@ class OllamaProvider(ModelProvider):
             "stream": False,
             "options": {
                 "temperature": req.temperature,
+                "num_predict": req.max_tokens,
             },
         }
         if req.tools:
