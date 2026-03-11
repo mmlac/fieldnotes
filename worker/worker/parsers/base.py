@@ -17,8 +17,14 @@ class GraphHint:
     predicate: str  # relationship type: "LINKS_TO", "SENT", etc.
     object_id: str  # source_id of the object node
     object_label: str
+    subject_props: dict[str, Any] = field(default_factory=dict)
     object_props: dict[str, Any] = field(default_factory=dict)
     confidence: float = 1.0  # 1.0 = certain (derived from structure, not LLM)
+    # Merge keys: which property to MERGE on for each node.
+    # Default "source_id" works for most nodes; email nodes use "email",
+    # Thread nodes use "thread_id", etc.
+    subject_merge_key: str = "source_id"
+    object_merge_key: str = "source_id"
 
 
 @dataclass

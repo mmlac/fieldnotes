@@ -112,7 +112,8 @@ class TestGmailParser:
         assert h.subject_label == "Person"
         assert h.object_id == "gmail:msg-123"
         assert h.object_label == "Email"
-        assert h.object_props == {"email": "alice@example.com"}
+        assert h.subject_props == {"email": "alice@example.com"}
+        assert h.subject_merge_key == "email"
         assert h.confidence == 1.0
 
     def test_recipient_to_hints(self):
@@ -126,6 +127,7 @@ class TestGmailParser:
             assert h.subject_id == "gmail:msg-123"
             assert h.subject_label == "Email"
             assert h.object_label == "Person"
+            assert h.object_merge_key == "email"
             assert h.confidence == 1.0
 
     def test_thread_part_of_hint(self):
@@ -137,6 +139,8 @@ class TestGmailParser:
         assert h.subject_label == "Email"
         assert h.object_id == "gmail-thread:thread-456"
         assert h.object_label == "Thread"
+        assert h.object_merge_key == "thread_id"
+        assert h.object_props == {"thread_id": "thread-456", "subject": "Test Subject"}
         assert h.confidence == 1.0
 
     def test_no_thread_hint_when_thread_id_empty(self):

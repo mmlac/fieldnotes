@@ -223,9 +223,9 @@ class TestNeo4jHelpers:
             confidence=1.0,
         )
         _write_graph_hint(tx, hint)
-        # Object MERGE should include source property
+        # Object MERGE should include source property (prefixed with o_)
         obj_call = tx.run.call_args_list[1]
-        assert "source" in obj_call[1]
+        assert "o_source" in obj_call[1]
 
 
 # ------------------------------------------------------------------
@@ -747,6 +747,229 @@ class TestImageNodeWriter:
             if "ATTACHED_TO" in str(c)
         ]
         assert len(attached_calls) == 1
+
+
+# ------------------------------------------------------------------
+# Email graph nodes: Person, Email, Thread and email edges
+# ------------------------------------------------------------------
+
+
+class TestEmailGraphHints:
+    """Test _write_graph_hint with email-specific merge keys."""
+
+    def test_person_node_merges_on_email(self):
+        """Person nodes should MERGE on the email property, not source_id."""
+        tx = MagicMock()
+        hint = GraphHint(
+            subject_id="person:alice@example.com",
+            subject_label="Person",
+            predicate="SENT",
+            object_id="gmail:msg-123",
+            object_label="Email",
+            subject_props={"email": "alice@example.com"},
+            subject_merge_key="email",
+            confidence=1.0,
+        )
+        _write_graph_hint(tx, hint)
+
+        # Subject MERGE should use email as the merge key
+        subj_call = tx.run.call_args_list[0]
+        query = subj_call[0][0]
+        assert "Person" in query
+        assert "{email: $s_merge}" in query
+        assert subj_call[1]["s_merge"] == "alice@example.com"
+        # source_id should still be SET
+        assert subj_call[1]["s_source_id"] == "person:alice@example.com"
+
+    def test_thread_node_merges_on_thread_id(self):
+        """Thread nodes should MERGE on thread_id property."""
+        tx = MagicMock()
+        hint = GraphHint(
+            subject_id="gmail:msg-123",
+            subject_label="Email",
+            predicate="PART_OF",
+            object_id="gmail-thread:thread-456",
+            object_label="Thread",
+            object_props={"thread_id": "thread-456", "subject": "Test"},
+            object_merge_key="thread_id",
+            confidence=1.0,
+        )
+        _write_graph_hint(tx, hint)
+
+        # Object MERGE should use thread_id as the merge key
+        obj_call = tx.run.call_args_list[1]
+        query = obj_call[0][0]
+        assert "Thread" in query
+        assert "{thread_id: $o_merge}" in query
+        assert obj_call[1]["o_merge"] == "thread-456"
+        assert obj_call[1]["o_subject"] == "Test"
+
+    def test_to_edge_person_as_object(self):
+        """TO edge: Email→Person should merge Person on email."""
+        tx = MagicMock()
+        hint = GraphHint(
+            subject_id="gmail:msg-123",
+            subject_label="Email",
+            predicate="TO",
+            object_id="person:bob@example.com",
+            object_label="Person",
+            object_props={"email": "bob@example.com"},
+            object_merge_key="email",
+            confidence=1.0,
+        )
+        _write_graph_hint(tx, hint)
+
+        # Object (Person) should merge on email
+        obj_call = tx.run.call_args_list[1]
+        query = obj_call[0][0]
+        assert "{email: $o_merge}" in query
+        assert obj_call[1]["o_merge"] == "bob@example.com"
+
+        # Edge MATCH should use the correct merge keys
+        edge_call = tx.run.call_args_list[2]
+        edge_query = edge_call[0][0]
+        assert "TO" in edge_query
+        assert "{source_id: $s_merge}" in edge_query  # Email uses source_id
+        assert "{email: $o_merge}" in edge_query  # Person uses email
+
+    def test_sent_edge_creates_relationship(self):
+        """SENT edge: Person→Email should create correct relationship."""
+        tx = MagicMock()
+        hint = GraphHint(
+            subject_id="person:alice@example.com",
+            subject_label="Person",
+            predicate="SENT",
+            object_id="gmail:msg-123",
+            object_label="Email",
+            subject_props={"email": "alice@example.com"},
+            subject_merge_key="email",
+            confidence=1.0,
+        )
+        _write_graph_hint(tx, hint)
+
+        # Verify 3 calls: subject MERGE, object MERGE, edge MERGE
+        assert tx.run.call_count == 3
+        edge_call = tx.run.call_args_list[2]
+        edge_query = edge_call[0][0]
+        assert "SENT" in edge_query
+        assert "{email: $s_merge}" in edge_query  # Person uses email
+        assert "{source_id: $o_merge}" in edge_query  # Email uses source_id
+
+    def test_part_of_edge_creates_relationship(self):
+        """PART_OF edge: Email→Thread should create correct relationship."""
+        tx = MagicMock()
+        hint = GraphHint(
+            subject_id="gmail:msg-123",
+            subject_label="Email",
+            predicate="PART_OF",
+            object_id="gmail-thread:thread-456",
+            object_label="Thread",
+            object_props={"thread_id": "thread-456", "subject": "Test"},
+            object_merge_key="thread_id",
+            confidence=1.0,
+        )
+        _write_graph_hint(tx, hint)
+
+        edge_call = tx.run.call_args_list[2]
+        edge_query = edge_call[0][0]
+        assert "PART_OF" in edge_query
+        assert "{source_id: $s_merge}" in edge_query  # Email uses source_id
+        assert "{thread_id: $o_merge}" in edge_query  # Thread uses thread_id
+
+    def test_default_merge_key_is_source_id(self):
+        """Without custom merge keys, nodes should still MERGE on source_id."""
+        tx = MagicMock()
+        hint = GraphHint(
+            subject_id="notes/a.md",
+            subject_label="File",
+            predicate="LINKS_TO",
+            object_id="notes/b.md",
+            object_label="File",
+            confidence=0.95,
+        )
+        _write_graph_hint(tx, hint)
+
+        # Both should use source_id as merge key (default)
+        subj_call = tx.run.call_args_list[0]
+        assert "{source_id: $s_merge}" in subj_call[0][0]
+        obj_call = tx.run.call_args_list[1]
+        assert "{source_id: $o_merge}" in obj_call[0][0]
+
+    def test_email_node_written_as_source(self):
+        """Email nodes via ParsedDocument should upsert with message_id prop."""
+        tx = MagicMock()
+        doc = _doc(
+            source_type="gmail",
+            source_id="gmail:msg-123",
+            node_label="Email",
+            node_props={"message_id": "msg-123", "subject": "Test", "date": "2026-03-11"},
+        )
+        _upsert_source_node(tx, doc)
+        args, kwargs = tx.run.call_args
+        assert "MERGE" in args[0]
+        assert "Email" in args[0]
+        assert kwargs["message_id"] == "msg-123"
+        assert kwargs["subject"] == "Test"
+
+    def test_full_email_write_with_hints(self, writer, mock_neo4j, mock_qdrant):
+        """End-to-end: writing an Email WriteUnit processes all graph hints."""
+        doc = _doc(
+            source_type="gmail",
+            source_id="gmail:msg-123",
+            node_label="Email",
+            node_props={"message_id": "msg-123", "subject": "Test", "date": "2026-03-11"},
+            graph_hints=[
+                GraphHint(
+                    subject_id="person:alice@example.com",
+                    subject_label="Person",
+                    predicate="SENT",
+                    object_id="gmail:msg-123",
+                    object_label="Email",
+                    subject_props={"email": "alice@example.com"},
+                    subject_merge_key="email",
+                    confidence=1.0,
+                ),
+                GraphHint(
+                    subject_id="gmail:msg-123",
+                    subject_label="Email",
+                    predicate="TO",
+                    object_id="person:bob@example.com",
+                    object_label="Person",
+                    object_props={"email": "bob@example.com"},
+                    object_merge_key="email",
+                    confidence=1.0,
+                ),
+                GraphHint(
+                    subject_id="gmail:msg-123",
+                    subject_label="Email",
+                    predicate="PART_OF",
+                    object_id="gmail-thread:thread-456",
+                    object_label="Thread",
+                    object_props={"thread_id": "thread-456", "subject": "Test"},
+                    object_merge_key="thread_id",
+                    confidence=1.0,
+                ),
+            ],
+        )
+        unit = _unit(doc=doc)
+
+        # Execute the transaction function directly
+        tx = MagicMock()
+        Writer._write_neo4j_tx(tx, unit)
+
+        queries = [c[0][0] for c in tx.run.call_args_list]
+
+        # Should have: source upsert + 3 hints * 3 queries each = 10
+        assert len(queries) == 10
+
+        # Verify SENT, TO, PART_OF edges were created
+        edge_queries = [q for q in queries if "MERGE" in q and ")-[:" in q]
+        predicates = set()
+        for q in edge_queries:
+            for pred in ("SENT", "TO", "PART_OF"):
+                if pred in q:
+                    predicates.add(pred)
+        assert predicates == {"SENT", "TO", "PART_OF"}
 
 
 class TestMarkVisionProcessed:

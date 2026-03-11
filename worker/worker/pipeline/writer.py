@@ -527,36 +527,62 @@ def _upsert_chunk(
 
 
 def _write_graph_hint(tx: Any, hint: GraphHint) -> None:
-    """Write a pre-extracted graph fact directly to Neo4j."""
+    """Write a pre-extracted graph fact directly to Neo4j.
+
+    Supports custom merge keys per node type. For example, Person nodes
+    MERGE on ``email``, Thread nodes on ``thread_id``, while generic nodes
+    fall back to ``source_id``. All property values are passed as Cypher
+    parameters (no f-string interpolation of values).
+    """
     subject_label = _validate_cypher_identifier(hint.subject_label, "hint subject_label")
     object_label = _validate_cypher_identifier(hint.object_label, "hint object_label")
     predicate = hint.predicate.replace(" ", "_").upper()
     _validate_cypher_identifier(predicate, "hint predicate")
 
-    # Ensure subject node exists
-    tx.run(
-        f"MERGE (s:{subject_label} {{source_id: $sid}})",
-        sid=hint.subject_id,
+    subj_merge_key = _validate_cypher_identifier(
+        hint.subject_merge_key, "hint subject_merge_key"
     )
-    # Ensure object node exists with its properties
+    obj_merge_key = _validate_cypher_identifier(
+        hint.object_merge_key, "hint object_merge_key"
+    )
+
+    # --- Subject node ---
+    subj_props = {"source_id": hint.subject_id, **hint.subject_props}
+    for k in subj_props:
+        _validate_cypher_identifier(k, "hint subject_props key")
+    # Determine merge value: use subject_props if the key exists there,
+    # otherwise fall back to source_id (the default merge key).
+    subj_merge_val = subj_props.get(subj_merge_key, hint.subject_id)
+    subj_set_parts = ", ".join(f"s.{k} = $s_{k}" for k in subj_props)
+    subj_params = {f"s_{k}": v for k, v in subj_props.items()}
+    subj_params["s_merge"] = subj_merge_val
+    tx.run(
+        f"MERGE (s:{subject_label} {{{subj_merge_key}: $s_merge}}) "
+        f"SET {subj_set_parts}",
+        **subj_params,
+    )
+
+    # --- Object node ---
     obj_props = {"source_id": hint.object_id, **hint.object_props}
     for k in obj_props:
         _validate_cypher_identifier(k, "hint object_props key")
-    set_parts = ", ".join(f"o.{k} = ${k}" for k in obj_props)
+    obj_merge_val = obj_props.get(obj_merge_key, hint.object_id)
+    obj_set_parts = ", ".join(f"o.{k} = $o_{k}" for k in obj_props)
+    obj_params = {f"o_{k}": v for k, v in obj_props.items()}
+    obj_params["o_merge"] = obj_merge_val
     tx.run(
-        f"MERGE (o:{object_label} {{source_id: $oid}}) SET {set_parts}",
-        oid=hint.object_id,
-        **obj_props,
+        f"MERGE (o:{object_label} {{{obj_merge_key}: $o_merge}}) "
+        f"SET {obj_set_parts}",
+        **obj_params,
     )
-    # Create the relationship
+
+    # --- Relationship edge ---
     tx.run(
-        f"""
-        MATCH (s:{subject_label} {{source_id: $sid}})
-        MATCH (o:{object_label} {{source_id: $oid}})
-        MERGE (s)-[:{predicate}]->(o)
-        """,
-        sid=hint.subject_id,
-        oid=hint.object_id,
+        f"MATCH (s:{subject_label} {{{subj_merge_key}: $s_merge}}) "
+        f"MATCH (o:{object_label} {{{obj_merge_key}: $o_merge}}) "
+        f"MERGE (s)-[:{predicate}]->(o)",
+        s_merge=subj_merge_val,
+        o_merge=obj_merge_val,
     )
 
 

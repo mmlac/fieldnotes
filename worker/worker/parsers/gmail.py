@@ -99,7 +99,8 @@ class GmailParser(BaseParser):
                     predicate="SENT",
                     object_id=source_id,
                     object_label="Email",
-                    object_props={"email": sender_addr},
+                    subject_props={"email": sender_addr},
+                    subject_merge_key="email",
                     confidence=1.0,
                 )
             )
@@ -117,6 +118,7 @@ class GmailParser(BaseParser):
                     object_id=f"person:{recip_addr}",
                     object_label="Person",
                     object_props={"email": recip_addr},
+                    object_merge_key="email",
                     confidence=1.0,
                 )
             )
@@ -130,6 +132,8 @@ class GmailParser(BaseParser):
                     predicate="PART_OF",
                     object_id=f"gmail-thread:{thread_id}",
                     object_label="Thread",
+                    object_props={"thread_id": thread_id, "subject": subject},
+                    object_merge_key="thread_id",
                     confidence=1.0,
                 )
             )
