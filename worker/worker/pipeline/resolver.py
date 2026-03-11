@@ -27,6 +27,10 @@ from worker.models.resolver import ModelRegistry, ResolvedModel
 logger = logging.getLogger(__name__)
 
 FUZZY_THRESHOLD = 88
+FUZZY_THRESHOLD_SHORT = 100  # exact match for names < 4 chars
+FUZZY_THRESHOLD_MEDIUM = 95  # stricter threshold for names 4-5 chars
+SHORT_NAME_LIMIT = 4
+MEDIUM_NAME_LIMIT = 6
 COSINE_THRESHOLD = 0.92
 ANCHOR_CONFIDENCE = 0.95
 EMBED_ROLE = "embed"
@@ -167,6 +171,25 @@ def resolve_entities_from_registry(
     return resolve_entities(extracted, existing, embed_model)
 
 
+def _fuzzy_threshold_for_length(name: str) -> int:
+    """Return the appropriate fuzzy threshold based on entity name length.
+
+    Short names are highly susceptible to false positive merges because a
+    single character difference represents a large fraction of the name.
+    E.g., "AWS" vs "AMS" scores ~89 with token_sort_ratio but are distinct.
+
+    - < 4 chars: require exact match (threshold 100)
+    - 4-5 chars: stricter threshold (95)
+    - >= 6 chars: standard threshold (88)
+    """
+    length = len(name.strip())
+    if length < SHORT_NAME_LIMIT:
+        return FUZZY_THRESHOLD_SHORT
+    if length < MEDIUM_NAME_LIMIT:
+        return FUZZY_THRESHOLD_MEDIUM
+    return FUZZY_THRESHOLD
+
+
 def _fuzzy_match(
     entity: dict[str, Any],
     existing: list[dict[str, Any]],
@@ -179,8 +202,12 @@ def _fuzzy_match(
 
     Uses rapidfuzz.process.extractOne for C-optimized matching with
     score_cutoff early termination instead of manual O(N) iteration.
+
+    The score_cutoff is adjusted based on entity name length to prevent
+    false positive merges on short names (< 5 chars).
     """
     name_lower = entity["name"].lower()
+    threshold = _fuzzy_threshold_for_length(entity["name"])
 
     # Check anchors first — prefer merging into them
     if anchors:
@@ -189,7 +216,7 @@ def _fuzzy_match(
             name_lower,
             anchor_names_lower,
             scorer=fuzz.token_sort_ratio,
-            score_cutoff=FUZZY_THRESHOLD,
+            score_cutoff=threshold,
         )
         if result is not None:
             _, _, idx = result
@@ -211,7 +238,7 @@ def _fuzzy_match(
             name_lower,
             existing_names_lower,
             scorer=fuzz.token_sort_ratio,
-            score_cutoff=FUZZY_THRESHOLD,
+            score_cutoff=threshold,
         )
         if result is not None:
             _, _, idx = result

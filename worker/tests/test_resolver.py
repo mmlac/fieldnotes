@@ -16,10 +16,13 @@ from worker.pipeline.resolver import (
     ANCHOR_CONFIDENCE,
     COSINE_THRESHOLD,
     FUZZY_THRESHOLD,
+    FUZZY_THRESHOLD_MEDIUM,
+    FUZZY_THRESHOLD_SHORT,
     ResolutionResult,
     ResolvedEntity,
     _cosine_similarity,
     _fuzzy_match,
+    _fuzzy_threshold_for_length,
     resolve_entities,
 )
 
@@ -158,6 +161,79 @@ class TestFuzzyMatch:
         match = _fuzzy_match(entity, existing, anchors)
         assert match is not None
         assert match.merged_into == "Tensorflow"
+
+    def test_short_name_no_false_positive(self) -> None:
+        """Short names like 'AWS' vs 'AMS' must not merge despite high fuzzy score."""
+        entity = _entity("AWS", "Organization")
+        existing = [_entity("AMS", "Organization")]
+        anchors: list[dict] = []
+
+        match = _fuzzy_match(entity, existing, anchors)
+        assert match is None
+
+    def test_short_name_exact_match_still_works(self) -> None:
+        """Short names that are identical (case-insensitive) should still fuzzy-match."""
+        entity = _entity("AWS", "Organization")
+        existing = [_entity("aws", "Organization")]
+        anchors: list[dict] = []
+
+        # token_sort_ratio("aws", "aws") == 100, passes threshold 100
+        match = _fuzzy_match(entity, existing, anchors)
+        assert match is not None
+        assert match.merged_into == "aws"
+
+    def test_medium_name_stricter_threshold(self) -> None:
+        """Names 4-5 chars use stricter threshold (95), preventing near-misses."""
+        entity = _entity("NATS", "Technology")
+        existing = [_entity("NATO", "Organization")]
+        anchors: list[dict] = []
+
+        match = _fuzzy_match(entity, existing, anchors)
+        assert match is None
+
+    def test_medium_name_high_similarity_merges(self) -> None:
+        """Names 4-5 chars with very high similarity (>= 95) should still merge."""
+        entity = _entity("Node", "Technology")
+        existing = [_entity("node", "Technology")]
+        anchors: list[dict] = []
+
+        match = _fuzzy_match(entity, existing, anchors)
+        assert match is not None
+
+    def test_long_name_uses_standard_threshold(self) -> None:
+        """Names >= 6 chars use the standard 88 threshold."""
+        entity = _entity("Javascript", "Technology")
+        existing = [_entity("JavaScript", "Technology")]
+        anchors: list[dict] = []
+
+        match = _fuzzy_match(entity, existing, anchors)
+        assert match is not None
+        assert match.merged_into == "JavaScript"
+
+
+# ------------------------------------------------------------------
+# _fuzzy_threshold_for_length
+# ------------------------------------------------------------------
+
+
+class TestFuzzyThresholdForLength:
+    def test_very_short_name(self) -> None:
+        assert _fuzzy_threshold_for_length("AI") == FUZZY_THRESHOLD_SHORT
+
+    def test_three_char_name(self) -> None:
+        assert _fuzzy_threshold_for_length("AWS") == FUZZY_THRESHOLD_SHORT
+
+    def test_four_char_name(self) -> None:
+        assert _fuzzy_threshold_for_length("NATS") == FUZZY_THRESHOLD_MEDIUM
+
+    def test_five_char_name(self) -> None:
+        assert _fuzzy_threshold_for_length("React") == FUZZY_THRESHOLD_MEDIUM
+
+    def test_six_char_name(self) -> None:
+        assert _fuzzy_threshold_for_length("Python") == FUZZY_THRESHOLD
+
+    def test_long_name(self) -> None:
+        assert _fuzzy_threshold_for_length("JavaScript") == FUZZY_THRESHOLD
 
 
 # ------------------------------------------------------------------
