@@ -243,6 +243,54 @@ class TestChunkNodeId:
 
 
 # ------------------------------------------------------------------
+# Writer.fetch_existing_entities
+# ------------------------------------------------------------------
+
+
+class TestFetchExistingEntities:
+    def test_returns_entity_dicts(self, writer, mock_neo4j, mock_qdrant):
+        """Should query Entity nodes and return list of dicts."""
+        record1 = {"name": "Alice", "type": "Person", "confidence": 0.95}
+        record2 = {"name": "Neo4j", "type": "Technology", "confidence": 0.8}
+
+        session = MagicMock()
+        mock_neo4j.session.return_value.__enter__ = MagicMock(return_value=session)
+        mock_neo4j.session.return_value.__exit__ = MagicMock(return_value=False)
+        session.run.return_value = [record1, record2]
+
+        result = writer.fetch_existing_entities()
+
+        assert len(result) == 2
+        assert result[0] == {"name": "Alice", "type": "Person", "confidence": 0.95}
+        assert result[1] == {"name": "Neo4j", "type": "Technology", "confidence": 0.8}
+
+    def test_returns_empty_when_no_entities(self, writer, mock_neo4j, mock_qdrant):
+        """Should return empty list when no Entity nodes exist."""
+        session = MagicMock()
+        mock_neo4j.session.return_value.__enter__ = MagicMock(return_value=session)
+        mock_neo4j.session.return_value.__exit__ = MagicMock(return_value=False)
+        session.run.return_value = []
+
+        result = writer.fetch_existing_entities()
+
+        assert result == []
+
+    def test_defaults_for_null_fields(self, writer, mock_neo4j, mock_qdrant):
+        """Should use defaults when type or confidence is None."""
+        record = {"name": "Unknown", "type": None, "confidence": None}
+
+        session = MagicMock()
+        mock_neo4j.session.return_value.__enter__ = MagicMock(return_value=session)
+        mock_neo4j.session.return_value.__exit__ = MagicMock(return_value=False)
+        session.run.return_value = [record]
+
+        result = writer.fetch_existing_entities()
+
+        assert result[0]["type"] == "Concept"
+        assert result[0]["confidence"] == 0.75
+
+
+# ------------------------------------------------------------------
 # Writer.write — create/modify
 # ------------------------------------------------------------------
 

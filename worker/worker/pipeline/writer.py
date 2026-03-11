@@ -133,6 +133,26 @@ class Writer:
     # Public API
     # ------------------------------------------------------------------
 
+    def fetch_existing_entities(self) -> list[dict[str, Any]]:
+        """Query Neo4j for all existing Entity nodes.
+
+        Returns a list of dicts with 'name', 'type', and 'confidence' keys,
+        suitable for passing to the entity resolver.
+        """
+        with self._neo4j_driver.session() as session:
+            result = session.run(
+                "MATCH (e:Entity) RETURN e.name AS name, e.type AS type, "
+                "e.confidence AS confidence"
+            )
+            return [
+                {
+                    "name": record["name"],
+                    "type": record["type"] or "Concept",
+                    "confidence": record["confidence"] or 0.75,
+                }
+                for record in result
+            ]
+
     def write(self, unit: WriteUnit) -> None:
         """Write a single processed document to both stores.
 

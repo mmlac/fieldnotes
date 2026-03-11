@@ -113,10 +113,10 @@ class Pipeline:
             all_entities.extend(result.entities)
             all_triples.extend(result.triples)
 
-        # 4. Resolve entities against existing (empty list for now —
-        #    the writer upserts, so first-time entities are just created)
+        # 4. Resolve entities against existing entities in Neo4j
+        existing = self._writer.fetch_existing_entities()
         resolved = resolve_entities_from_registry(
-            all_entities, [], self._registry
+            all_entities, existing, self._registry
         )
 
         # Build final entity list from resolved results

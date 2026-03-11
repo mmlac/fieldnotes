@@ -41,6 +41,7 @@ def _make_pipeline() -> tuple[Pipeline, MagicMock, MagicMock]:
     """Create a Pipeline with mocked registry and writer."""
     registry = MagicMock()
     writer = MagicMock(spec=Writer)
+    writer.fetch_existing_entities.return_value = []
     pipeline = Pipeline(registry=registry, writer=writer)
     return pipeline, registry, writer
 
@@ -179,6 +180,44 @@ class TestTextPipeline:
         writer.write.assert_called_once()
         unit = writer.write.call_args[0][0]
         assert unit.chunks == []
+
+    @patch("worker.pipeline.resolve_entities_from_registry")
+    @patch("worker.pipeline.extract_chunks")
+    @patch("worker.pipeline.embed_chunks")
+    @patch("worker.pipeline.chunk_text")
+    def test_existing_entities_passed_to_resolver(
+        self, mock_chunk, mock_embed, mock_extract, mock_resolve
+    ):
+        """Existing entities from Neo4j should be forwarded to the resolver."""
+        pipeline, registry, writer = _make_pipeline()
+        doc = _doc()
+
+        existing = [{"name": "Alice", "type": "Person", "confidence": 0.95}]
+        writer.fetch_existing_entities.return_value = existing
+
+        chunks = [Chunk(text="Hello Alice.", index=0)]
+        mock_chunk.return_value = chunks
+        mock_embed.return_value = [("Hello Alice.", [0.1, 0.2, 0.3])]
+        mock_extract.return_value = [
+            ExtractionResult(
+                entities=[{"name": "alice", "type": "Person", "confidence": 0.8}],
+                triples=[],
+            )
+        ]
+        mock_resolve.return_value = ResolutionResult(
+            entities=[
+                ResolvedEntity(
+                    name="Alice", type="Person", confidence=0.95,
+                    merged_into="Alice",
+                )
+            ]
+        )
+
+        pipeline.process(doc)
+
+        # The resolver should receive the existing entities from Neo4j
+        call_args = mock_resolve.call_args[0]
+        assert call_args[1] is existing
 
     @patch("worker.pipeline.resolve_entities_from_registry")
     @patch("worker.pipeline.extract_chunks")
