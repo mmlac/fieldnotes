@@ -84,14 +84,7 @@ class Pipeline:
         # Image documents: route to vision queue if available
         if parsed_doc.image_bytes and not parsed_doc.text:
             if self._vision_queue is not None:
-                import asyncio
-
-                try:
-                    loop = asyncio.get_running_loop()
-                    loop.create_task(self._vision_queue.submit(parsed_doc))
-                except RuntimeError:
-                    # No running event loop — run synchronously
-                    asyncio.run(self._vision_queue.submit(parsed_doc))
+                _run_coro_sync(self._vision_queue.submit(parsed_doc))
             else:
                 logger.debug(
                     "Skipping image-only document %s (vision queue not configured)",
@@ -160,6 +153,12 @@ class Pipeline:
         # 2. Embed
         embedded = embed_chunks(chunk_texts, self._registry)
         vectors = [vec for _, vec in embedded]
+
+        if len(vectors) != len(chunks):
+            raise RuntimeError(
+                f"Embedding returned {len(vectors)} vectors for {len(chunks)} chunks "
+                f"(doc {doc.source_id}) — refusing to proceed with mismatched data"
+            )
 
         # 3. Extract entities and triples
         extraction_results = extract_chunks(chunks, self._registry)
@@ -249,6 +248,12 @@ class Pipeline:
             embedded = embed_chunks([chunk.text], self._registry)
             vectors = [vec for _, vec in embedded]
 
+            if len(vectors) != len(chunks):
+                raise RuntimeError(
+                    f"Embedding returned {len(vectors)} vectors for {len(chunks)} "
+                    f"chunks (vision doc {result.source_id})"
+                )
+
         # Resolve vision entities against existing graph
         depicts_entities: list[dict[str, Any]] = []
         if result.entities:
@@ -287,6 +292,28 @@ class Pipeline:
             len(chunks),
             len(depicts_entities),
         )
+
+
+def _run_coro_sync(coro: Any) -> None:
+    """Run a coroutine from synchronous code, blocking until complete.
+
+    If no event loop is running, uses ``asyncio.run()``.  If called from a
+    thread that already has a running loop (e.g. inside an async web server),
+    dispatches to a temporary worker thread to avoid deadlocking the loop.
+    Exceptions always propagate to the caller.
+    """
+    import asyncio
+    import concurrent.futures
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        # No running event loop — safe to use asyncio.run()
+        asyncio.run(coro)
+    else:
+        # Running event loop — submit from a worker thread to avoid deadlock
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            pool.submit(asyncio.run, coro).result()
 
 
 def _resolved_to_entity_dicts(resolved: ResolutionResult) -> list[dict[str, Any]]:
