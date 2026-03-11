@@ -6,14 +6,20 @@ notes and produces ParsedDocuments with GraphHints for the knowledge graph.
 
 from __future__ import annotations
 
+import logging
 import re
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 import frontmatter
 
 from .base import BaseParser, GraphHint, ParsedDocument
 from .registry import register
+
+logger = logging.getLogger(__name__)
+
+# Max image size to load into memory (50 MiB) — prevents OOM on huge files.
+_MAX_IMAGE_BYTES = 50 * 1024 * 1024
 
 # [[target]] or [[target|alias]]  — but NOT ![[embed]]
 _WIKILINK_RE = re.compile(r"(?<!\!)\[\[([^\]|]+)(?:\|[^\]]+)?\]\]")
@@ -27,6 +33,28 @@ _TAG_RE = re.compile(r"(?:^|\s)#([\w][\w/\-]*)", re.MULTILINE)
 # Patterns for stripping code before tag extraction
 _FENCED_CODE_RE = re.compile(r"^(`{3,}|~{3,}).*?\n[\s\S]*?\n\1\s*$", re.MULTILINE)
 _INLINE_CODE_RE = re.compile(r"`[^`]+`")
+
+
+def _read_image_bytes(path: Path) -> bytes | None:
+    """Read image bytes from *path*, returning ``None`` on failure.
+
+    Skips files that exceed ``_MAX_IMAGE_BYTES`` to prevent OOM.
+    """
+    try:
+        size = path.stat().st_size
+        if size > _MAX_IMAGE_BYTES:
+            logger.warning(
+                "Skipping image %s — exceeds max size (%d > %d bytes)",
+                path, size, _MAX_IMAGE_BYTES,
+            )
+            return None
+        return path.read_bytes()
+    except FileNotFoundError:
+        logger.debug("Embedded image not found on disk: %s", path)
+        return None
+    except OSError as exc:
+        logger.warning("Failed to read image %s: %s", path, exc)
+        return None
 
 
 @register
@@ -150,6 +178,7 @@ class ObsidianParser(BaseParser):
 
         # --- Handle ![[image.png]] embeds → separate image ParsedDocuments ----
         vault_root = meta.get("vault_root", "")
+        vault_path = meta.get("vault_path", "")
         for embed_path in _EMBED_RE.findall(body):
             # Build a source_id for the image relative to the vault
             if vault_root:
@@ -168,6 +197,12 @@ class ObsidianParser(BaseParser):
                 ".bmp": "image/bmp",
             }
 
+            # Load image bytes from disk when vault_path is available
+            image_bytes: bytes | None = None
+            if vault_path:
+                image_file = Path(vault_path) / embed_path
+                image_bytes = _read_image_bytes(image_file)
+
             docs.append(
                 ParsedDocument(
                     source_type=self.source_type,
@@ -177,6 +212,7 @@ class ObsidianParser(BaseParser):
                     mime_type=mime_map.get(suffix, "application/octet-stream"),
                     node_label="File",
                     node_props={"embedded_in": source_id},
+                    image_bytes=image_bytes,
                     source_metadata={"embed_path": embed_path, **meta},
                 )
             )

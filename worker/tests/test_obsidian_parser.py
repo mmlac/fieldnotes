@@ -1,5 +1,7 @@
 """Tests for the Obsidian parser."""
 
+from pathlib import Path
+
 from worker.parsers.base import GraphHint, ParsedDocument
 from worker.parsers.obsidian import ObsidianParser
 
@@ -94,6 +96,44 @@ class TestObsidianParser:
         docs = self.parser.parse(_make_event(note, meta={"vault_root": "vault"}))
         img = [d for d in docs if d.mime_type != "text/plain"][0]
         assert img.source_id == "vault/pic.png"
+
+    def test_image_bytes_loaded_from_disk(self, tmp_path: Path):
+        """When vault_path is set, image_bytes should be read from disk."""
+        img_data = b"\x89PNG\r\n\x1a\nfake"
+        (tmp_path / "photo.png").write_bytes(img_data)
+
+        note = "---\n---\n![[photo.png]]"
+        event = _make_event(note, meta={"vault_path": str(tmp_path)})
+        docs = self.parser.parse(event)
+        img = [d for d in docs if d.mime_type != "text/plain"][0]
+        assert img.image_bytes == img_data
+
+    def test_image_bytes_none_when_file_missing(self):
+        """Missing image file should result in image_bytes=None, not an error."""
+        note = "---\n---\n![[missing.png]]"
+        event = _make_event(note, meta={"vault_path": "/nonexistent/vault"})
+        docs = self.parser.parse(event)
+        img = [d for d in docs if d.mime_type != "text/plain"][0]
+        assert img.image_bytes is None
+
+    def test_image_bytes_none_without_vault_path(self):
+        """Without vault_path in meta, image_bytes should remain None."""
+        note = "---\n---\n![[photo.png]]"
+        docs = self.parser.parse(_make_event(note))
+        img = [d for d in docs if d.mime_type != "text/plain"][0]
+        assert img.image_bytes is None
+
+    def test_image_bytes_nested_path(self, tmp_path: Path):
+        """Embedded images in subdirectories should be read correctly."""
+        (tmp_path / "attachments").mkdir()
+        img_data = b"\xff\xd8\xff\xe0fake-jpeg"
+        (tmp_path / "attachments" / "pic.jpg").write_bytes(img_data)
+
+        note = "---\n---\n![[attachments/pic.jpg]]"
+        event = _make_event(note, meta={"vault_path": str(tmp_path)})
+        docs = self.parser.parse(event)
+        img = [d for d in docs if d.mime_type != "text/plain"][0]
+        assert img.image_bytes == img_data
 
     def test_embed_not_wikilink(self):
         """![[image.png]] should NOT produce a LINKS_TO hint."""
