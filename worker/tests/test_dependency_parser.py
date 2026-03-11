@@ -412,6 +412,28 @@ class TestMalformedManifests:
         deps = _dep_hints(docs[0].graph_hints)
         assert deps == []
 
+    def test_billion_laughs_xml_rejected(self) -> None:
+        """Billion laughs (entity expansion) attack should be safely rejected."""
+        evil_xml = """\
+<?xml version="1.0"?>
+<!DOCTYPE lolz [
+  <!ENTITY lol "lol">
+  <!ENTITY lol2 "&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;&lol;">
+  <!ENTITY lol3 "&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;&lol2;">
+  <!ENTITY lol4 "&lol3;&lol3;&lol3;&lol3;&lol3;&lol3;&lol3;&lol3;&lol3;&lol3;">
+]>
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <PackageReference Include="Evil" Version="&lol4;" />
+  </ItemGroup>
+</Project>
+"""
+        parser = RepositoryParser()
+        docs = parser.parse(_manifest_event("App.csproj", evil_xml))
+        assert len(docs) == 1
+        deps = _dep_hints(docs[0].graph_hints)
+        assert deps == []
+
     def test_empty_manifest(self) -> None:
         """Empty text should not crash."""
         parser = RepositoryParser()

@@ -17,7 +17,7 @@ import json
 import logging
 import re
 import tomllib
-import xml.etree.ElementTree as ET
+import defusedxml.ElementTree as ET
 from typing import Any
 
 from .base import BaseParser, GraphHint, ParsedDocument
@@ -488,11 +488,19 @@ def _parse_go_mod(
 
 
 def _parse_dotnet_xml(text: str) -> ET.Element | None:
-    """Parse XML text, returning root element or None on malformed input."""
+    """Parse XML text safely, returning root element or None on malformed input.
+
+    Uses defusedxml to reject DTD definitions and entity expansion (billion laughs).
+    """
     try:
         return ET.fromstring(text)
     except ET.ParseError:
         logger.warning("Malformed XML in .NET project file, skipping")
+        return None
+    except Exception:
+        # defusedxml raises DTDForbidden / EntitiesForbidden / ExternalReferenceForbidden
+        # for malicious XML payloads (billion laughs, XXE, etc.)
+        logger.warning("Rejected unsafe XML in .NET project file (DTD/entity attack), skipping")
         return None
 
 
