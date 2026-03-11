@@ -144,9 +144,8 @@ class TestAnthropicComplete:
         assert resp.text == "Let me search for that."
         assert resp.tool_calls is not None
         assert len(resp.tool_calls) == 1
-        assert resp.tool_calls[0]["id"] == "toolu_123"
-        assert resp.tool_calls[0]["name"] == "search"
-        assert resp.tool_calls[0]["input"] == {"query": "test"}
+        assert resp.tool_calls[0]["function"]["name"] == "search"
+        assert resp.tool_calls[0]["function"]["arguments"] == {"query": "test"}
 
     def test_tools_passed_in_kwargs(self, provider: AnthropicProvider) -> None:
         provider._client.messages.create.return_value = _mock_response(
@@ -163,6 +162,40 @@ class TestAnthropicComplete:
 
         call_kwargs = provider._client.messages.create.call_args.kwargs
         assert call_kwargs["tools"] == tools
+
+    def test_openai_format_tools_converted(self, provider: AnthropicProvider) -> None:
+        """Tools in OpenAI format are converted to Anthropic format before API call."""
+        provider._client.messages.create.return_value = _mock_response(
+            content=[_text_block("ok")],
+        )
+
+        openai_tools = [{
+            "type": "function",
+            "function": {
+                "name": "extract",
+                "description": "Extract entities",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"text": {"type": "string"}},
+                    "required": ["text"],
+                },
+            },
+        }]
+        req = CompletionRequest(
+            system="sys",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=openai_tools,
+        )
+        provider.complete("m", req)
+
+        call_kwargs = provider._client.messages.create.call_args.kwargs
+        converted = call_kwargs["tools"]
+        assert len(converted) == 1
+        assert converted[0]["name"] == "extract"
+        assert converted[0]["description"] == "Extract entities"
+        assert converted[0]["input_schema"]["type"] == "object"
+        assert "function" not in converted[0]
+        assert "type" not in converted[0]
 
     def test_no_tools_key_when_none(self, provider: AnthropicProvider) -> None:
         provider._client.messages.create.return_value = _mock_response(
@@ -212,6 +245,39 @@ class TestAnthropicComplete:
         from worker.models.base import EmbedRequest
         with pytest.raises(NotImplementedError, match="anthropic does not support embedding"):
             provider.embed("m", EmbedRequest(texts=["test"]))
+
+
+class TestConvertTools:
+    def test_converts_openai_format(self) -> None:
+        tools = [{
+            "type": "function",
+            "function": {
+                "name": "my_tool",
+                "description": "Does stuff",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }]
+        result = AnthropicProvider._convert_tools(tools)
+        assert result == [{
+            "name": "my_tool",
+            "description": "Does stuff",
+            "input_schema": {"type": "object", "properties": {}},
+        }]
+
+    def test_passes_through_anthropic_format(self) -> None:
+        tools = [{"name": "foo", "description": "Bar", "input_schema": {"type": "object"}}]
+        result = AnthropicProvider._convert_tools(tools)
+        assert result == tools
+
+    def test_handles_missing_description(self) -> None:
+        tools = [{"type": "function", "function": {"name": "t", "parameters": {"type": "object"}}}]
+        result = AnthropicProvider._convert_tools(tools)
+        assert result[0]["description"] == ""
+
+    def test_handles_missing_parameters(self) -> None:
+        tools = [{"type": "function", "function": {"name": "t", "description": "d"}}]
+        result = AnthropicProvider._convert_tools(tools)
+        assert result[0]["input_schema"] == {"type": "object", "properties": {}}
 
 
 class TestAnthropicProviderRegistration:

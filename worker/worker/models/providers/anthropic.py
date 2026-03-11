@@ -60,6 +60,27 @@ class AnthropicProvider(ModelProvider):
             raise RuntimeError("AnthropicProvider.configure() must be called before use")
         return self._client
 
+    @staticmethod
+    def _convert_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Convert OpenAI-format tool definitions to Anthropic format.
+
+        OpenAI format: {"type": "function", "function": {"name": ..., "description": ..., "parameters": ...}}
+        Anthropic format: {"name": ..., "description": ..., "input_schema": ...}
+        """
+        converted = []
+        for tool in tools:
+            if "function" in tool:
+                func = tool["function"]
+                converted.append({
+                    "name": func["name"],
+                    "description": func.get("description", ""),
+                    "input_schema": func.get("parameters", {"type": "object", "properties": {}}),
+                })
+            else:
+                # Already in Anthropic format or unknown — pass through
+                converted.append(tool)
+        return converted
+
     @_anthropic_retry
     def complete(self, model: str, req: CompletionRequest) -> CompletionResponse:
         client = self._get_client()
@@ -73,14 +94,16 @@ class AnthropicProvider(ModelProvider):
         if req.system:
             kwargs["system"] = req.system
         if req.tools:
-            kwargs["tools"] = req.tools
+            kwargs["tools"] = self._convert_tools(req.tools)
 
         if req.timeout is not None:
             kwargs["timeout"] = req.timeout
 
         response = client.messages.create(**kwargs)
 
-        # Extract text and tool_calls from content blocks
+        # Extract text and tool_calls from content blocks.
+        # Normalise to OpenAI-style {"function": {"name": ..., "arguments": ...}}
+        # so downstream parsers work uniformly across providers.
         text_parts: list[str] = []
         tool_calls: list[dict[str, Any]] = []
         for block in response.content:
@@ -88,10 +111,10 @@ class AnthropicProvider(ModelProvider):
                 text_parts.append(block.text)
             elif block.type == "tool_use":
                 tool_calls.append({
-                    "id": block.id,
-                    "type": "tool_use",
-                    "name": block.name,
-                    "input": block.input,
+                    "function": {
+                        "name": block.name,
+                        "arguments": block.input,
+                    },
                 })
 
         usage = response.usage
