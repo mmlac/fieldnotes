@@ -133,7 +133,7 @@ class TestListTools:
     def test_list_tools_returns_all(self) -> None:
         cfg = _make_cfg()
         server = FieldnotesServer(cfg)
-        result = asyncio.get_event_loop().run_until_complete(server._list_tools())
+        result = asyncio.run(server._list_tools())
         assert result == TOOLS
         assert len(result) == 5
 
@@ -142,9 +142,7 @@ class TestCallToolErrors:
     def test_unknown_tool_returns_error(self) -> None:
         cfg = _make_cfg()
         server = FieldnotesServer(cfg)
-        result = asyncio.get_event_loop().run_until_complete(
-            server._call_tool("nonexistent", {})
-        )
+        result = asyncio.run(server._call_tool("nonexistent", {}))
         assert len(result) == 1
         assert "error" in result[0].text
         assert "Unknown tool" in result[0].text
