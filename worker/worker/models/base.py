@@ -11,6 +11,7 @@ class CompletionRequest:
     tools:       list[dict] | None = None   # for function calling / tool use
     max_tokens:  int = 1024
     temperature: float = 0.0            # 0.0 = deterministic; extraction always uses 0.0
+    timeout:     float | None = None    # per-request timeout in seconds; None = provider default
 
 
 @dataclass
@@ -26,6 +27,7 @@ class CompletionResponse:
 @dataclass
 class EmbedRequest:
     texts: list[str]
+    timeout: float | None = None        # per-request timeout in seconds; None = provider default
 
 
 @dataclass

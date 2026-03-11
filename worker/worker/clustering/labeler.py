@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 
 CLUSTER_LABEL_ROLE = "cluster_label"
 DEFAULT_TOP_K = 20
+LLM_TIMEOUT = 120.0  # seconds
 
 SYSTEM_PROMPT = """\
 You are a topic labeling system. Given a set of text chunks that belong to the \
@@ -175,6 +176,7 @@ def _call_labeling_model(
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": combined}],
         temperature=0.0,
+        timeout=LLM_TIMEOUT,
     )
 
     resp = model.complete(req)

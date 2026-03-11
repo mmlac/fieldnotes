@@ -142,7 +142,7 @@ class OllamaProvider(ModelProvider):
         resp = httpx.post(
             f"{self._base_url}/api/chat",
             json=payload,
-            timeout=self._completion_timeout,
+            timeout=req.timeout if req.timeout is not None else self._completion_timeout,
         )
         resp.raise_for_status()
         data = resp.json()
@@ -166,7 +166,7 @@ class OllamaProvider(ModelProvider):
             resp = httpx.post(
                 f"{self._base_url}/api/embeddings",
                 json={"model": model, "prompt": text},
-                timeout=self._embed_timeout,
+                timeout=req.timeout if req.timeout is not None else self._embed_timeout,
             )
             resp.raise_for_status()
             data = resp.json()

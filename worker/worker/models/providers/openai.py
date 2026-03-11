@@ -78,7 +78,7 @@ class OpenAIProvider(ModelProvider):
             "messages": messages,
             "max_tokens": req.max_tokens,
             "temperature": req.temperature,
-            "timeout": self._completion_timeout,
+            "timeout": req.timeout if req.timeout is not None else self._completion_timeout,
         }
         if req.tools:
             kwargs["tools"] = req.tools
@@ -119,7 +119,7 @@ class OpenAIProvider(ModelProvider):
         response = client.embeddings.create(
             model=model,
             input=req.texts,
-            timeout=self._embed_timeout,
+            timeout=req.timeout if req.timeout is not None else self._embed_timeout,
         )
 
         vectors = [item.embedding for item in response.data]

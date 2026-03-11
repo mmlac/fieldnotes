@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 
 EXTRACT_ROLE = "extract"
 FALLBACK_ROLE = "extract_fallback"
+LLM_TIMEOUT = 120.0  # seconds
 
 SYSTEM_PROMPT = """\
 You are an entity and relationship extraction system. Given a text chunk, \
@@ -120,6 +121,7 @@ def extract_chunk(
         messages=[{"role": "user", "content": chunk.text}],
         tools=[EXTRACTION_TOOL],
         temperature=0.0,
+        timeout=LLM_TIMEOUT,
     )
 
     try:

@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 VISION_ROLE = "vision"
 
 ENTITY_CONFIDENCE = 0.80
+LLM_TIMEOUT = 120.0  # seconds
 
 SYSTEM_PROMPT = """\
 You are a vision analysis system. Given an image, extract:
@@ -97,6 +98,7 @@ def extract_image(
             }
         ],
         temperature=0.0,
+        timeout=LLM_TIMEOUT,
     )
 
     try:

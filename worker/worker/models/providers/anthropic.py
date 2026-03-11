@@ -75,6 +75,9 @@ class AnthropicProvider(ModelProvider):
         if req.tools:
             kwargs["tools"] = req.tools
 
+        if req.timeout is not None:
+            kwargs["timeout"] = req.timeout
+
         response = client.messages.create(**kwargs)
 
         # Extract text and tool_calls from content blocks
