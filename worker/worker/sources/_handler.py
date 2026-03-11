@@ -52,6 +52,30 @@ def streaming_sha256(path: Path, max_size: int) -> tuple[str, int] | None:
     return h.hexdigest(), total
 
 
+def _read_file_atomic(path: Path, max_size: int) -> tuple[bytes, int] | None:
+    """Read file into memory in a single pass, enforcing *max_size*.
+
+    Returns ``(data, mtime_ns)`` or ``None`` if the file exceeds *max_size*.
+    The caller gets a consistent snapshot: hash and text are derived from
+    the same bytes, eliminating the TOCTOU race of separate reads.
+    """
+    fd = path.open("rb")
+    try:
+        data = fd.read(max_size + 1)
+    finally:
+        # Grab mtime from the same fd before closing to minimise window.
+        mtime_ns = path.stat().st_mtime_ns
+        fd.close()
+    if len(data) > max_size:
+        return None
+    return data, mtime_ns
+
+
+def _sha256_of(data: bytes) -> str:
+    """Return hex SHA-256 digest of an in-memory buffer."""
+    return hashlib.sha256(data).hexdigest()
+
+
 def guess_mime(path: str) -> str:
     """Return a basic MIME type based on file extension."""
     ext = Path(path).suffix.lower()
@@ -160,11 +184,7 @@ class BaseHandler(FileSystemEventHandler):
         p = Path(src_path)
         if op != "deleted" and p.is_file():
             try:
-                stat = p.stat()
-                ingest["source_modified_at"] = datetime.fromtimestamp(
-                    stat.st_mtime, tz=timezone.utc
-                ).isoformat()
-                result = streaming_sha256(p, self._max_file_size)
+                result = _read_file_atomic(p, self._max_file_size)
                 if result is None:
                     logger.warning(
                         "Skipping %s — exceeds max_file_size (%d bytes)",
@@ -172,18 +192,17 @@ class BaseHandler(FileSystemEventHandler):
                         self._max_file_size,
                     )
                     return None
-                digest, size = result
-                ingest["meta"]["sha256"] = digest
-                ingest["meta"]["size_bytes"] = size
+                data, mtime_ns = result
+                ingest["source_modified_at"] = datetime.fromtimestamp(
+                    mtime_ns / 1e9, tz=timezone.utc
+                ).isoformat()
+                ingest["meta"]["sha256"] = _sha256_of(data)
+                ingest["meta"]["size_bytes"] = len(data)
 
-                # Read text content for text MIME types so downstream
+                # Decode text content for text MIME types so downstream
                 # parsers (FileParser, ObsidianParser) receive the file body.
                 if ingest["mime_type"].startswith("text/"):
-                    try:
-                        ingest["text"] = p.read_text(encoding="utf-8", errors="replace")
-                    except OSError:
-                        logger.warning("Failed to read text content from %s", src_path)
-                        ingest["text"] = ""
+                    ingest["text"] = data.decode("utf-8", errors="replace")
             except OSError:
                 logger.warning("Failed to read %s, emitting event without content hash", src_path)
                 ingest["source_modified_at"] = now

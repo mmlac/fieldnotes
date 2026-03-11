@@ -318,7 +318,7 @@ class TestBuildEvent:
         h = _make_handler()
         ev = FileCreatedEvent(str(p))
         with patch(
-            "worker.sources._handler.streaming_sha256",
+            "worker.sources._handler._read_file_atomic",
             side_effect=OSError("disk error"),
         ):
             result = h._build_event(ev)
