@@ -4,17 +4,32 @@ Transforms IngestEvents from the RepositorySource into ParsedDocuments with
 GraphHints. File events produce Repository→File CONTAINS relationships.
 Commit events produce Commit nodes with Person→Commit AUTHORED,
 Commit→File MODIFIED, and Commit→Repository PART_OF relationships.
+
+For manifest files (Cargo.toml, pyproject.toml, package.json, go.mod), dependency
+sections are parsed and emitted as Repository → Package DEPENDS_ON GraphHints
+instead of free-text chunks.
 """
 
 from __future__ import annotations
 
+import json
 import logging
+import re
+import tomllib
 from typing import Any
 
 from .base import BaseParser, GraphHint, ParsedDocument
 from .registry import register
 
 logger = logging.getLogger(__name__)
+
+# Manifest filenames that trigger dependency extraction
+_MANIFEST_FILENAMES: set[str] = {
+    "Cargo.toml",
+    "pyproject.toml",
+    "package.json",
+    "go.mod",
+}
 
 
 @register
@@ -190,6 +205,32 @@ class RepositoryParser(BaseParser):
             ),
         ]
 
+        # Check if this is a manifest file → extract dependencies
+        filename = relative_path.rsplit("/", 1)[-1] if relative_path else ""
+        if filename in _MANIFEST_FILENAMES and text:
+            dep_hints = _extract_dependencies(
+                filename, text, repo_path, repo_name, remote_url
+            )
+            graph_hints.extend(dep_hints)
+            # Manifest files: emit graph hints only, no text chunking
+            return [
+                ParsedDocument(
+                    source_type=self.source_type,
+                    source_id=source_id,
+                    operation=operation,
+                    text="",
+                    mime_type=mime_type,
+                    node_label="File",
+                    node_props=node_props,
+                    graph_hints=graph_hints,
+                    source_metadata={
+                        "repo_name": repo_name,
+                        "repo_path": repo_path,
+                        "relative_path": relative_path,
+                    },
+                )
+            ]
+
         return [
             ParsedDocument(
                 source_type=self.source_type,
@@ -207,6 +248,219 @@ class RepositoryParser(BaseParser):
                 },
             )
         ]
+
+
+# ---------------------------------------------------------------------------
+# Dependency extraction helpers
+# ---------------------------------------------------------------------------
+
+
+def _extract_dependencies(
+    filename: str,
+    text: str,
+    repo_path: str,
+    repo_name: str,
+    remote_url: str | None,
+) -> list[GraphHint]:
+    """Dispatch to the right parser based on manifest filename."""
+    try:
+        if filename == "Cargo.toml":
+            return _parse_cargo_toml(text, repo_path, repo_name, remote_url)
+        if filename == "pyproject.toml":
+            return _parse_pyproject_toml(text, repo_path, repo_name, remote_url)
+        if filename == "package.json":
+            return _parse_package_json(text, repo_path, repo_name, remote_url)
+        if filename == "go.mod":
+            return _parse_go_mod(text, repo_path, repo_name, remote_url)
+    except Exception:
+        logger.exception("Failed to parse dependencies from %s in %s", filename, repo_name)
+    return []
+
+
+def _dep_hint(
+    repo_path: str,
+    repo_name: str,
+    remote_url: str | None,
+    package_name: str,
+    version_constraint: str,
+    dep_type: str,
+) -> GraphHint:
+    """Build a Repository → Package DEPENDS_ON GraphHint."""
+    return GraphHint(
+        subject_id=repo_path,
+        subject_label="Repository",
+        predicate="DEPENDS_ON",
+        object_id=f"pkg:{package_name}",
+        object_label="Package",
+        subject_props={
+            "name": repo_name,
+            "path": repo_path,
+            "remote_url": remote_url,
+        },
+        object_props={
+            "name": package_name,
+            "version_constraint": version_constraint,
+            "dependency_type": dep_type,
+        },
+        subject_merge_key="source_id",
+        object_merge_key="name",
+    )
+
+
+# -- Cargo.toml -------------------------------------------------------------
+
+
+def _parse_cargo_toml(
+    text: str, repo_path: str, repo_name: str, remote_url: str | None
+) -> list[GraphHint]:
+    data = tomllib.loads(text)
+    hints: list[GraphHint] = []
+
+    section_map = {
+        "dependencies": "runtime",
+        "dev-dependencies": "dev",
+        "build-dependencies": "build",
+    }
+    for section, dep_type in section_map.items():
+        deps = data.get(section, {})
+        for pkg, spec in deps.items():
+            version = _cargo_version(spec)
+            hints.append(
+                _dep_hint(repo_path, repo_name, remote_url, pkg, version, dep_type)
+            )
+    return hints
+
+
+def _cargo_version(spec: Any) -> str:
+    """Extract version string from Cargo dependency spec (string or table)."""
+    if isinstance(spec, str):
+        return spec
+    if isinstance(spec, dict):
+        return spec.get("version", "*")
+    return "*"
+
+
+# -- pyproject.toml ----------------------------------------------------------
+
+
+def _parse_pyproject_toml(
+    text: str, repo_path: str, repo_name: str, remote_url: str | None
+) -> list[GraphHint]:
+    data = tomllib.loads(text)
+    hints: list[GraphHint] = []
+
+    # [project.dependencies]
+    for req in data.get("project", {}).get("dependencies", []):
+        name, constraint = _parse_pep508(req)
+        hints.append(
+            _dep_hint(repo_path, repo_name, remote_url, name, constraint, "runtime")
+        )
+
+    # [project.optional-dependencies.*]
+    for group, reqs in (
+        data.get("project", {}).get("optional-dependencies", {}).items()
+    ):
+        for req in reqs:
+            name, constraint = _parse_pep508(req)
+            hints.append(
+                _dep_hint(repo_path, repo_name, remote_url, name, constraint, "dev")
+            )
+
+    # [tool.poetry.dependencies]
+    poetry_deps = data.get("tool", {}).get("poetry", {}).get("dependencies", {})
+    for pkg, spec in poetry_deps.items():
+        if pkg.lower() == "python":
+            continue
+        version = spec if isinstance(spec, str) else spec.get("version", "*") if isinstance(spec, dict) else "*"
+        hints.append(
+            _dep_hint(repo_path, repo_name, remote_url, pkg, version, "runtime")
+        )
+
+    return hints
+
+
+_PEP508_NAME_RE = re.compile(r"^([A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?)")
+
+
+def _parse_pep508(requirement: str) -> tuple[str, str]:
+    """Extract package name and version constraint from a PEP 508 string."""
+    requirement = requirement.strip()
+    m = _PEP508_NAME_RE.match(requirement)
+    if not m:
+        return requirement, "*"
+    name = m.group(1)
+    rest = requirement[m.end():].strip()
+    # Strip extras like [extra1,extra2]
+    if rest.startswith("["):
+        bracket_end = rest.find("]")
+        if bracket_end != -1:
+            rest = rest[bracket_end + 1:].strip()
+    # Strip environment markers after ;
+    if ";" in rest:
+        rest = rest[: rest.index(";")].strip()
+    return name, rest if rest else "*"
+
+
+# -- package.json ------------------------------------------------------------
+
+
+def _parse_package_json(
+    text: str, repo_path: str, repo_name: str, remote_url: str | None
+) -> list[GraphHint]:
+    data = json.loads(text)
+    hints: list[GraphHint] = []
+
+    section_map = {
+        "dependencies": "runtime",
+        "devDependencies": "dev",
+        "peerDependencies": "runtime",
+    }
+    for section, dep_type in section_map.items():
+        deps = data.get(section, {})
+        if not isinstance(deps, dict):
+            continue
+        for pkg, version in deps.items():
+            hints.append(
+                _dep_hint(
+                    repo_path, repo_name, remote_url, pkg,
+                    version if isinstance(version, str) else "*", dep_type,
+                )
+            )
+    return hints
+
+
+# -- go.mod ------------------------------------------------------------------
+
+_GO_REQUIRE_BLOCK_RE = re.compile(r"require\s*\((.*?)\)", re.DOTALL)
+_GO_REQUIRE_SINGLE_RE = re.compile(r"^require\s+([^\s(]\S*)\s+(\S+)", re.MULTILINE)
+_GO_REQUIRE_LINE_RE = re.compile(r"^\s*(\S+)\s+(\S+)", re.MULTILINE)
+
+
+def _parse_go_mod(
+    text: str, repo_path: str, repo_name: str, remote_url: str | None
+) -> list[GraphHint]:
+    hints: list[GraphHint] = []
+
+    # Multi-line require blocks
+    for block_match in _GO_REQUIRE_BLOCK_RE.finditer(text):
+        block = block_match.group(1)
+        for line_match in _GO_REQUIRE_LINE_RE.finditer(block):
+            module = line_match.group(1)
+            version = line_match.group(2)
+            if module.startswith("//"):
+                continue
+            hints.append(
+                _dep_hint(repo_path, repo_name, remote_url, module, version, "runtime")
+            )
+
+    # Single-line requires (e.g. "require github.com/foo/bar v1.0.0")
+    for m in _GO_REQUIRE_SINGLE_RE.finditer(text):
+        module, version = m.group(1), m.group(2)
+        hints.append(
+            _dep_hint(repo_path, repo_name, remote_url, module, version, "runtime")
+        )
+
+    return hints
 
 
 def _file_ext(path: str) -> str:
