@@ -15,6 +15,7 @@ import (
 
 	"github.com/bmatcuk/doublestar/v4"
 	"github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
 
 	"github.com/mmlac/fieldnotes/daemon/internal/sources"
@@ -222,8 +223,8 @@ func (s *RepoSource) scanRepo(ctx context.Context, repoPath string, events chan<
 	// Emit file events.
 	s.scanFiles(ctx, repo, repoPath, repoName, remoteURL, events)
 
-	// Emit commit events.
-	s.scanCommits(ctx, repo, repoPath, repoName, remoteURL, events)
+	// Emit commit events (only new commits since prevSHA).
+	s.scanCommits(ctx, repo, repoPath, repoName, remoteURL, prevSHA, events)
 
 	s.cursors[repoPath] = headSHA
 }
@@ -297,7 +298,8 @@ func (s *RepoSource) scanFiles(ctx context.Context, repo *git.Repository, repoPa
 }
 
 // scanCommits emits events for recent commits, up to maxCommits.
-func (s *RepoSource) scanCommits(ctx context.Context, repo *git.Repository, repoPath, repoName, remoteURL string, events chan<- sources.IngestEvent) {
+// When prevSHA is non-empty, only commits between prevSHA and HEAD are emitted.
+func (s *RepoSource) scanCommits(ctx context.Context, repo *git.Repository, repoPath, repoName, remoteURL, prevSHA string, events chan<- sources.IngestEvent) {
 	head, err := repo.Head()
 	if err != nil {
 		return
@@ -312,6 +314,12 @@ func (s *RepoSource) scanCommits(ctx context.Context, repo *git.Repository, repo
 		return
 	}
 
+	// If we have a previous cursor, parse it so we can stop there.
+	var stopHash plumbing.Hash
+	if prevSHA != "" {
+		stopHash = plumbing.NewHash(prevSHA)
+	}
+
 	count := 0
 	iter.ForEach(func(c *object.Commit) error {
 		if ctx.Err() != nil {
@@ -319,6 +327,10 @@ func (s *RepoSource) scanCommits(ctx context.Context, repo *git.Repository, repo
 		}
 		if count >= s.maxCommits {
 			return fmt.Errorf("stop") // break iteration
+		}
+		// Stop when we reach the previously seen commit.
+		if prevSHA != "" && c.Hash == stopHash {
+			return fmt.Errorf("stop") // already seen this commit and everything before it
 		}
 
 		changedFiles := commitChangedFiles(c)
