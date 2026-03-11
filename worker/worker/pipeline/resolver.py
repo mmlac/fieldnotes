@@ -14,9 +14,10 @@ LLM mentions preferentially merge into them.
 from __future__ import annotations
 
 import logging
-import math
 from dataclasses import dataclass, field
 from typing import Any
+
+import numpy as np
 
 from rapidfuzz import fuzz
 
@@ -251,15 +252,11 @@ def _resolve_by_embedding(
     unresolved_vecs = unresolved_resp.vectors
     existing_vecs = existing_resp.vectors
 
-    for i, entity in enumerate(unresolved):
-        best_sim = 0.0
-        best_idx = -1
+    sim_matrix = _batch_cosine_similarity(unresolved_vecs, existing_vecs)
 
-        for j in range(len(existing_vecs)):
-            sim = _cosine_similarity(unresolved_vecs[i], existing_vecs[j])
-            if sim > best_sim:
-                best_sim = sim
-                best_idx = j
+    for i, entity in enumerate(unresolved):
+        best_idx = int(np.argmax(sim_matrix[i]))
+        best_sim = float(sim_matrix[i, best_idx])
 
         if best_sim > COSINE_THRESHOLD and best_idx >= 0:
             target_name = existing_names[best_idx]
@@ -282,11 +279,30 @@ def _resolve_by_embedding(
             ))
 
 
+def _batch_cosine_similarity(
+    a: list[list[float]], b: list[list[float]]
+) -> np.ndarray:
+    """Compute cosine similarity matrix between two sets of vectors.
+
+    Returns an (n, m) matrix where entry [i, j] is the cosine similarity
+    between a[i] and b[j].  Uses numpy for vectorized computation.
+    """
+    mat_a = np.asarray(a, dtype=np.float64)
+    mat_b = np.asarray(b, dtype=np.float64)
+    norms_a = np.linalg.norm(mat_a, axis=1, keepdims=True)
+    norms_b = np.linalg.norm(mat_b, axis=1, keepdims=True)
+    # Replace zero norms with 1 to avoid division by zero (result will be 0).
+    norms_a = np.where(norms_a == 0, 1.0, norms_a)
+    norms_b = np.where(norms_b == 0, 1.0, norms_b)
+    return (mat_a / norms_a) @ (mat_b / norms_b).T
+
+
 def _cosine_similarity(a: list[float], b: list[float]) -> float:
     """Compute cosine similarity between two vectors."""
-    dot = sum(x * y for x, y in zip(a, b))
-    norm_a = math.sqrt(sum(x * x for x in a))
-    norm_b = math.sqrt(sum(x * x for x in b))
+    vec_a = np.asarray(a, dtype=np.float64)
+    vec_b = np.asarray(b, dtype=np.float64)
+    norm_a = np.linalg.norm(vec_a)
+    norm_b = np.linalg.norm(vec_b)
     if norm_a == 0.0 or norm_b == 0.0:
         return 0.0
-    return dot / (norm_a * norm_b)
+    return float(vec_a @ vec_b / (norm_a * norm_b))

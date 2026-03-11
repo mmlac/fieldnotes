@@ -19,6 +19,7 @@ dependencies = [
     "hdbscan>=0.8",
     "umap-learn>=0.5",
     "ollama>=0.4",
+    "numpy>=1.26",
     "pymupdf>=1.24",
     "tenacity>=8.0",
 ]
