@@ -158,15 +158,26 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     if args.command == "search":
+        if args.top_k < 1:
+            print("error: --top-k must be a positive integer", file=sys.stderr)
+            return 1
         query = " ".join(args.query)
-        return _run_search(
-            query,
-            config_path=args.config,
-            top_k=args.top_k,
-        )
+        try:
+            return _run_search(
+                query,
+                config_path=args.config,
+                top_k=args.top_k,
+            )
+        except Exception as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
 
     if args.command == "topics":
-        return _run_topics(args, config_path=args.config)
+        try:
+            return _run_topics(args, config_path=args.config)
+        except Exception as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
 
     return 0
 

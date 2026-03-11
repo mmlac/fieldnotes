@@ -310,10 +310,9 @@ class TestExtractChunks:
 
     def test_empty_chunks_returns_empty(self) -> None:
         registry = MagicMock()
-        registry.for_role.side_effect = KeyError("no role")
-        # extract_chunks calls for_role("extract") which will raise
-        with pytest.raises(KeyError):
-            extract_chunks([], registry)
+        result = extract_chunks([], registry)
+        assert result == []
+        registry.for_role.assert_not_called()
 
     def test_uses_fallback_when_configured(self) -> None:
         good_resp = _tool_call_response(

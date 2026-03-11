@@ -37,6 +37,63 @@ class TestParser:
     def test_no_command_returns_1(self) -> None:
         assert main([]) == 1
 
+    def test_topics_subcommand_parsed(self) -> None:
+        parser = _build_parser()
+        args = parser.parse_args(["topics", "list"])
+        assert args.command == "topics"
+        assert args.topics_command == "list"
+
+    def test_topics_show_with_name(self) -> None:
+        parser = _build_parser()
+        args = parser.parse_args(["topics", "show", "rust"])
+        assert args.topics_command == "show"
+        assert args.name == "rust"
+
+    def test_topics_json_flag(self) -> None:
+        parser = _build_parser()
+        args = parser.parse_args(["topics", "--json", "list"])
+        assert args.json_output is True
+
+
+class TestTopKValidation:
+    def test_zero_top_k_returns_error(
+        self,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        rc = main(["search", "-k", "0", "query"])
+        assert rc == 1
+        assert "--top-k must be a positive integer" in capsys.readouterr().err
+
+    def test_negative_top_k_returns_error(
+        self,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        rc = main(["search", "-k", "-5", "query"])
+        assert rc == 1
+        assert "--top-k must be a positive integer" in capsys.readouterr().err
+
+
+class TestExceptionHandling:
+    @patch("worker.cli.load_config", side_effect=FileNotFoundError("config.toml not found"))
+    def test_search_exception_caught(
+        self,
+        mock_load: MagicMock,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        rc = main(["search", "query"])
+        assert rc == 1
+        assert "config.toml not found" in capsys.readouterr().err
+
+    @patch("worker.cli.load_config", side_effect=RuntimeError("connection refused"))
+    def test_topics_exception_caught(
+        self,
+        mock_load: MagicMock,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        rc = main(["topics", "list"])
+        assert rc == 1
+        assert "connection refused" in capsys.readouterr().err
+
 
 # ------------------------------------------------------------------
 # Search integration (mocked backends)

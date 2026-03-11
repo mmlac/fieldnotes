@@ -160,6 +160,9 @@ def extract_chunks(
     list[ExtractionResult]
         One result per chunk, in the same order.
     """
+    if not chunks:
+        return []
+
     model = registry.for_role(EXTRACT_ROLE)
 
     fallback_model: ResolvedModel | None = None

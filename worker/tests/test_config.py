@@ -152,6 +152,48 @@ class TestParseSources:
         assert s.settings == {"root": "/home/user/notes", "extensions": [".md"]}
 
 
+class TestParseVision:
+    def test_defaults(self) -> None:
+        cfg = _parse({})
+        assert cfg.vision == VisionConfig()
+        assert cfg.vision.enabled is True
+        assert cfg.vision.concurrency == 2
+        assert cfg.vision.min_file_size_kb == 1
+        assert cfg.vision.max_file_size_mb == 20
+        assert cfg.vision.queue_size == 256
+        assert "icon" in cfg.vision.skip_patterns
+
+    def test_overrides_all_fields(self) -> None:
+        cfg = _parse({"vision": {
+            "enabled": False,
+            "concurrency": 8,
+            "min_file_size_kb": 5,
+            "max_file_size_mb": 50,
+            "skip_patterns": ["thumb", "banner"],
+            "queue_size": 128,
+        }})
+        assert cfg.vision.enabled is False
+        assert cfg.vision.concurrency == 8
+        assert cfg.vision.min_file_size_kb == 5
+        assert cfg.vision.max_file_size_mb == 50
+        assert cfg.vision.skip_patterns == ["thumb", "banner"]
+        assert cfg.vision.queue_size == 128
+
+    def test_partial_override_preserves_defaults(self) -> None:
+        cfg = _parse({"vision": {"concurrency": 4}})
+        assert cfg.vision.concurrency == 4
+        assert cfg.vision.enabled is True  # default preserved
+        assert cfg.vision.queue_size == 256  # default preserved
+
+    def test_min_file_size_kb_wrong_type(self) -> None:
+        with pytest.raises(TypeError, match=r"\[vision\] min_file_size_kb: expected int"):
+            _parse({"vision": {"min_file_size_kb": "small"}})
+
+    def test_max_file_size_mb_wrong_type(self) -> None:
+        with pytest.raises(TypeError, match=r"\[vision\] max_file_size_mb: expected int"):
+            _parse({"vision": {"max_file_size_mb": 10.5}})
+
+
 class TestParseClustering:
     def test_overrides(self) -> None:
         cfg = _parse({"clustering": {"enabled": False, "cron": "0 0 * * *"}})

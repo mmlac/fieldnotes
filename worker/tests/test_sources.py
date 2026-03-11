@@ -1,4 +1,8 @@
-"""Tests for Python source shims: base interface and file watcher."""
+"""Tests for Python source shims: base interface and file watcher.
+
+Uses event-driven synchronization (asyncio.wait_for on queue.get) instead
+of sleep-based polling to avoid timing flakiness.
+"""
 
 from __future__ import annotations
 
@@ -11,6 +15,47 @@ import pytest
 
 from worker.sources.base import PythonSource
 from worker.sources.files import DEFAULT_MAX_FILE_SIZE, FileSource, _streaming_sha256
+
+
+# ── Helpers ────────────────────────────────────────────────────────
+
+
+async def _collect_events(
+    q: asyncio.Queue[dict[str, Any]],
+    *,
+    min_events: int = 1,
+    timeout: float = 5.0,
+) -> list[dict[str, Any]]:
+    """Collect at least *min_events* from the queue, with a hard timeout."""
+    events: list[dict[str, Any]] = []
+    try:
+        while len(events) < min_events:
+            ev = await asyncio.wait_for(q.get(), timeout=timeout)
+            events.append(ev)
+    except asyncio.TimeoutError:
+        pass
+    return events
+
+
+async def _collect_until(
+    q: asyncio.Queue[dict[str, Any]],
+    predicate,
+    *,
+    timeout: float = 5.0,
+) -> list[dict[str, Any]]:
+    """Collect events until *predicate(events)* is true or timeout."""
+    events: list[dict[str, Any]] = []
+    deadline = asyncio.get_event_loop().time() + timeout
+    try:
+        while not predicate(events):
+            remaining = deadline - asyncio.get_event_loop().time()
+            if remaining <= 0:
+                break
+            ev = await asyncio.wait_for(q.get(), timeout=remaining)
+            events.append(ev)
+    except asyncio.TimeoutError:
+        pass
+    return events
 
 
 # ── PythonSource ABC ────────────────────────────────────────────────
@@ -108,28 +153,19 @@ async def test_file_source_detects_create(tmp_path: Path):
     q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
 
     task = asyncio.create_task(fs.start(q))
-    await asyncio.sleep(0.5)  # let observer start
+    # Give the observer thread a moment to attach.
+    await asyncio.sleep(0.3)
 
-    # Create a file
     test_file = tmp_path / "hello.md"
     test_file.write_text("hello world")
-    content_hash = hashlib.sha256(b"hello world").hexdigest()
 
-    # Wait for events (watchdog may fire created + modified)
-    events = []
+    events = await _collect_events(q, min_events=1, timeout=5.0)
+
+    task.cancel()
     try:
-        for _ in range(10):
-            await asyncio.sleep(0.3)
-            while not q.empty():
-                events.append(q.get_nowait())
-            if events:
-                break
-    finally:
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
+        await task
+    except asyncio.CancelledError:
+        pass
 
     assert len(events) >= 1
     ev = events[0]
@@ -149,25 +185,18 @@ async def test_file_source_populates_text_for_text_files(tmp_path: Path):
     q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
 
     task = asyncio.create_task(fs.start(q))
-    await asyncio.sleep(0.5)
+    await asyncio.sleep(0.3)
 
     test_file = tmp_path / "note.md"
     test_file.write_text("# Hello\n\nSome content here.")
 
-    events = []
+    events = await _collect_events(q, min_events=1, timeout=5.0)
+
+    task.cancel()
     try:
-        for _ in range(10):
-            await asyncio.sleep(0.3)
-            while not q.empty():
-                events.append(q.get_nowait())
-            if events:
-                break
-    finally:
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
+        await task
+    except asyncio.CancelledError:
+        pass
 
     assert len(events) >= 1
     ev = events[0]
@@ -183,25 +212,18 @@ async def test_file_source_no_text_for_binary_files(tmp_path: Path):
     q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
 
     task = asyncio.create_task(fs.start(q))
-    await asyncio.sleep(0.5)
+    await asyncio.sleep(0.3)
 
     test_file = tmp_path / "image.png"
     test_file.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 20)
 
-    events = []
+    events = await _collect_events(q, min_events=1, timeout=5.0)
+
+    task.cancel()
     try:
-        for _ in range(10):
-            await asyncio.sleep(0.3)
-            while not q.empty():
-                events.append(q.get_nowait())
-            if events:
-                break
-    finally:
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
+        await task
+    except asyncio.CancelledError:
+        pass
 
     assert len(events) >= 1
     ev = events[0]
@@ -218,29 +240,24 @@ async def test_file_source_respects_extension_filter(tmp_path: Path):
     q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
 
     task = asyncio.create_task(fs.start(q))
-    await asyncio.sleep(0.5)
+    await asyncio.sleep(0.3)
 
     # Create a .txt file (should be filtered out)
     (tmp_path / "skip.txt").write_text("skip me")
-    await asyncio.sleep(0.5)
-
     # Create a .md file (should pass)
     (tmp_path / "keep.md").write_text("keep me")
 
-    events = []
+    events = await _collect_until(
+        q,
+        lambda evs: any(e["source_id"].endswith("keep.md") for e in evs),
+        timeout=5.0,
+    )
+
+    task.cancel()
     try:
-        for _ in range(10):
-            await asyncio.sleep(0.3)
-            while not q.empty():
-                events.append(q.get_nowait())
-            if any(e["source_id"].endswith("keep.md") for e in events):
-                break
-    finally:
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
+        await task
+    except asyncio.CancelledError:
+        pass
 
     source_ids = [e["source_id"] for e in events]
     assert any("keep.md" in sid for sid in source_ids)
@@ -257,25 +274,22 @@ async def test_file_source_respects_exclude_pattern(tmp_path: Path):
     q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
 
     task = asyncio.create_task(fs.start(q))
-    await asyncio.sleep(0.5)
+    await asyncio.sleep(0.3)
 
     (tmp_path / "bad.pyc").write_bytes(b"\x00")
     (tmp_path / "good.py").write_text("print('hi')")
 
-    events = []
+    events = await _collect_until(
+        q,
+        lambda evs: any(e["source_id"].endswith("good.py") for e in evs),
+        timeout=5.0,
+    )
+
+    task.cancel()
     try:
-        for _ in range(10):
-            await asyncio.sleep(0.3)
-            while not q.empty():
-                events.append(q.get_nowait())
-            if any(e["source_id"].endswith("good.py") for e in events):
-                break
-    finally:
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
+        await task
+    except asyncio.CancelledError:
+        pass
 
     source_ids = [e["source_id"] for e in events]
     assert any("good.py" in sid for sid in source_ids)
@@ -293,24 +307,21 @@ async def test_file_source_delete_event(tmp_path: Path):
     q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
 
     task = asyncio.create_task(fs.start(q))
-    await asyncio.sleep(0.5)
+    await asyncio.sleep(0.3)
 
     target.unlink()
 
-    events = []
+    events = await _collect_until(
+        q,
+        lambda evs: any(e["operation"] == "deleted" for e in evs),
+        timeout=5.0,
+    )
+
+    task.cancel()
     try:
-        for _ in range(10):
-            await asyncio.sleep(0.3)
-            while not q.empty():
-                events.append(q.get_nowait())
-            if any(e["operation"] == "deleted" for e in events):
-                break
-    finally:
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
+        await task
+    except asyncio.CancelledError:
+        pass
 
     deleted = [e for e in events if e["operation"] == "deleted"]
     assert len(deleted) >= 1
@@ -350,29 +361,24 @@ async def test_file_source_skips_oversized_file(tmp_path: Path):
     q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
 
     task = asyncio.create_task(fs.start(q))
-    await asyncio.sleep(0.5)
+    await asyncio.sleep(0.3)
 
     # Create an oversized file (should be skipped)
     (tmp_path / "big.md").write_bytes(b"x" * 100)
-    await asyncio.sleep(0.5)
-
     # Create a small file (should pass)
     (tmp_path / "small.md").write_text("ok")
 
-    events = []
+    events = await _collect_until(
+        q,
+        lambda evs: any("small.md" in e["source_id"] for e in evs),
+        timeout=5.0,
+    )
+
+    task.cancel()
     try:
-        for _ in range(10):
-            await asyncio.sleep(0.3)
-            while not q.empty():
-                events.append(q.get_nowait())
-            if any("small.md" in e["source_id"] for e in events):
-                break
-    finally:
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
+        await task
+    except asyncio.CancelledError:
+        pass
 
     source_ids = [e["source_id"] for e in events]
     assert any("small.md" in sid for sid in source_ids)
