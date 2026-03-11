@@ -26,6 +26,9 @@ EXTRACT_ROLE = "extract"
 FALLBACK_ROLE = "extract_fallback"
 LLM_TIMEOUT = 120.0  # seconds
 
+ALLOWED_ENTITY_TYPES = frozenset({"Person", "Technology", "Project", "Organization", "Concept"})
+DEFAULT_CONFIDENCE = 0.75
+
 SYSTEM_PROMPT = """\
 You are an entity and relationship extraction system. Given a text chunk, \
 extract all named entities and relationship triples.
@@ -230,10 +233,18 @@ def _validate_and_build(data: dict[str, Any]) -> ExtractionResult:
     for ent in entities_raw:
         if not isinstance(ent, dict) or "name" not in ent:
             continue
+        entity_type = ent.get("type", "Concept")
+        if entity_type not in ALLOWED_ENTITY_TYPES:
+            entity_type = "Concept"
+        try:
+            confidence = float(ent.get("confidence", DEFAULT_CONFIDENCE))
+        except (ValueError, TypeError):
+            confidence = DEFAULT_CONFIDENCE
+        confidence = max(0.0, min(1.0, confidence))
         entities.append({
             "name": ent["name"],
-            "type": ent.get("type", "Concept"),
-            "confidence": float(ent.get("confidence", 0.75)),
+            "type": entity_type,
+            "confidence": confidence,
         })
 
     triples: list[dict[str, str]] = []

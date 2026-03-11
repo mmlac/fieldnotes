@@ -9,7 +9,7 @@ class CompletionRequest:
     system:      str
     messages:    list[dict[str, Any]]   # [{"role": "user"|"assistant", "content": "..."}]
     tools:       list[dict] | None = None   # for function calling / tool use
-    max_tokens:  int = 1024
+    max_tokens:  int = 4096
     temperature: float = 0.0            # 0.0 = deterministic; extraction always uses 0.0
     timeout:     float | None = None    # per-request timeout in seconds; None = provider default
 
