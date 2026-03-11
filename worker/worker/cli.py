@@ -60,6 +60,20 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Start MCP server over stdio transport",
     )
+    serve_p.add_argument(
+        "--daemon",
+        action="store_true",
+        help="Run ingest pipeline and MCP server as a background daemon",
+    )
+
+    # ── daemon ─────────────────────────────────────────────────────
+    daemon_p = sub.add_parser("daemon", help="Manage the fieldnotes background daemon")
+    daemon_sub = daemon_p.add_subparsers(dest="daemon_command")
+    daemon_sub.add_parser("install", help="Install and start the daemon service")
+    daemon_sub.add_parser("uninstall", help="Stop and remove the daemon service")
+    daemon_sub.add_parser("status", help="Show daemon status")
+    daemon_sub.add_parser("start", help="Start the daemon service")
+    daemon_sub.add_parser("stop", help="Stop the daemon service")
 
     # ── setup-claude ─────────────────────────────────────────────────
     sub.add_parser(
@@ -177,8 +191,20 @@ def main(argv: list[str] | None = None) -> int:
         return setup_claude(config_path=args.config)
 
     if args.command == "serve":
+        if args.daemon:
+            from worker.serve_daemon import run_daemon
+
+            try:
+                run_daemon(config_path=args.config)
+                return 0
+            except Exception as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                return 1
         if not args.mcp:
-            print("error: specify --mcp to start the MCP server", file=sys.stderr)
+            print(
+                "error: specify --mcp or --daemon to start the server",
+                file=sys.stderr,
+            )
             return 1
         from worker.mcp_server import run_server
 
@@ -188,6 +214,23 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
+
+    if args.command == "daemon":
+        from worker import daemon
+
+        if args.daemon_command == "install":
+            return daemon.install()
+        if args.daemon_command == "uninstall":
+            return daemon.uninstall()
+        if args.daemon_command == "status":
+            return daemon.status()
+        if args.daemon_command == "start":
+            return daemon.start()
+        if args.daemon_command == "stop":
+            return daemon.stop()
+        print("Usage: fieldnotes daemon {install,uninstall,status,start,stop}",
+              file=sys.stderr)
+        return 1
 
     if args.command == "search":
         if args.top_k < 1:
