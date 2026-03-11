@@ -9,12 +9,13 @@ from worker.clustering.cluster import (
     ClusterResult,
     CorpusTooSmallError,
     DEFAULT_HDBSCAN_METRIC,
+    DEFAULT_MAX_VECTORS,
     DEFAULT_MIN_CLUSTER_SIZE,
     DEFAULT_MIN_CORPUS_SIZE,
     DEFAULT_UMAP_DIMS,
     _build_results,
     _hdbscan_cluster,
-    _scroll_all_vectors,
+    _scroll_vectors,
     _umap_reduce,
     cluster_embeddings,
 )
@@ -58,19 +59,20 @@ def _make_scroll_point(point_id: str, vector: list[float]) -> MagicMock:
 
 
 # ---------------------------------------------------------------------------
-# _scroll_all_vectors
+# _scroll_vectors
 # ---------------------------------------------------------------------------
 
-class TestScrollAllVectors:
+class TestScrollVectors:
     def test_scrolls_single_page(self) -> None:
         client = MagicMock()
         points = [_make_scroll_point("a", [1.0, 2.0])]
         client.scroll.return_value = (points, None)
 
-        ids, vecs = _scroll_all_vectors(client, "test-coll")
+        ids, matrix = _scroll_vectors(client, "test-coll")
 
         assert ids == ["a"]
-        assert vecs == [[1.0, 2.0]]
+        np.testing.assert_array_equal(matrix, [[1.0, 2.0]])
+        assert matrix.dtype == np.float32
         client.scroll.assert_called_once()
 
     def test_scrolls_multiple_pages(self) -> None:
@@ -82,20 +84,44 @@ class TestScrollAllVectors:
             (page2, None),
         ]
 
-        ids, vecs = _scroll_all_vectors(client, "coll")
+        ids, matrix = _scroll_vectors(client, "coll")
 
         assert ids == ["a", "b"]
-        assert vecs == [[1.0], [2.0]]
+        np.testing.assert_array_equal(matrix, [[1.0], [2.0]])
         assert client.scroll.call_count == 2
 
     def test_empty_collection(self) -> None:
         client = MagicMock()
         client.scroll.return_value = ([], None)
 
-        ids, vecs = _scroll_all_vectors(client, "empty")
+        ids, matrix = _scroll_vectors(client, "empty")
 
         assert ids == []
-        assert vecs == []
+        assert matrix.shape[0] == 0
+
+    def test_samples_when_exceeding_max_vectors(self) -> None:
+        client = MagicMock()
+        n = 100
+        points = [_make_scroll_point(f"id-{i}", [float(i)]) for i in range(n)]
+        client.scroll.return_value = (points, None)
+
+        ids, matrix = _scroll_vectors(client, "big", max_vectors=30)
+
+        assert len(ids) == 30
+        assert matrix.shape == (30, 1)
+        # IDs should be a subset of the originals
+        all_ids = {f"id-{i}" for i in range(n)}
+        assert set(ids).issubset(all_ids)
+
+    def test_no_sampling_under_limit(self) -> None:
+        client = MagicMock()
+        points = [_make_scroll_point(f"id-{i}", [float(i)]) for i in range(10)]
+        client.scroll.return_value = (points, None)
+
+        ids, matrix = _scroll_vectors(client, "small", max_vectors=100)
+
+        assert len(ids) == 10
+        assert matrix.shape == (10, 1)
 
 
 # ---------------------------------------------------------------------------

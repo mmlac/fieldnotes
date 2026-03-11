@@ -127,6 +127,7 @@ class ClusteringConfig:
     cron: str = "0 3 * * 0"
     min_corpus_size: int = 100
     min_interval_seconds: float = 60.0
+    max_vectors: int = 500_000
 
 
 @dataclass
@@ -276,11 +277,14 @@ def _parse(raw: dict[str, Any]) -> Config:
                     f"got {type(cl['min_interval_seconds']).__name__} "
                     f"({cl['min_interval_seconds']!r})"
                 )
+        if "max_vectors" in cl:
+            _check_type("clustering", "max_vectors", cl["max_vectors"], int)
         cfg.clustering = ClusteringConfig(
             enabled=cl.get("enabled", cfg.clustering.enabled),
             cron=cl.get("cron", cfg.clustering.cron),
             min_corpus_size=cl.get("min_corpus_size", cfg.clustering.min_corpus_size),
             min_interval_seconds=cl.get("min_interval_seconds", cfg.clustering.min_interval_seconds),
+            max_vectors=cl.get("max_vectors", cfg.clustering.max_vectors),
         )
 
     # [mcp]

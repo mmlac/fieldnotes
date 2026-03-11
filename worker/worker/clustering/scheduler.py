@@ -65,6 +65,7 @@ def run_clustering_pipeline(
         clusters = cluster_embeddings(
             qdrant_cfg,
             min_corpus_size=clustering_cfg.min_corpus_size,
+            max_vectors=clustering_cfg.max_vectors,
         )
     except CorpusTooSmallError:
         # Race: points removed between check and clustering

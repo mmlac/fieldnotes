@@ -32,6 +32,7 @@ DEFAULT_UMAP_METRIC = "cosine"
 DEFAULT_MIN_CLUSTER_SIZE = 10
 DEFAULT_HDBSCAN_METRIC = "euclidean"
 DEFAULT_MIN_CORPUS_SIZE = 20
+DEFAULT_MAX_VECTORS = 500_000
 _SCROLL_BATCH = 256
 
 
@@ -57,10 +58,11 @@ def cluster_embeddings(
     min_cluster_size: int = DEFAULT_MIN_CLUSTER_SIZE,
     hdbscan_metric: str = DEFAULT_HDBSCAN_METRIC,
     min_corpus_size: int = DEFAULT_MIN_CORPUS_SIZE,
+    max_vectors: int = DEFAULT_MAX_VECTORS,
 ) -> list[ClusterResult]:
     """Run the full clustering pipeline.
 
-    1. Scroll all chunk embeddings from Qdrant
+    1. Scroll chunk embeddings from Qdrant (bounded by ``max_vectors``)
     2. UMAP reduce 768 → ``umap_dims``
     3. HDBSCAN cluster
     4. Compute centroids and return assignments
@@ -82,6 +84,10 @@ def cluster_embeddings(
     min_corpus_size:
         Minimum number of embeddings required. Raises CorpusTooSmallError
         if the corpus is smaller.
+    max_vectors:
+        Upper bound on the number of vectors to load. When the collection
+        exceeds this limit, a random sample of ``max_vectors`` points is
+        used instead of the full collection.
 
     Returns
     -------
@@ -93,16 +99,17 @@ def cluster_embeddings(
     client = QdrantClient(host=qdrant_cfg.host, port=qdrant_cfg.port)
 
     try:
-        ids, vectors = _scroll_all_vectors(client, qdrant_cfg.collection)
+        ids, matrix = _scroll_vectors(
+            client, qdrant_cfg.collection, max_vectors=max_vectors,
+        )
     finally:
         client.close()
 
-    if len(vectors) < min_corpus_size:
+    if len(ids) < min_corpus_size:
         raise CorpusTooSmallError(
-            f"Corpus has {len(vectors)} embeddings, need at least {min_corpus_size}"
+            f"Corpus has {len(ids)} embeddings, need at least {min_corpus_size}"
         )
 
-    matrix = np.array(vectors, dtype=np.float32)
     logger.info(
         "Clustering %d embeddings (%d dims → %d dims)",
         matrix.shape[0],
@@ -133,13 +140,22 @@ def cluster_embeddings(
     return results
 
 
-def _scroll_all_vectors(
+def _scroll_vectors(
     client: QdrantClient,
     collection: str,
-) -> tuple[list[str], list[list[float]]]:
-    """Scroll all points from a Qdrant collection, returning IDs and vectors."""
+    *,
+    max_vectors: int = DEFAULT_MAX_VECTORS,
+) -> tuple[list[str], np.ndarray]:
+    """Scroll vectors from a Qdrant collection with a bounded memory footprint.
+
+    Vectors are accumulated directly into a numpy array (one batch at a time)
+    to avoid keeping both a Python list and a numpy copy in memory.
+
+    When the collection contains more than *max_vectors* points, a random
+    sample of *max_vectors* rows is returned so memory stays bounded.
+    """
     ids: list[str] = []
-    vectors: list[list[float]] = []
+    batches: list[np.ndarray] = []
 
     offset = None
     while True:
@@ -151,16 +167,38 @@ def _scroll_all_vectors(
             with_payload=False,
         )
 
-        for point in points:
-            ids.append(str(point.id))
-            vectors.append(point.vector)  # type: ignore[arg-type]
+        if points:
+            ids.extend(str(p.id) for p in points)
+            batches.append(
+                np.array([p.vector for p in points], dtype=np.float32)
+            )
 
         if next_offset is None:
             break
         offset = next_offset
 
-    logger.debug("Scrolled %d vectors from %r", len(ids), collection)
-    return ids, vectors
+    if not batches:
+        logger.debug("Scrolled 0 vectors from %r", collection)
+        return [], np.empty((0, 0), dtype=np.float32)
+
+    matrix = np.vstack(batches)
+    del batches  # free intermediate batch list immediately
+
+    total = matrix.shape[0]
+    logger.debug("Scrolled %d vectors from %r", total, collection)
+
+    if total > max_vectors:
+        logger.info(
+            "Collection %r has %d vectors, sampling %d",
+            collection, total, max_vectors,
+        )
+        rng = np.random.default_rng(42)
+        indices = rng.choice(total, size=max_vectors, replace=False)
+        indices.sort()  # preserve original ordering
+        matrix = matrix[indices]
+        ids = [ids[i] for i in indices]
+
+    return ids, matrix
 
 
 def _umap_reduce(
