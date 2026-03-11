@@ -138,6 +138,21 @@ class TestObsidianParser:
         assert "tag:outside" in tag_ids
         assert "tag:inside" not in tag_ids
 
+    def test_wikilink_heading_anchor_stripped(self):
+        """[[note#heading]] should produce object_id='note', not 'note#heading'."""
+        note = "---\n---\nSee [[Other Note#section]] and [[Plain Link]]."
+        docs = self.parser.parse(_make_event(note))
+        link_hints = [h for h in docs[0].graph_hints if h.predicate == "LINKS_TO"]
+        targets = {h.object_id for h in link_hints}
+        assert targets == {"Other Note", "Plain Link"}
+
+    def test_wikilink_heading_only_anchor_skipped(self):
+        """[[#heading]] (self-link to heading) should be skipped as empty target."""
+        note = "---\n---\nSee [[#local-heading]]."
+        docs = self.parser.parse(_make_event(note))
+        link_hints = [h for h in docs[0].graph_hints if h.predicate == "LINKS_TO"]
+        assert len(link_hints) == 0
+
     def test_registry_registration(self):
         from worker.parsers.registry import get
 

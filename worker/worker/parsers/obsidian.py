@@ -79,7 +79,7 @@ class ObsidianParser(BaseParser):
         graph_hints: list[GraphHint] = []
 
         for target in _WIKILINK_RE.findall(body):
-            target = target.strip()
+            target = target.split("#")[0].strip()
             if not target:
                 continue
             graph_hints.append(
