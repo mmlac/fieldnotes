@@ -51,25 +51,36 @@ TOOLS: list[Tool] = [
     Tool(
         name="search",
         description=(
-            "Search the fieldnotes knowledge graph using natural language. "
-            "Combines graph traversal (Neo4j) with semantic vector search "
-            "(Qdrant) and returns structured context."
+            "Search the user's personal knowledge graph using natural language. "
+            "Combines graph traversal with semantic vector search and returns "
+            "structured context including matched documents, entities, and "
+            "relationships. Use this to answer questions about the user's notes, "
+            "emails, code repositories, and Obsidian vault. "
+            'Examples: "meetings about project X last month", '
+            '"what do I know about machine learning", '
+            '"emails from Alice about the budget".'
         ),
         inputSchema={
             "type": "object",
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "Natural language search query",
+                    "description": (
+                        "Natural language search query. Be specific — include "
+                        "names, topics, or timeframes for best results."
+                    ),
                 },
                 "top_k": {
                     "type": "integer",
-                    "description": "Maximum number of results to return",
+                    "description": "Maximum number of results to return (default: 10)",
                     "default": 10,
                 },
                 "source_type": {
                     "type": "string",
-                    "description": "Filter results by source type",
+                    "description": (
+                        "Optional filter to restrict results to a specific "
+                        "source type"
+                    ),
                     "enum": ["file", "email", "obsidian", "repositories"],
                 },
             },
@@ -79,9 +90,11 @@ TOOLS: list[Tool] = [
     Tool(
         name="list_topics",
         description=(
-            "List all topics in the knowledge graph with document counts. "
-            "Topics come from two sources: cluster-discovered (automatic) "
-            "and user-tagged (from Obsidian #tags)."
+            "List all topics in the knowledge graph with their document counts. "
+            "Use this to understand what subjects the user has notes about and "
+            "how extensively each topic is covered. Topics come from two sources: "
+            "cluster-discovered (automatic) and user-tagged (from Obsidian #tags). "
+            "Use the source filter to see only one kind."
         ),
         inputSchema={
             "type": "object",
@@ -98,15 +111,20 @@ TOOLS: list[Tool] = [
     Tool(
         name="show_topic",
         description=(
-            "Show detailed information about a specific topic, including "
-            "linked documents, entities, and related topics."
+            "Show detailed information about a specific topic including its "
+            "linked documents, entities, and related topics. Use this after "
+            "list_topics to drill into a particular area of interest. "
+            'Example: show_topic("machine learning") to see all notes, '
+            "emails, and code related to ML."
         ),
         inputSchema={
             "type": "object",
             "properties": {
                 "name": {
                     "type": "string",
-                    "description": "Topic name to look up",
+                    "description": (
+                        "Exact topic name as returned by list_topics"
+                    ),
                 },
             },
             "required": ["name"],
@@ -115,9 +133,11 @@ TOOLS: list[Tool] = [
     Tool(
         name="topic_gaps",
         description=(
-            "Find cluster-discovered topics that don't correspond to any "
-            "user-defined tag. These represent knowledge areas the system "
-            "found but the user hasn't explicitly organized."
+            "Find topics that were automatically discovered by clustering but "
+            "are not yet in the user's manual taxonomy. These represent areas "
+            "where the user has content but hasn't explicitly organized it. "
+            "Useful for suggesting new topics to add or surfacing overlooked "
+            "themes in the knowledge graph."
         ),
         inputSchema={"type": "object", "properties": {}},
     ),

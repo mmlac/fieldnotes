@@ -61,6 +61,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Start MCP server over stdio transport",
     )
 
+    # ── setup-claude ─────────────────────────────────────────────────
+    sub.add_parser(
+        "setup-claude",
+        help="Configure fieldnotes as an MCP server for Claude Desktop",
+    )
+
     # ── topics ──────────────────────────────────────────────────────
     topics_p = sub.add_parser("topics", help="Browse and inspect topics")
     topics_p.add_argument(
@@ -164,6 +170,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.command is None:
         parser.print_help()
         return 1
+
+    if args.command == "setup-claude":
+        from worker.setup import setup_claude
+
+        return setup_claude(config_path=args.config)
 
     if args.command == "serve":
         if not args.mcp:
