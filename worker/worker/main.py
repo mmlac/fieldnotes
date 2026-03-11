@@ -17,6 +17,7 @@ import asyncio
 import logging
 import signal
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -211,18 +212,31 @@ def main() -> None:
 
     logger.info("fieldnotes worker starting")
 
-    # Health checks
-    try:
-        _check_neo4j(cfg)
-    except Exception as exc:
-        logger.error("Neo4j health check failed: %s", exc)
-        sys.exit(1)
+    # Health checks with retry (services may still be starting)
+    max_retries = 5
+    for attempt in range(1, max_retries + 1):
+        try:
+            _check_neo4j(cfg)
+            break
+        except Exception as exc:
+            if attempt == max_retries:
+                logger.error("Neo4j health check failed after %d attempts: %s", max_retries, exc)
+                sys.exit(1)
+            delay = 2 ** attempt  # 2, 4, 8, 16s — ~30s total
+            logger.warning("Neo4j health check failed (attempt %d/%d): %s — retrying in %ds", attempt, max_retries, exc, delay)
+            time.sleep(delay)
 
-    try:
-        _check_qdrant(cfg)
-    except Exception as exc:
-        logger.error("Qdrant health check failed: %s", exc)
-        sys.exit(1)
+    for attempt in range(1, max_retries + 1):
+        try:
+            _check_qdrant(cfg)
+            break
+        except Exception as exc:
+            if attempt == max_retries:
+                logger.error("Qdrant health check failed after %d attempts: %s", max_retries, exc)
+                sys.exit(1)
+            delay = 2 ** attempt
+            logger.warning("Qdrant health check failed (attempt %d/%d): %s — retrying in %ds", attempt, max_retries, exc, delay)
+            time.sleep(delay)
 
     # Run the async event loop
     asyncio.run(_run(cfg))
