@@ -1,6 +1,9 @@
 """OllamaProvider — calls a local Ollama HTTP API for completions and embeddings."""
 
+import ipaddress
 import logging
+import socket
+from urllib.parse import urlparse
 from typing import Any
 
 import httpx
@@ -21,6 +24,50 @@ from ..base import (
 from ..registry import register
 
 logger = logging.getLogger(__name__)
+
+# Cloud metadata and link-local CIDRs that must never be reached via base_url.
+_BLOCKED_NETWORKS = [
+    ipaddress.ip_network("169.254.0.0/16"),   # AWS/GCP metadata & link-local
+    ipaddress.ip_network("fe80::/10"),         # IPv6 link-local
+]
+
+_ALLOWED_SCHEMES = {"http", "https"}
+
+
+def _validate_ollama_url(url: str) -> str:
+    """Validate and return *url* or raise ``ValueError``.
+
+    Rules:
+    * Scheme must be http or https.
+    * Host must not resolve to a cloud-metadata or link-local address.
+    """
+    parsed = urlparse(url)
+
+    if parsed.scheme not in _ALLOWED_SCHEMES:
+        raise ValueError(
+            f"Ollama base_url must use http or https (got {parsed.scheme!r})"
+        )
+
+    hostname = parsed.hostname
+    if not hostname:
+        raise ValueError("Ollama base_url has no hostname")
+
+    # Resolve hostname to detect internal IPs
+    try:
+        addrinfos = socket.getaddrinfo(hostname, None, proto=socket.IPPROTO_TCP)
+    except socket.gaierror as exc:
+        raise ValueError(f"Cannot resolve Ollama base_url host {hostname!r}: {exc}") from exc
+
+    for _family, _type, _proto, _canonname, sockaddr in addrinfos:
+        addr = ipaddress.ip_address(sockaddr[0])
+        for net in _BLOCKED_NETWORKS:
+            if addr in net:
+                raise ValueError(
+                    f"Ollama base_url resolves to blocked address {addr} "
+                    f"(in {net})"
+                )
+
+    return url
 
 
 def _is_retryable_httpx(exc: BaseException) -> bool:
@@ -56,7 +103,8 @@ class OllamaProvider(ModelProvider):
         return "ollama"
 
     def configure(self, cfg: dict[str, Any]) -> None:
-        self._base_url = cfg.get("base_url", self._base_url).rstrip("/")
+        raw_url = cfg.get("base_url", self._base_url).rstrip("/")
+        self._base_url = _validate_ollama_url(raw_url)
         self._completion_timeout = float(cfg.get("completion_timeout", self._completion_timeout))
         self._embed_timeout = float(cfg.get("embed_timeout", self._embed_timeout))
 
