@@ -60,6 +60,10 @@ class TestCypherReadOnlyValidation:
             "CALL apoc.periodic.iterate('MATCH (n) RETURN n', 'DELETE n', {})",
             "CALL apoc.cypher.run('CREATE (n:X)', {})",
             "CALL apoc.cypher.doIt('CREATE (n:X)', {})",
+            "CALL apoc.create.node(['Label'], {name: 'evil'})",
+            "CALL apoc.create.relationship(n, 'REL', {}, m)",
+            "CALL dbms.security.createUser('admin', 'pass', false)",
+            "CALL db.createLabel('Evil')",
         ],
     )
     def test_blocks_write_queries(self, cypher: str) -> None:

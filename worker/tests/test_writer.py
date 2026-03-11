@@ -13,6 +13,7 @@ import pytest
 from worker.parsers.base import GraphHint, ParsedDocument
 from worker.pipeline.chunker import Chunk
 from worker.pipeline.writer import (
+    ALLOWED_PREDICATES,
     COLLECTION_NAME,
     VECTOR_SIZE,
     WriteUnit,
@@ -186,6 +187,28 @@ class TestNeo4jHelpers:
         tx.run.assert_called_once()
         args, _ = tx.run.call_args
         assert "RELATED_TO" in args[0]
+
+    def test_merge_entity_edge_allowed_predicate(self):
+        """Whitelisted predicates are used as-is."""
+        tx = MagicMock()
+        triple = {"subject": "Alice", "predicate": "works at", "object": "Acme"}
+        _merge_entity_edge(tx, triple)
+        args, _ = tx.run.call_args
+        assert "WORKS_AT" in args[0]
+
+    def test_merge_entity_edge_unknown_predicate_mapped(self):
+        """Unknown predicates are mapped to RELATED_TO."""
+        tx = MagicMock()
+        triple = {"subject": "A", "predicate": "BAZINGA", "object": "B"}
+        _merge_entity_edge(tx, triple)
+        args, _ = tx.run.call_args
+        assert "RELATED_TO" in args[0]
+        assert "BAZINGA" not in args[0]
+
+    def test_allowed_predicates_contains_common_types(self):
+        """Sanity check: common relationship types are in the whitelist."""
+        for pred in ("RELATED_TO", "WORKS_AT", "PART_OF", "KNOWS", "USES", "CREATED_BY"):
+            assert pred in ALLOWED_PREDICATES
 
     def test_upsert_chunk(self):
         tx = MagicMock()

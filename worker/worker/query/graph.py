@@ -33,11 +33,20 @@ logger = logging.getLogger(__name__)
 
 # Cypher keywords that indicate a write operation.
 _WRITE_KEYWORDS = re.compile(
-    r"\b(MERGE|CREATE|DELETE|DETACH|SET|REMOVE|DROP|CALL\s*\{|FOREACH\s*\(|LOAD\s+CSV)\b",
+    r"\b(MERGE|CREATE|DELETE|DETACH|SET|REMOVE|DROP|FOREACH\s*\(|LOAD\s+CSV)\b",
     re.IGNORECASE,
 )
 
-# APOC procedures known to perform writes.
+# Block CALL subqueries (CALL { ... }) and procedure invocations
+# (CALL <name>(...)).  Read-only built-in procedures like
+# db.index.fulltext.queryNodes are not expected in LLM-generated Cypher,
+# so a blanket block is the safest default.
+_CALL_PATTERN = re.compile(
+    r"\bCALL\s*(\{|[A-Za-z])",
+    re.IGNORECASE,
+)
+
+# APOC procedures known to perform writes (kept for specificity in logs).
 _WRITE_APOC = re.compile(
     r"\b(apoc\.periodic\.commit|apoc\.periodic\.iterate|apoc\.cypher\.run|apoc\.cypher\.doIt)\b",
     re.IGNORECASE,
@@ -122,7 +131,11 @@ def _validate_cypher_readonly(cypher: str) -> None:
     Defense-in-depth: this regex blocklist catches common mutation patterns,
     but the real safety boundary is the read-only transaction in GraphQuerier.
     """
-    if _WRITE_KEYWORDS.search(cypher) or _WRITE_APOC.search(cypher):
+    if (
+        _WRITE_KEYWORDS.search(cypher)
+        or _CALL_PATTERN.search(cypher)
+        or _WRITE_APOC.search(cypher)
+    ):
         raise ReadOnlyCypherViolation(cypher)
 
 

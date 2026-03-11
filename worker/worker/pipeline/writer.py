@@ -61,6 +61,64 @@ COLLECTION_NAME = "fieldnotes"
 ENTITY_CACHE_TTL = 60  # seconds — avoid repeated full scans during batch processing
 FULLTEXT_INDEX_NAME = "entity_name_fulltext"
 
+# Allowed relationship types for LLM-generated entity triples.
+# Predicates not in this set are mapped to RELATED_TO to prevent
+# semantic pollution from unconstrained LLM output.
+ALLOWED_PREDICATES: frozenset[str] = frozenset({
+    "RELATED_TO",
+    "WORKS_AT",
+    "WORKS_FOR",
+    "WORKS_ON",
+    "KNOWS",
+    "COLLABORATES_WITH",
+    "USES",
+    "USED_BY",
+    "CREATED_BY",
+    "CREATED",
+    "PART_OF",
+    "BELONGS_TO",
+    "CONTAINS",
+    "DEPENDS_ON",
+    "IS_A",
+    "HAS_A",
+    "LOCATED_IN",
+    "MANAGES",
+    "REPORTS_TO",
+    "CONTRIBUTED_TO",
+    "BASED_ON",
+    "DERIVED_FROM",
+    "ASSOCIATED_WITH",
+    "FOUNDED",
+    "FUNDED_BY",
+    "PUBLISHED",
+    "AUTHORED",
+    "EMPLOYED_BY",
+    "AFFILIATED_WITH",
+    "MEMBER_OF",
+    "MENTIONS",
+    "REFERENCES",
+    "IMPLEMENTS",
+    "EXTENDS",
+    "INTEGRATES_WITH",
+    "SUCCEEDED_BY",
+    "PRECEDED_BY",
+    "SIMILAR_TO",
+    "OPPOSITE_OF",
+    "INFLUENCED_BY",
+    "SUPPORTS",
+    "CONFLICTS_WITH",
+    "ACQUIRED_BY",
+    "INVESTED_IN",
+    "DEVELOPED_BY",
+    "MAINTAINED_BY",
+    "OWNED_BY",
+    "LED_BY",
+    "TAUGHT_BY",
+    "ATTENDED",
+    "PARTICIPATED_IN",
+    "SPOKE_AT",
+})
+
 _LUCENE_SPECIAL_RE = re.compile(r'([+\-&|!(){}[\]^"~*?:\\/])')
 
 _neo4j_retry = retry(
@@ -586,9 +644,22 @@ def _merge_attached_to_edge(tx: Any, image_source_id: str, parent_source_id: str
 
 
 def _merge_entity_edge(tx: Any, triple: dict[str, str]) -> None:
-    """Create a relationship edge between two entities from a triple."""
+    """Create a relationship edge between two entities from a triple.
+
+    The predicate is validated against ALLOWED_PREDICATES. Unknown predicates
+    are mapped to RELATED_TO to prevent semantic pollution from unconstrained
+    LLM output.
+    """
     predicate = triple["predicate"].replace(" ", "_").upper()
     _validate_cypher_identifier(predicate, "triple predicate")
+    if predicate not in ALLOWED_PREDICATES:
+        logger.warning(
+            "Unknown predicate %r mapped to RELATED_TO (subject=%r, object=%r)",
+            predicate,
+            triple["subject"],
+            triple["object"],
+        )
+        predicate = "RELATED_TO"
     tx.run(
         f"""
         MERGE (s:Entity {{name: $subject}})
