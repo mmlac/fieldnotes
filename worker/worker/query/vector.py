@@ -163,6 +163,12 @@ class VectorQuerier:
             with_payload=True,
         )
 
+    def __enter__(self) -> VectorQuerier:
+        return self
+
+    def __exit__(self, exc_type: type | None, exc_val: BaseException | None, exc_tb: object) -> None:
+        self.close()
+
     def close(self) -> None:
         """Release the Qdrant connection."""
         self._qdrant.close()

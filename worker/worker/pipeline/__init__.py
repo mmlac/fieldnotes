@@ -109,6 +109,12 @@ class Pipeline:
             )
         return failed
 
+    def __enter__(self) -> Pipeline:
+        return self
+
+    def __exit__(self, exc_type: type | None, exc_val: BaseException | None, exc_tb: object) -> None:
+        self.close()
+
     def close(self) -> None:
         """Release resources held by the writer."""
         self._writer.close()

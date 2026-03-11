@@ -215,6 +215,12 @@ class GraphQuerier:
         """Refresh the Neo4j schema cache (call after schema changes)."""
         self._graph.refresh_schema()
 
+    def __enter__(self) -> GraphQuerier:
+        return self
+
+    def __exit__(self, exc_type: type | None, exc_val: BaseException | None, exc_tb: Any) -> None:
+        self.close()
+
     def close(self) -> None:
         """Release the Neo4j connection."""
         # Neo4jGraph doesn't expose a close method; the driver is internal.

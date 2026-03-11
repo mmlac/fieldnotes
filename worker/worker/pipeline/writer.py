@@ -209,6 +209,12 @@ class Writer:
         for unit in units:
             self.write(unit)
 
+    def __enter__(self) -> Writer:
+        return self
+
+    def __exit__(self, exc_type: type | None, exc_val: BaseException | None, exc_tb: Any) -> None:
+        self.close()
+
     def close(self) -> None:
         """Release connections."""
         self._neo4j_driver.close()
