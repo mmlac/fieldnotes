@@ -103,6 +103,7 @@ class VisionConfig:
 class ClusteringConfig:
     enabled: bool = True
     cron: str = "0 3 * * 0"
+    min_corpus_size: int = 100
 
 
 @dataclass
@@ -203,6 +204,7 @@ def _parse(raw: dict[str, Any]) -> Config:
         cfg.clustering = ClusteringConfig(
             enabled=cl.get("enabled", cfg.clustering.enabled),
             cron=cl.get("cron", cfg.clustering.cron),
+            min_corpus_size=cl.get("min_corpus_size", cfg.clustering.min_corpus_size),
         )
 
     # [mcp]

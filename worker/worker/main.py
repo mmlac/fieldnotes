@@ -23,6 +23,7 @@ from typing import Any
 from neo4j import GraphDatabase
 from qdrant_client import QdrantClient
 
+from worker.clustering.scheduler import clustering_loop
 from worker.config import Config, load_config
 from worker.models.resolver import ModelRegistry
 from worker.pipeline import Pipeline
@@ -117,6 +118,18 @@ async def _run(cfg: Config) -> None:
         pipeline.close()
         return
 
+    # Start clustering scheduler as a background task
+    background_tasks: list[asyncio.Task[None]] = []
+    if cfg.clustering.enabled:
+        cluster_task = asyncio.create_task(
+            clustering_loop(registry, cfg.clustering, cfg.qdrant, cfg.neo4j),
+            name="clustering-scheduler",
+        )
+        background_tasks.append(cluster_task)
+        logger.info("Clustering scheduler enabled (cron=%s)", cfg.clustering.cron)
+    else:
+        logger.info("Clustering scheduler disabled")
+
     # Shared event queue for all sources — bounded to apply backpressure
     # when the consumer falls behind (prevents unbounded memory growth on
     # burst file-change events like git checkout).
@@ -163,6 +176,11 @@ async def _run(cfg: Config) -> None:
                     source_type, source_id, operation,
                 )
     finally:
+        # Cancel background tasks (clustering scheduler)
+        for task in background_tasks:
+            task.cancel()
+        await asyncio.gather(*background_tasks, return_exceptions=True)
+
         # Cancel all source tasks
         logger.info("Shutting down sources...")
         for task in source_tasks:
