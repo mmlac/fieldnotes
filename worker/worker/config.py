@@ -158,6 +158,21 @@ def load_config(path: Path | None = None) -> Config:
     return cfg
 
 
+def _validate_repositories_config(settings: dict[str, Any]) -> None:
+    """Validate [sources.repositories] settings."""
+    section = "sources.repositories"
+    if "repo_roots" in settings:
+        _check_list_of(section, "repo_roots", settings["repo_roots"], str)
+    if "include_patterns" in settings:
+        _check_list_of(section, "include_patterns", settings["include_patterns"], str)
+    if "exclude_patterns" in settings:
+        _check_list_of(section, "exclude_patterns", settings["exclude_patterns"], str)
+    if "poll_interval_seconds" in settings:
+        _check_type(section, "poll_interval_seconds", settings["poll_interval_seconds"], int)
+    if "max_file_size" in settings:
+        _check_type(section, "max_file_size", settings["max_file_size"], int)
+
+
 def _parse(raw: dict[str, Any]) -> Config:
     cfg = Config()
 
@@ -221,7 +236,10 @@ def _parse(raw: dict[str, Any]) -> Config:
 
     # [sources.*]
     for name, scfg in raw.get("sources", {}).items():
-        cfg.sources[name] = SourceConfig(name=name, settings=dict(scfg))
+        settings = dict(scfg)
+        if name == "repositories":
+            _validate_repositories_config(settings)
+        cfg.sources[name] = SourceConfig(name=name, settings=settings)
 
     # [vision]
     if "vision" in raw:

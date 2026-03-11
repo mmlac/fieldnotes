@@ -1,0 +1,52 @@
+# fieldnotes worker configuration
+# Copy to ~/.fieldnotes/config.toml and edit as needed.
+
+[core]
+data_dir = "~/.fieldnotes/data"
+log_level = "info"
+
+[neo4j]
+uri = "bolt://localhost:7687"
+# user and password can also be set via NEO4J_USER / NEO4J_PASSWORD env vars
+user = "neo4j"
+password = ""
+
+[qdrant]
+host = "localhost"
+port = 6333
+collection = "fieldnotes"
+vector_size = 768
+
+# --- Sources ---
+
+[sources.files]
+watch_paths = ["~/Documents"]
+
+[sources.obsidian]
+vault_path = "~/obsidian-vault"
+
+[sources.repositories]
+repo_roots = []
+include_patterns = ["README*", "CHANGELOG*", "CONTRIBUTING*", "docs/**/*.md", "*.toml", "ADR/**/*.md"]
+exclude_patterns = ["node_modules/", ".git/", "vendor/", "target/", "__pycache__/"]
+poll_interval_seconds = 300
+max_file_size = 104857600
+
+# --- Clustering ---
+
+[clustering]
+enabled = true
+cron = "0 3 * * 0"
+min_corpus_size = 100
+
+# --- Vision ---
+
+[vision]
+enabled = true
+concurrency = 2
+
+# --- MCP ---
+
+[mcp]
+enabled = true
+port = 3456
