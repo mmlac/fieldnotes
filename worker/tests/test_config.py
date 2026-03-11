@@ -24,7 +24,6 @@ class TestParseDefaults:
     def test_empty_dict_returns_defaults(self) -> None:
         cfg = _parse({})
         assert cfg.core == CoreConfig()
-        assert cfg.neo4j == Neo4jConfig()
         assert cfg.qdrant == QdrantConfig()
         assert cfg.providers == {}
         assert cfg.models == {}
@@ -32,6 +31,11 @@ class TestParseDefaults:
         assert cfg.sources == {}
         assert cfg.clustering == ClusteringConfig()
         assert cfg.mcp == McpConfig()
+
+    def test_neo4j_validate_raises_without_password(self) -> None:
+        cfg = _parse({})
+        with pytest.raises(ValueError, match="Neo4j password must be set"):
+            cfg.neo4j.validate()
 
 
 class TestParseCore:
@@ -170,6 +174,7 @@ log_level = "warn"
 
 [neo4j]
 uri = "bolt://db:7687"
+password = "testpass"
 
 [modelproviders.local]
 type = "ollama"
@@ -199,6 +204,12 @@ root = "/notes"
     def test_missing_file_raises(self, tmp_path) -> None:
         with pytest.raises(FileNotFoundError):
             load_config(tmp_path / "nonexistent.toml")
+
+    def test_raises_without_neo4j_password(self, tmp_path) -> None:
+        config_file = tmp_path / "config.toml"
+        config_file.write_text("[core]\nlog_level = 'info'\n")
+        with pytest.raises(ValueError, match="Neo4j password must be set"):
+            load_config(config_file)
 
 
 class TestFullRoundtrip:

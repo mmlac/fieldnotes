@@ -55,6 +55,7 @@ def get_credentials(
 
     # Persist for next run
     token_path.parent.mkdir(parents=True, exist_ok=True)
+    token_path.touch(mode=0o600, exist_ok=True)
     token_path.write_text(creds.to_json())
     logger.info("Gmail token saved to %s", token_path)
 

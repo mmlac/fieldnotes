@@ -39,12 +39,14 @@ class Neo4jConfig:
             self.user = os.environ.get("NEO4J_USER", "neo4j")
         if not self.password:
             self.password = os.environ.get("NEO4J_PASSWORD", "")
+
+    def validate(self) -> None:
+        """Raise if required fields are missing."""
         if not self.password:
-            logger.warning(
-                "Neo4j password not set via config or NEO4J_PASSWORD env var; "
-                "falling back to default — do NOT use in production"
+            raise ValueError(
+                "Neo4j password must be set via [neo4j] password in config.toml "
+                "or the NEO4J_PASSWORD environment variable"
             )
-            self.password = "fieldnotes"
 
 
 @dataclass
@@ -130,7 +132,9 @@ def load_config(path: Path | None = None) -> Config:
     """Load and parse config.toml into a Config object."""
     path = path or DEFAULT_CONFIG_PATH
     raw = tomllib.loads(path.read_text())
-    return _parse(raw)
+    cfg = _parse(raw)
+    cfg.neo4j.validate()
+    return cfg
 
 
 def _parse(raw: dict[str, Any]) -> Config:

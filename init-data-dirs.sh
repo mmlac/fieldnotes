@@ -7,5 +7,6 @@ DATA_DIR="${FIELDNOTES_DATA:-$HOME/.fieldnotes/data}"
 
 mkdir -p "$DATA_DIR/neo4j"
 mkdir -p "$DATA_DIR/qdrant"
+chmod 700 "$DATA_DIR" "$DATA_DIR/neo4j" "$DATA_DIR/qdrant"
 
 echo "Data directories ready: $DATA_DIR/{neo4j,qdrant}"
