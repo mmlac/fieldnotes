@@ -81,6 +81,18 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Configure fieldnotes as an MCP server for Claude Desktop",
     )
 
+    # ── setup-gastown ────────────────────────────────────────────────
+    gastown_p = sub.add_parser(
+        "setup-gastown",
+        help="Configure fieldnotes as MCP server in a GasTown rig",
+    )
+    gastown_p.add_argument(
+        "--rig-root",
+        type=Path,
+        default=None,
+        help="GasTown rig root (auto-detected if omitted)",
+    )
+
     # ── topics ──────────────────────────────────────────────────────
     topics_p = sub.add_parser("topics", help="Browse and inspect topics")
     topics_p.add_argument(
@@ -231,6 +243,18 @@ def main(argv: list[str] | None = None) -> int:
         print("Usage: fieldnotes daemon {install,uninstall,status,start,stop}",
               file=sys.stderr)
         return 1
+
+    if args.command == "setup-gastown":
+        from worker.gastown import setup_gastown
+
+        try:
+            return setup_gastown(
+                config_path=args.config,
+                rig_root=args.rig_root,
+            )
+        except Exception as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
 
     if args.command == "search":
         if args.top_k < 1:
