@@ -8,24 +8,14 @@ vault-aware metadata (vault_path, vault_name, relative_path).
 from __future__ import annotations
 
 import asyncio
-import fnmatch
 import logging
-import uuid
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from watchdog.events import (
-    FileCreatedEvent,
-    FileDeletedEvent,
-    FileModifiedEvent,
-    FileSystemEvent,
-    FileSystemEventHandler,
-)
 from watchdog.observers import Observer
 
+from ._handler import DEFAULT_MAX_FILE_SIZE, BaseHandler
 from .base import PythonSource
-from .files import DEFAULT_MAX_FILE_SIZE, _streaming_sha256
 
 logger = logging.getLogger(__name__)
 
@@ -52,8 +42,10 @@ def discover_vaults(search_paths: list[Path]) -> list[Path]:
     return vaults
 
 
-class _VaultHandler(FileSystemEventHandler):
+class _VaultHandler(BaseHandler):
     """Watchdog handler that emits vault-aware IngestEvent dicts."""
+
+    _source_type = "obsidian"
 
     def __init__(
         self,
@@ -65,107 +57,34 @@ class _VaultHandler(FileSystemEventHandler):
         exclude_patterns: list[str],
         max_file_size: int = DEFAULT_MAX_FILE_SIZE,
     ) -> None:
-        self._queue = queue
-        self._loop = loop
+        super().__init__(
+            queue=queue,
+            loop=loop,
+            include_extensions=include_extensions,
+            exclude_patterns=exclude_patterns,
+            max_file_size=max_file_size,
+        )
         self._vault_path = vault_path
         self._vault_name = vault_name
-        self._include_extensions = include_extensions
-        self._exclude_patterns = exclude_patterns
-        self._max_file_size = max_file_size
 
-    def _should_skip(self, path: str) -> bool:
-        p = Path(path)
-        # Always skip files inside .obsidian/ config directory
+    def _extra_skip(self, path: str) -> bool:
+        """Skip files inside .obsidian/ config directory."""
         try:
-            p.relative_to(self._vault_path / ".obsidian")
+            Path(path).relative_to(self._vault_path / ".obsidian")
             return True
         except ValueError:
-            pass
-        if self._include_extensions and p.suffix.lower() not in self._include_extensions:
-            return True
-        for pattern in self._exclude_patterns:
-            if fnmatch.fnmatch(path, pattern) or fnmatch.fnmatch(p.name, pattern):
-                return True
-        return False
+            return False
 
-    def _operation(self, event: FileSystemEvent) -> str | None:
-        if isinstance(event, FileCreatedEvent):
-            return "created"
-        if isinstance(event, FileModifiedEvent):
-            return "modified"
-        if isinstance(event, FileDeletedEvent):
-            return "deleted"
-        return None
-
-    def _build_event(self, event: FileSystemEvent) -> dict[str, Any] | None:
-        if event.is_directory:
-            return None
-        op = self._operation(event)
-        if op is None:
-            return None
-        src_path = str(event.src_path)
-        if self._should_skip(src_path):
-            return None
-
+    def _extra_meta(self, src_path: str) -> dict[str, Any]:
         try:
             relative_path = str(Path(src_path).relative_to(self._vault_path))
         except ValueError:
             relative_path = src_path
-
-        now = datetime.now(timezone.utc).isoformat()
-        ingest: dict[str, Any] = {
-            "id": str(uuid.uuid4()),
-            "source_type": "obsidian",
-            "source_id": src_path,
-            "operation": op,
-            "mime_type": _guess_mime(src_path),
-            "meta": {
-                "vault_path": str(self._vault_path),
-                "vault_name": self._vault_name,
-                "relative_path": relative_path,
-            },
-            "enqueued_at": now,
+        return {
+            "vault_path": str(self._vault_path),
+            "vault_name": self._vault_name,
+            "relative_path": relative_path,
         }
-
-        p = Path(src_path)
-        if op != "deleted" and p.is_file():
-            try:
-                stat = p.stat()
-                ingest["source_modified_at"] = datetime.fromtimestamp(
-                    stat.st_mtime, tz=timezone.utc
-                ).isoformat()
-                result = _streaming_sha256(p, self._max_file_size)
-                if result is None:
-                    logger.warning(
-                        "Skipping %s — exceeds max_file_size (%d bytes)",
-                        src_path,
-                        self._max_file_size,
-                    )
-                    return None
-                digest, size = result
-                ingest["meta"]["sha256"] = digest
-                ingest["meta"]["size_bytes"] = size
-            except OSError:
-                logger.warning("Failed to read %s, emitting event without content hash", src_path)
-                ingest["source_modified_at"] = now
-        else:
-            ingest["source_modified_at"] = now
-
-        return ingest
-
-    def on_created(self, event: FileSystemEvent) -> None:
-        self._dispatch(event)
-
-    def on_modified(self, event: FileSystemEvent) -> None:
-        self._dispatch(event)
-
-    def on_deleted(self, event: FileSystemEvent) -> None:
-        self._dispatch(event)
-
-    def _dispatch(self, event: FileSystemEvent) -> None:
-        ingest = self._build_event(event)
-        if ingest is not None:
-            asyncio.run_coroutine_threadsafe(self._queue.put(ingest), self._loop)
 
 
 class ObsidianSource(PythonSource):
@@ -244,26 +163,3 @@ class ObsidianSource(PythonSource):
             observer.stop()
             observer.join()
             raise
-
-
-def _guess_mime(path: str) -> str:
-    """Return a basic MIME type based on file extension."""
-    ext = Path(path).suffix.lower()
-    mime_map = {
-        ".md": "text/markdown",
-        ".txt": "text/plain",
-        ".pdf": "application/pdf",
-        ".png": "image/png",
-        ".jpg": "image/jpeg",
-        ".jpeg": "image/jpeg",
-        ".gif": "image/gif",
-        ".svg": "image/svg+xml",
-        ".json": "application/json",
-        ".yaml": "text/yaml",
-        ".yml": "text/yaml",
-        ".toml": "text/toml",
-        ".html": "text/html",
-        ".csv": "text/csv",
-        ".canvas": "application/json",
-    }
-    return mime_map.get(ext, "application/octet-stream")
