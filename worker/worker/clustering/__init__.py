@@ -1,1 +1,1 @@
-"""Clustering module — UMAP + HDBSCAN topic discovery over chunk embeddings."""
+"""Clustering module — UMAP + HDBSCAN topic discovery and LLM-powered labeling."""
