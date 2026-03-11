@@ -108,8 +108,11 @@ async def clustering_loop(
         clustering_cfg.min_corpus_size,
     )
 
+    min_delay = clustering_cfg.min_interval_seconds
+
     while True:
         delay = _seconds_until_next(clustering_cfg.cron)
+        delay = max(delay, min_delay)
         logger.debug("Next clustering run in %.0f seconds", delay)
 
         await asyncio.sleep(delay)

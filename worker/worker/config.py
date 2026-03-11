@@ -106,6 +106,7 @@ class ClusteringConfig:
     enabled: bool = True
     cron: str = "0 3 * * 0"
     min_corpus_size: int = 100
+    min_interval_seconds: float = 60.0
 
 
 @dataclass

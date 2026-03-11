@@ -206,6 +206,9 @@ class TestClusteringLoop:
             call_count += 1
             return True
 
+        cfg = _clustering_cfg()
+        cfg.min_interval_seconds = 0.0  # allow fast iteration in test
+
         with (
             patch("worker.clustering.scheduler._seconds_until_next", return_value=0.0),
             patch("worker.clustering.scheduler.run_clustering_pipeline", side_effect=fake_pipeline),
@@ -213,7 +216,7 @@ class TestClusteringLoop:
             task = asyncio.create_task(
                 clustering_loop(
                     _mock_registry(),
-                    _clustering_cfg(),
+                    cfg,
                     QdrantConfig(),
                     Neo4jConfig(),
                 )
@@ -237,6 +240,9 @@ class TestClusteringLoop:
                 raise RuntimeError("transient failure")
             return True
 
+        cfg = _clustering_cfg()
+        cfg.min_interval_seconds = 0.0  # allow fast iteration in test
+
         with (
             patch("worker.clustering.scheduler._seconds_until_next", return_value=0.0),
             patch("worker.clustering.scheduler.run_clustering_pipeline", side_effect=failing_pipeline),
@@ -244,7 +250,7 @@ class TestClusteringLoop:
             task = asyncio.create_task(
                 clustering_loop(
                     _mock_registry(),
-                    _clustering_cfg(),
+                    cfg,
                     QdrantConfig(),
                     Neo4jConfig(),
                 )
@@ -256,3 +262,36 @@ class TestClusteringLoop:
 
         # Should have called at least twice (first fails, second succeeds)
         assert len(calls) >= 2
+
+    @pytest.mark.asyncio
+    async def test_min_interval_prevents_tight_loop(self) -> None:
+        """When cron returns 0, min_interval_seconds prevents tight-looping."""
+        call_times: list[float] = []
+
+        def timed_pipeline(*args: object) -> bool:
+            call_times.append(asyncio.get_event_loop().time())
+            return True
+
+        cfg = _clustering_cfg()
+        cfg.min_interval_seconds = 0.05  # 50ms minimum
+
+        with (
+            patch("worker.clustering.scheduler._seconds_until_next", return_value=0.0),
+            patch("worker.clustering.scheduler.run_clustering_pipeline", side_effect=timed_pipeline),
+        ):
+            task = asyncio.create_task(
+                clustering_loop(
+                    _mock_registry(),
+                    cfg,
+                    QdrantConfig(),
+                    Neo4jConfig(),
+                )
+            )
+            await asyncio.sleep(0.2)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        # With 50ms min interval and 200ms runtime, we should get at most ~4 calls
+        # Without the fix, we'd get hundreds
+        assert len(call_times) <= 6
