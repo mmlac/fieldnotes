@@ -237,9 +237,21 @@ class TestGraphQuerier:
 
     @patch("worker.query.graph.GraphCypherQAChain")
     @patch("worker.query.graph.Neo4jGraph")
-    def test_close(
+    def test_close_calls_driver_close(
+        self, mock_neo4j_graph_cls: MagicMock, mock_chain_cls: MagicMock
+    ) -> None:
+        querier = _make_querier(mock_neo4j_graph_cls, mock_chain_cls)
+        mock_driver = querier._graph._driver
+        querier.close()
+        mock_driver.close.assert_called_once()
+        assert querier._graph is None
+
+    @patch("worker.query.graph.GraphCypherQAChain")
+    @patch("worker.query.graph.Neo4jGraph")
+    def test_close_idempotent(
         self, mock_neo4j_graph_cls: MagicMock, mock_chain_cls: MagicMock
     ) -> None:
         querier = _make_querier(mock_neo4j_graph_cls, mock_chain_cls)
         querier.close()
+        querier.close()  # second call should not raise
         assert querier._graph is None

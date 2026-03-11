@@ -249,7 +249,10 @@ class GraphQuerier:
         self.close()
 
     def close(self) -> None:
-        """Release the Neo4j connection."""
-        # Neo4jGraph doesn't expose a close method; the driver is internal.
-        # Setting to None lets GC clean up.
-        self._graph = None  # type: ignore[assignment]
+        """Release the Neo4j connection and close the driver pool."""
+        if self._graph is not None:
+            try:
+                self._graph._driver.close()
+            except Exception:
+                logger.debug("Error closing Neo4j driver", exc_info=True)
+            self._graph = None  # type: ignore[assignment]
