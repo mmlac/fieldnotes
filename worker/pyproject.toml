@@ -21,6 +21,7 @@ dependencies = [
     "ollama>=0.4",
     "numpy>=1.26",
     "pymupdf>=1.24",
+    "openai>=1.0",
     "tenacity>=8.0",
     "google-auth-httplib2>=0.2",
     "google-auth-oauthlib>=1.0",
