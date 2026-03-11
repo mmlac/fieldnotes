@@ -111,6 +111,7 @@ class TestLaunchdBackend:
         assert "<string>/usr/bin/fieldnotes</string>" in content
         assert "<string>serve</string>" in content
         assert "<string>--daemon</string>" in content
+        assert backend._plist_path.stat().st_mode & 0o777 == 0o644
         mock_run.assert_called_once()
         assert "launchctl" in mock_run.call_args[0][0]
 
@@ -220,6 +221,7 @@ class TestSystemdBackend:
         content = backend._unit_path.read_text()
         assert "ExecStart" in content
         assert "/usr/bin/fieldnotes" in content
+        assert backend._unit_path.stat().st_mode & 0o777 == 0o644
         # Should call daemon-reload and enable --now
         assert mock_run.call_count == 2
 

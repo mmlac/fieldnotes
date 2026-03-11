@@ -74,6 +74,7 @@ class _LaunchdBackend:
             },
         )
         self._plist_path.write_text(content)
+        self._plist_path.chmod(0o644)
         print(f"Wrote {self._plist_path}")
 
         subprocess.run(
@@ -150,6 +151,7 @@ class _SystemdBackend:
             {"EXECUTABLE": " ".join(_fieldnotes_executable())},
         )
         self._unit_path.write_text(content)
+        self._unit_path.chmod(0o644)
         print(f"Wrote {self._unit_path}")
 
         subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)

@@ -140,6 +140,11 @@ class TestCursorPersistence:
         _save_cursor(p, {"r": "sha"})
         assert p.exists()
 
+    def test_save_sets_restrictive_permissions(self, tmp_path: Path) -> None:
+        p = tmp_path / "cursors.json"
+        _save_cursor(p, {"repo1": "abc123"})
+        assert p.stat().st_mode & 0o777 == 0o600
+
 
 # ── RepositorySource configure ────────────────────────────────────
 

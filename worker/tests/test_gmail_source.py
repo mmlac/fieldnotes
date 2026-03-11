@@ -113,6 +113,11 @@ class TestSaveCursor:
         _save_cursor(f, "1")
         assert f.exists()
 
+    def test_sets_restrictive_permissions(self, tmp_path: Path) -> None:
+        f = tmp_path / "cursor.json"
+        _save_cursor(f, "42")
+        assert f.stat().st_mode & 0o777 == 0o600
+
 
 # ---------------------------------------------------------------------------
 # _extract_recipients

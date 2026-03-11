@@ -148,3 +148,14 @@ class TestSetupClaude:
 
         assert rc == 0
         assert cfg_path.exists()
+
+    @patch("worker.setup.shutil.which", return_value="/usr/local/bin/fieldnotes")
+    def test_config_file_permissions(
+        self, _mock: object, tmp_path: Path
+    ) -> None:
+        cfg_path = tmp_path / "claude_desktop_config.json"
+
+        rc = setup_claude(config_path=cfg_path)
+
+        assert rc == 0
+        assert cfg_path.stat().st_mode & 0o777 == 0o600

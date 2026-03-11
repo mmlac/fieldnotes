@@ -54,6 +54,7 @@ def _save_cursor(path: Path, history_id: str) -> None:
     """Persist the latest history ID to disk."""
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({"history_id": history_id}))
+    path.chmod(0o600)
 
 
 def _extract_recipients(headers: list[dict[str, str]]) -> list[str]:

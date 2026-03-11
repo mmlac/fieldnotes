@@ -96,6 +96,7 @@ def setup_claude(config_path: Path | None = None) -> int:
     # 6. Write updated config
     cfg_path.parent.mkdir(parents=True, exist_ok=True)
     cfg_path.write_text(json.dumps(existing, indent=2) + "\n")
+    cfg_path.chmod(0o600)
 
     print(f"Added fieldnotes MCP server to {cfg_path}")
     print()

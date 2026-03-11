@@ -84,6 +84,7 @@ def _save_cursor(path: Path, cursors: dict[str, str]) -> None:
     """Persist per-repo HEAD cursors to disk."""
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(cursors))
+    path.chmod(0o600)
 
 
 def _matches_any(rel_path: str, patterns: list[str]) -> bool:
