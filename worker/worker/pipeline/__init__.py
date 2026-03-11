@@ -127,6 +127,16 @@ class Pipeline:
                 len(failed),
                 len(docs),
             )
+
+        # After batch processing, reconcile Person nodes across sources
+        try:
+            self._writer.reconcile_persons()
+        except Exception:
+            logger.warning(
+                "Person reconciliation failed — will retry on next batch",
+                exc_info=True,
+            )
+
         return failed
 
     def __enter__(self) -> Pipeline:

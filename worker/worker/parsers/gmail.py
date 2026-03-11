@@ -92,14 +92,15 @@ class GmailParser(BaseParser):
 
         # SENT: Person → Email (sender sent this email)
         if sender_addr:
+            norm_sender = sender_addr.strip().lower()
             graph_hints.append(
                 GraphHint(
-                    subject_id=f"person:{sender_addr}",
+                    subject_id=f"person:{norm_sender}",
                     subject_label="Person",
                     predicate="SENT",
                     object_id=source_id,
                     object_label="Email",
-                    subject_props={"email": sender_addr},
+                    subject_props={"email": norm_sender},
                     subject_merge_key="email",
                     confidence=1.0,
                 )
@@ -110,14 +111,15 @@ class GmailParser(BaseParser):
             recip_addr = _parse_email_address(recip_raw)
             if not recip_addr:
                 continue
+            norm_recip = recip_addr.strip().lower()
             graph_hints.append(
                 GraphHint(
                     subject_id=source_id,
                     subject_label="Email",
                     predicate="TO",
-                    object_id=f"person:{recip_addr}",
+                    object_id=f"person:{norm_recip}",
                     object_label="Person",
-                    object_props={"email": recip_addr},
+                    object_props={"email": norm_recip},
                     object_merge_key="email",
                     confidence=1.0,
                 )

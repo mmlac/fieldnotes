@@ -82,14 +82,15 @@ class RepositoryParser(BaseParser):
 
         # Person → Commit via AUTHORED
         if author_email:
+            norm_email = author_email.strip().lower()
             graph_hints.append(
                 GraphHint(
-                    subject_id=author_email,
+                    subject_id=norm_email,
                     subject_label="Person",
                     predicate="AUTHORED",
                     object_id=source_id,
                     object_label="Commit",
-                    subject_props={"name": author_name, "email": author_email},
+                    subject_props={"name": author_name, "email": norm_email},
                     object_props={},
                     subject_merge_key="email",
                     object_merge_key="source_id",

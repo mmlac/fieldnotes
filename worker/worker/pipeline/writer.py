@@ -102,6 +102,7 @@ ALLOWED_PREDICATES: frozenset[str] = frozenset({
     "INTEGRATES_WITH",
     "SUCCEEDED_BY",
     "PRECEDED_BY",
+    "SAME_AS",
     "SIMILAR_TO",
     "OPPOSITE_OF",
     "INFLUENCED_BY",
@@ -346,6 +347,53 @@ class Writer:
                 "Neo4j version doesn't support IF NOT EXISTS)",
                 exc_info=True,
             )
+
+    def reconcile_persons(self) -> int:
+        """Scan for Person nodes with matching emails across source types and merge them.
+
+        For each group of Person nodes sharing a normalized email, keeps the
+        longest name and creates SAME_AS edges between source-specific IDs.
+
+        Returns the number of Person nodes updated.
+        """
+        return self._reconcile_persons_neo4j()
+
+    @_neo4j_retry
+    def _reconcile_persons_neo4j(self) -> int:
+        """Run Person dedup in Neo4j: prefer longer name, add SAME_AS edges."""
+        with self._neo4j_driver.session() as session:
+            # Update Person names to prefer the longest variant for each email
+            result = session.run(
+                """
+                MATCH (p:Person)
+                WHERE p.email IS NOT NULL
+                WITH toLower(trim(p.email)) AS norm_email, collect(p) AS persons
+                WHERE size(persons) > 1
+                WITH norm_email, persons,
+                     reduce(best = '', p IN persons |
+                         CASE WHEN size(p.name) > size(best) THEN p.name ELSE best END
+                     ) AS best_name
+                UNWIND persons AS p
+                SET p.name = best_name
+                RETURN count(p) AS updated
+                """
+            )
+            updated = result.single()["updated"]
+
+            # Create SAME_AS edges between Person nodes with the same email
+            session.run(
+                """
+                MATCH (a:Person), (b:Person)
+                WHERE a.email IS NOT NULL AND b.email IS NOT NULL
+                  AND toLower(trim(a.email)) = toLower(trim(b.email))
+                  AND id(a) < id(b)
+                MERGE (a)-[:SAME_AS]->(b)
+                """
+            )
+
+            if updated > 0:
+                logger.info("Reconciled %d Person nodes by email", updated)
+            return updated
 
     def write(self, unit: WriteUnit) -> None:
         """Write a single processed document to both stores.
@@ -692,6 +740,29 @@ def _upsert_chunk(
     )
 
 
+def _build_hint_set_parts(
+    alias: str, props: dict[str, Any], is_person: bool
+) -> str:
+    """Build a Cypher SET clause for graph hint node properties.
+
+    For Person nodes, the ``name`` property uses a conditional update that
+    keeps the longer (more complete) name — e.g. "M. Smith" won't overwrite
+    "Markus Smith".  All other properties are set unconditionally.
+    """
+    parts: list[str] = []
+    for k in props:
+        if is_person and k == "name":
+            parts.append(
+                f"{alias}.name = CASE "
+                f"WHEN {alias}.name IS NOT NULL "
+                f"AND size({alias}.name) >= size(${alias}_{k}) "
+                f"THEN {alias}.name ELSE ${alias}_{k} END"
+            )
+        else:
+            parts.append(f"{alias}.{k} = ${alias}_{k}")
+    return ", ".join(parts)
+
+
 def _write_graph_hint(tx: Any, hint: GraphHint) -> None:
     """Write a pre-extracted graph fact directly to Neo4j.
 
@@ -719,7 +790,9 @@ def _write_graph_hint(tx: Any, hint: GraphHint) -> None:
     # Determine merge value: use subject_props if the key exists there,
     # otherwise fall back to source_id (the default merge key).
     subj_merge_val = subj_props.get(subj_merge_key, hint.subject_id)
-    subj_set_parts = ", ".join(f"s.{k} = $s_{k}" for k in subj_props)
+    subj_set_parts = _build_hint_set_parts(
+        "s", subj_props, subject_label == "Person"
+    )
     subj_params = {f"s_{k}": v for k, v in subj_props.items()}
     subj_params["s_merge"] = subj_merge_val
     tx.run(
@@ -733,7 +806,9 @@ def _write_graph_hint(tx: Any, hint: GraphHint) -> None:
     for k in obj_props:
         _validate_cypher_identifier(k, "hint object_props key")
     obj_merge_val = obj_props.get(obj_merge_key, hint.object_id)
-    obj_set_parts = ", ".join(f"o.{k} = $o_{k}" for k in obj_props)
+    obj_set_parts = _build_hint_set_parts(
+        "o", obj_props, object_label == "Person"
+    )
     obj_params = {f"o_{k}": v for k, v in obj_props.items()}
     obj_params["o_merge"] = obj_merge_val
     tx.run(
