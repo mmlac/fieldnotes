@@ -6,9 +6,7 @@
     <string>com.fieldnotes.daemon</string>
     <key>ProgramArguments</key>
     <array>
-        <string>{{EXECUTABLE}}</string>
-        <string>serve</string>
-        <string>--daemon</string>
+        {{PROGRAM_ARGUMENTS}}
     </array>
     <key>RunAtLoad</key>
     <true/>

@@ -31,13 +31,13 @@ _SYSTEMD_UNIT = "fieldnotes.service"
 _TEMPLATES = Path(__file__).parent / "templates"
 
 
-def _fieldnotes_executable() -> str:
-    """Return the absolute path to the ``fieldnotes`` console script."""
+def _fieldnotes_executable() -> list[str]:
+    """Return the command parts needed to invoke ``fieldnotes``."""
     exe = shutil.which("fieldnotes")
     if exe:
-        return exe
+        return [exe]
     # Fall back to the running interpreter's entry point.
-    return sys.executable + " -m worker.cli"
+    return [sys.executable, "-m", "worker.cli"]
 
 
 def _render_template(name: str, variables: dict[str, str]) -> str:
@@ -62,10 +62,14 @@ class _LaunchdBackend:
     def install(self) -> None:
         self._plist_dir.mkdir(parents=True, exist_ok=True)
 
+        exe_parts = _fieldnotes_executable()
+        exe_strings = "\n        ".join(
+            f"<string>{part}</string>" for part in [*exe_parts, "serve", "--daemon"]
+        )
         content = _render_template(
             "com.fieldnotes.daemon.plist",
             {
-                "EXECUTABLE": _fieldnotes_executable(),
+                "PROGRAM_ARGUMENTS": exe_strings,
                 "LOG_PATH": str(self._log_path),
             },
         )
@@ -143,7 +147,7 @@ class _SystemdBackend:
 
         content = _render_template(
             "fieldnotes.service",
-            {"EXECUTABLE": _fieldnotes_executable()},
+            {"EXECUTABLE": " ".join(_fieldnotes_executable())},
         )
         self._unit_path.write_text(content)
         print(f"Wrote {self._unit_path}")

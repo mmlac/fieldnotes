@@ -30,22 +30,29 @@ from worker.daemon import (
 class TestFieldnotesExecutable:
     @patch("worker.daemon.shutil.which", return_value="/usr/local/bin/fieldnotes")
     def test_found_on_path(self, _mock: object) -> None:
-        assert _fieldnotes_executable() == "/usr/local/bin/fieldnotes"
+        assert _fieldnotes_executable() == ["/usr/local/bin/fieldnotes"]
 
     @patch("worker.daemon.shutil.which", return_value=None)
     def test_fallback_to_interpreter(self, _mock: object) -> None:
         exe = _fieldnotes_executable()
-        assert "-m worker.cli" in exe
+        assert isinstance(exe, list)
+        assert len(exe) == 3
+        assert exe[1] == "-m"
+        assert exe[2] == "worker.cli"
 
 
 class TestRenderTemplate:
     def test_plist_template(self) -> None:
+        exe_strings = "\n        ".join(
+            f"<string>{p}</string>" for p in ["/usr/bin/fieldnotes", "serve", "--daemon"]
+        )
         content = _render_template(
             "com.fieldnotes.daemon.plist",
-            {"EXECUTABLE": "/usr/bin/fieldnotes", "LOG_PATH": "/tmp/fn.log"},
+            {"PROGRAM_ARGUMENTS": exe_strings, "LOG_PATH": "/tmp/fn.log"},
         )
         assert "com.fieldnotes.daemon" in content
-        assert "/usr/bin/fieldnotes" in content
+        assert "<string>/usr/bin/fieldnotes</string>" in content
+        assert "<string>serve</string>" in content
         assert "/tmp/fn.log" in content
 
     def test_systemd_template(self) -> None:
@@ -87,7 +94,7 @@ class TestPlatformBackend:
 
 class TestLaunchdBackend:
     @patch("worker.daemon.subprocess.run")
-    @patch("worker.daemon._fieldnotes_executable", return_value="/usr/bin/fieldnotes")
+    @patch("worker.daemon._fieldnotes_executable", return_value=["/usr/bin/fieldnotes"])
     def test_install(
         self, _mock_exe: object, mock_run: MagicMock, tmp_path: Path
     ) -> None:
@@ -101,7 +108,9 @@ class TestLaunchdBackend:
         assert backend._plist_path.exists()
         content = backend._plist_path.read_text()
         assert "com.fieldnotes.daemon" in content
-        assert "/usr/bin/fieldnotes" in content
+        assert "<string>/usr/bin/fieldnotes</string>" in content
+        assert "<string>serve</string>" in content
+        assert "<string>--daemon</string>" in content
         mock_run.assert_called_once()
         assert "launchctl" in mock_run.call_args[0][0]
 
@@ -197,7 +206,7 @@ class TestLaunchdBackend:
 
 class TestSystemdBackend:
     @patch("worker.daemon.subprocess.run")
-    @patch("worker.daemon._fieldnotes_executable", return_value="/usr/bin/fieldnotes")
+    @patch("worker.daemon._fieldnotes_executable", return_value=["/usr/bin/fieldnotes"])
     def test_install(
         self, _mock_exe: object, mock_run: MagicMock, tmp_path: Path
     ) -> None:
