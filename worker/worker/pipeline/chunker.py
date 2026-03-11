@@ -102,7 +102,7 @@ def chunk_text(
         chunks.append(current)
 
     # Merge short trailing chunk into the previous one.
-    chunks = _merge_short_chunks(chunks, min_chunk_tokens)
+    chunks = _merge_short_chunks(chunks, min_chunk_tokens, chunk_size)
 
     return [
         Chunk(text=_detokenize(tokens), index=i)
@@ -111,24 +111,30 @@ def chunk_text(
 
 
 def _merge_short_chunks(
-    chunks: list[list[str]], min_tokens: int
+    chunks: list[list[str]], min_tokens: int, chunk_size: int
 ) -> list[list[str]]:
-    """Merge any chunk shorter than *min_tokens* with an adjacent chunk."""
+    """Merge any chunk shorter than *min_tokens* with an adjacent chunk.
+
+    Merged chunks are capped at 1.5× *chunk_size* to prevent unbounded growth
+    when many consecutive short chunks appear.
+    """
     if not chunks:
         return chunks
 
+    max_merged = int(chunk_size * 1.5)
     merged: list[list[str]] = [chunks[0]]
 
     for chunk in chunks[1:]:
-        if len(chunk) < min_tokens:
-            # Merge into the previous chunk.
+        if len(chunk) < min_tokens and len(merged[-1]) + len(chunk) <= max_merged:
+            # Merge into the previous chunk only if it won't exceed the cap.
             merged[-1].extend(chunk)
         else:
             merged.append(chunk)
 
     # If the first chunk ended up too short after everything, merge forward.
     if len(merged) > 1 and len(merged[0]) < min_tokens:
-        merged[1] = merged[0] + merged[1]
-        merged.pop(0)
+        if len(merged[0]) + len(merged[1]) <= max_merged:
+            merged[1] = merged[0] + merged[1]
+            merged.pop(0)
 
     return merged
