@@ -1,0 +1,173 @@
+"""Config loader for the three-layer TOML configuration.
+
+Parses ~/.fieldnotes/config.toml into typed dataclasses covering:
+  - [modelproviders.*] — provider connection parameters
+  - [models.*] — named model definitions bound to providers
+  - [models.roles] — pipeline role → model alias mapping
+  - [sources.*] — source adapter configuration
+"""
+
+from __future__ import annotations
+
+import tomllib
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+
+DEFAULT_CONFIG_PATH = Path.home() / ".fieldnotes" / "config.toml"
+
+
+@dataclass
+class CoreConfig:
+    data_dir: str = "~/.fieldnotes/data"
+    log_level: str = "info"
+
+
+@dataclass
+class Neo4jConfig:
+    uri: str = "bolt://localhost:7687"
+    user: str = "neo4j"
+    password: str = "fieldnotes"
+
+
+@dataclass
+class QdrantConfig:
+    host: str = "localhost"
+    port: int = 6333
+    collection: str = "fieldnotes"
+
+
+@dataclass
+class ProviderConfig:
+    """A single [modelproviders.<name>] section."""
+    name: str
+    type: str
+    settings: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class ModelConfig:
+    """A single [models.<alias>] section (not roles)."""
+    alias: str
+    provider: str
+    model: str
+
+
+@dataclass
+class RolesConfig:
+    """[models.roles] — maps pipeline roles to model aliases."""
+    mapping: dict[str, str] = field(default_factory=dict)
+
+    def get(self, role: str) -> str | None:
+        return self.mapping.get(role)
+
+
+@dataclass
+class SourceConfig:
+    """A single [sources.<name>] section."""
+    name: str
+    settings: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class ClusteringConfig:
+    enabled: bool = True
+    cron: str = "0 3 * * 0"
+
+
+@dataclass
+class McpConfig:
+    enabled: bool = True
+    port: int = 3456
+
+
+@dataclass
+class Config:
+    core: CoreConfig = field(default_factory=CoreConfig)
+    neo4j: Neo4jConfig = field(default_factory=Neo4jConfig)
+    qdrant: QdrantConfig = field(default_factory=QdrantConfig)
+    providers: dict[str, ProviderConfig] = field(default_factory=dict)
+    models: dict[str, ModelConfig] = field(default_factory=dict)
+    roles: RolesConfig = field(default_factory=RolesConfig)
+    sources: dict[str, SourceConfig] = field(default_factory=dict)
+    clustering: ClusteringConfig = field(default_factory=ClusteringConfig)
+    mcp: McpConfig = field(default_factory=McpConfig)
+
+
+def load_config(path: Path | None = None) -> Config:
+    """Load and parse config.toml into a Config object."""
+    path = path or DEFAULT_CONFIG_PATH
+    raw = tomllib.loads(path.read_text())
+    return _parse(raw)
+
+
+def _parse(raw: dict[str, Any]) -> Config:
+    cfg = Config()
+
+    # [core]
+    if "core" in raw:
+        c = raw["core"]
+        cfg.core = CoreConfig(
+            data_dir=c.get("data_dir", cfg.core.data_dir),
+            log_level=c.get("log_level", cfg.core.log_level),
+        )
+
+    # [neo4j]
+    if "neo4j" in raw:
+        n = raw["neo4j"]
+        cfg.neo4j = Neo4jConfig(
+            uri=n.get("uri", cfg.neo4j.uri),
+            user=n.get("user", cfg.neo4j.user),
+            password=n.get("password", cfg.neo4j.password),
+        )
+
+    # [qdrant]
+    if "qdrant" in raw:
+        q = raw["qdrant"]
+        cfg.qdrant = QdrantConfig(
+            host=q.get("host", cfg.qdrant.host),
+            port=q.get("port", cfg.qdrant.port),
+            collection=q.get("collection", cfg.qdrant.collection),
+        )
+
+    # [modelproviders.*]
+    for name, pcfg in raw.get("modelproviders", {}).items():
+        provider_type = pcfg["type"]
+        settings = {k: v for k, v in pcfg.items() if k != "type"}
+        cfg.providers[name] = ProviderConfig(
+            name=name, type=provider_type, settings=settings,
+        )
+
+    # [models.*] and [models.roles]
+    for alias, mcfg in raw.get("models", {}).items():
+        if alias == "roles":
+            cfg.roles = RolesConfig(mapping=dict(mcfg))
+        else:
+            cfg.models[alias] = ModelConfig(
+                alias=alias,
+                provider=mcfg["provider"],
+                model=mcfg["model"],
+            )
+
+    # [sources.*]
+    for name, scfg in raw.get("sources", {}).items():
+        cfg.sources[name] = SourceConfig(name=name, settings=dict(scfg))
+
+    # [clustering]
+    if "clustering" in raw:
+        cl = raw["clustering"]
+        cfg.clustering = ClusteringConfig(
+            enabled=cl.get("enabled", cfg.clustering.enabled),
+            cron=cl.get("cron", cfg.clustering.cron),
+        )
+
+    # [mcp]
+    if "mcp" in raw:
+        m = raw["mcp"]
+        cfg.mcp = McpConfig(
+            enabled=m.get("enabled", cfg.mcp.enabled),
+            port=m.get("port", cfg.mcp.port),
+        )
+
+    return cfg
