@@ -2,8 +2,9 @@
 
 Scans configured directory roots for git repositories, enumerates tracked
 files matching configurable include/exclude patterns, and emits one
-IngestEvent per matching file.  Uses per-repo HEAD commit SHA as cursor
-for incremental updates.
+IngestEvent per matching file.  Also extracts recent git commits, emitting
+one IngestEvent per commit with author metadata and changed file lists.
+Uses per-repo HEAD commit SHA as cursor for incremental updates.
 
 Config section ``[sources.repositories]``::
 
@@ -15,6 +16,7 @@ Config section ``[sources.repositories]``::
                         "target/", "__pycache__/"]
     cursor_path = "~/.fieldnotes/data/repo_cursor.json"
     max_file_size = 104857600
+    max_commits = 200
 """
 
 from __future__ import annotations
@@ -37,6 +39,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_POLL_INTERVAL = 300  # seconds
 DEFAULT_MAX_FILE_SIZE = 100 * 1024 * 1024  # 100 MiB
+DEFAULT_MAX_COMMITS = 200
 DEFAULT_CURSOR_PATH = Path.home() / ".fieldnotes" / "data" / "repo_cursor.json"
 
 DEFAULT_INCLUDE_PATTERNS: list[str] = [
@@ -176,8 +179,45 @@ def _build_event(
     return event
 
 
+def _build_commit_event(
+    commit: git.Commit,
+    repo_path: Path,
+    repo_name: str,
+    remote_url: str | None,
+    changed_files: list[str],
+) -> dict[str, Any]:
+    """Build an IngestEvent dict for a single git commit."""
+    sha = commit.hexsha
+    author_date = datetime.fromtimestamp(
+        commit.authored_date, tz=timezone.utc
+    ).isoformat()
+
+    meta: dict[str, Any] = {
+        "sha": sha,
+        "author_name": commit.author.name or "",
+        "author_email": commit.author.email or "",
+        "date": author_date,
+        "repo_name": repo_name,
+        "repo_path": str(repo_path),
+        "remote_url": remote_url,
+        "changed_files": changed_files,
+    }
+
+    return {
+        "id": str(uuid.uuid4()),
+        "source_type": "repositories",
+        "source_id": f"commit:{repo_path}:{sha}",
+        "operation": "created",
+        "mime_type": "text/plain",
+        "text": commit.message,
+        "meta": meta,
+        "source_modified_at": author_date,
+        "enqueued_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 class RepositorySource(PythonSource):
-    """Polls git repositories for doc files and emits IngestEvent dicts.
+    """Polls git repositories for doc files and commits, emits IngestEvent dicts.
 
     Config keys (from ``[sources.repositories]``):
         repo_roots: list[str]             — directories to scan for repos (required)
@@ -186,6 +226,7 @@ class RepositorySource(PythonSource):
         exclude_patterns: list[str]       — file glob patterns to exclude
         cursor_path: str                  — cursor persistence file (optional)
         max_file_size: int                — max file size in bytes (default: 100 MiB)
+        max_commits: int                  — max commits to index per repo (default: 200)
     """
 
     def __init__(self) -> None:
@@ -195,6 +236,7 @@ class RepositorySource(PythonSource):
         self._exclude_patterns: list[str] = list(DEFAULT_EXCLUDE_PATTERNS)
         self._cursor_path: Path = DEFAULT_CURSOR_PATH
         self._max_file_size: int = DEFAULT_MAX_FILE_SIZE
+        self._max_commits: int = DEFAULT_MAX_COMMITS
 
     def name(self) -> str:
         return "repositories"
@@ -221,6 +263,9 @@ class RepositorySource(PythonSource):
 
         self._max_file_size = int(
             cfg.get("max_file_size", DEFAULT_MAX_FILE_SIZE)
+        )
+        self._max_commits = int(
+            cfg.get("max_commits", DEFAULT_MAX_COMMITS)
         )
 
     async def start(self, queue: asyncio.Queue[dict[str, Any]]) -> None:
@@ -282,6 +327,11 @@ class RepositorySource(PythonSource):
             await self._scan_diff(
                 repo, repo_path, repo_name, remote_url, prev_sha, head_sha, queue
             )
+
+        # Scan commits (initial: last N; incremental: since prev cursor)
+        await self._scan_commits(
+            repo, repo_path, repo_name, remote_url, prev_sha, queue
+        )
 
         cursors[repo_key] = head_sha
 
@@ -381,6 +431,68 @@ class RepositorySource(PythonSource):
             logger.info(
                 "Incremental scan of %s (%s..%s): %d file(s) changed",
                 repo_name, prev_sha[:8], head_sha[:8], count,
+            )
+
+    async def _scan_commits(
+        self,
+        repo: git.Repo,
+        repo_path: Path,
+        repo_name: str,
+        remote_url: str | None,
+        prev_sha: str | None,
+        queue: asyncio.Queue[dict[str, Any]],
+    ) -> None:
+        """Emit events for recent git commits."""
+        loop = asyncio.get_running_loop()
+
+        try:
+            if prev_sha is not None:
+                # Incremental: commits between cursor and HEAD
+                rev = f"{prev_sha}..HEAD"
+            else:
+                # Initial scan: last N commits
+                rev = "HEAD"
+
+            commits = await loop.run_in_executor(
+                None,
+                lambda: list(
+                    repo.iter_commits(rev, max_count=self._max_commits)
+                ),
+            )
+        except (git.GitCommandError, ValueError) as exc:
+            logger.warning(
+                "Failed to enumerate commits in %s: %s", repo_name, exc
+            )
+            return
+
+        count = 0
+        for commit_obj in commits:
+            # Get changed file paths from the commit's diff against its parent
+            try:
+                changed = await loop.run_in_executor(
+                    None,
+                    lambda c=commit_obj: [
+                        d.b_path or d.a_path
+                        for d in (
+                            c.diff(c.parents[0]) if c.parents else c.diff(git.NULL_TREE)
+                        )
+                    ],
+                )
+            except (git.GitCommandError, ValueError):
+                changed = []
+
+            event = _build_commit_event(
+                commit_obj, repo_path, repo_name, remote_url, changed
+            )
+            await queue.put(event)
+            count += 1
+
+        if count:
+            logger.info(
+                "Indexed %d commit(s) from %s%s",
+                count,
+                repo_name,
+                f" ({prev_sha[:8]}..HEAD)" if prev_sha else " (initial)",
             )
 
     def _matches_include(self, rel_path: str) -> bool:
