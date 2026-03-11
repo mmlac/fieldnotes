@@ -155,6 +155,25 @@ class Writer:
     # Public API
     # ------------------------------------------------------------------
 
+    def mark_vision_processed(self, source_id: str) -> None:
+        """Set vision_processed=True on the Image node after vision completes.
+
+        Called by the pipeline after vision extraction, embedding, and writing
+        are all finished for an image document.
+        """
+        self._mark_vision_processed_neo4j(source_id)
+        logger.debug("Marked vision_processed=True for %s", source_id)
+
+    @_neo4j_retry
+    def _mark_vision_processed_neo4j(self, source_id: str) -> None:
+        """Set vision_processed flag in Neo4j with retry."""
+        with self._neo4j_driver.session() as session:
+            session.run(
+                "MATCH (n:Image {source_id: $sid}) "
+                "SET n.vision_processed = true",
+                sid=source_id,
+            )
+
     def fetch_existing_entities(self) -> list[dict[str, Any]]:
         """Query Neo4j for all existing Entity nodes.
 
@@ -262,6 +281,11 @@ class Writer:
         for entity in unit.depicts_entities:
             _upsert_entity(tx, entity)
             _merge_depicts_edge(tx, doc.source_id, entity["name"])
+
+        # 7. Create ATTACHED_TO edge (Image→File for embedded images)
+        parent_source_id = doc.node_props.get("parent_source_id")
+        if doc.node_label == "Image" and parent_source_id:
+            _merge_attached_to_edge(tx, doc.source_id, parent_source_id)
 
     # ------------------------------------------------------------------
     # Qdrant writes
@@ -450,6 +474,19 @@ def _merge_depicts_edge(tx: Any, source_id: str, entity_name: str) -> None:
         """,
         sid=source_id,
         name=entity_name,
+    )
+
+
+def _merge_attached_to_edge(tx: Any, image_source_id: str, parent_source_id: str) -> None:
+    """Create an ATTACHED_TO edge from an Image node to its parent File node."""
+    tx.run(
+        """
+        MATCH (img:Image {source_id: $img_sid})
+        MATCH (f:File {source_id: $parent_sid})
+        MERGE (img)-[:ATTACHED_TO]->(f)
+        """,
+        img_sid=image_source_id,
+        parent_sid=parent_source_id,
     )
 
 

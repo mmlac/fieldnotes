@@ -18,6 +18,8 @@ from worker.pipeline.writer import (
     WriteUnit,
     Writer,
     _chunk_node_id,
+    _merge_attached_to_edge,
+    _merge_depicts_edge,
     _merge_entity_edge,
     _merge_mentions_edge,
     _upsert_chunk,
@@ -582,3 +584,182 @@ class TestCypherIdentifierValidation:
         )
         with pytest.raises(ValueError, match="hint object_props key"):
             _write_graph_hint(tx, hint)
+
+
+# ------------------------------------------------------------------
+# Image node: DEPICTS and ATTACHED_TO edges
+# ------------------------------------------------------------------
+
+
+class TestImageNodeWriter:
+    def test_merge_depicts_edge(self):
+        tx = MagicMock()
+        _merge_depicts_edge(tx, "images/photo.png", "Alice")
+        tx.run.assert_called_once()
+        args, kwargs = tx.run.call_args
+        assert "DEPICTS" in args[0]
+        assert kwargs["sid"] == "images/photo.png"
+        assert kwargs["name"] == "Alice"
+
+    def test_merge_attached_to_edge(self):
+        tx = MagicMock()
+        _merge_attached_to_edge(tx, "images/photo.png", "notes/daily.md")
+        tx.run.assert_called_once()
+        args, kwargs = tx.run.call_args
+        assert "ATTACHED_TO" in args[0]
+        assert "Image" in args[0]
+        assert "File" in args[0]
+        assert kwargs["img_sid"] == "images/photo.png"
+        assert kwargs["parent_sid"] == "notes/daily.md"
+
+    def test_image_node_upsert_with_vision_props(self):
+        """Image nodes should be upserted with sha256, vision_processed, parent_source_id."""
+        tx = MagicMock()
+        doc = _doc(
+            node_label="Image",
+            source_id="images/photo.png",
+            node_props={
+                "name": "photo.png",
+                "path": "images/photo.png",
+                "sha256": "abc123def456",
+                "vision_processed": False,
+                "parent_source_id": "notes/daily.md",
+            },
+        )
+        _upsert_source_node(tx, doc)
+        tx.run.assert_called_once()
+        args, kwargs = tx.run.call_args
+        assert "MERGE" in args[0]
+        assert "Image" in args[0]
+        assert kwargs["sha256"] == "abc123def456"
+        assert kwargs["vision_processed"] is False
+        assert kwargs["parent_source_id"] == "notes/daily.md"
+
+    def test_write_image_creates_attached_to_edge(self, writer, mock_neo4j, mock_qdrant):
+        """Writing an Image node with parent_source_id should create ATTACHED_TO edge."""
+        doc = _doc(
+            node_label="Image",
+            source_id="images/photo.png",
+            node_props={
+                "name": "photo.png",
+                "path": "images/photo.png",
+                "sha256": "abc123",
+                "vision_processed": False,
+                "parent_source_id": "notes/daily.md",
+            },
+        )
+        unit = _unit(doc=doc)
+
+        session = MagicMock()
+        mock_neo4j.session.return_value.__enter__ = MagicMock(return_value=session)
+        mock_neo4j.session.return_value.__exit__ = MagicMock(return_value=False)
+
+        writer.write(unit)
+
+        # The tx function is called within execute_write; verify it was called
+        session.execute_write.assert_called_once()
+        # Extract the tx function and call it manually to inspect queries
+        tx = MagicMock()
+        tx_fn = session.execute_write.call_args[0][0]
+        tx_fn(tx, unit)
+
+        # Find the ATTACHED_TO call among all tx.run calls
+        attached_to_calls = [
+            c for c in tx.run.call_args_list
+            if "ATTACHED_TO" in str(c)
+        ]
+        assert len(attached_to_calls) == 1
+        args, kwargs = attached_to_calls[0]
+        assert kwargs["img_sid"] == "images/photo.png"
+        assert kwargs["parent_sid"] == "notes/daily.md"
+
+    def test_write_image_no_attached_to_without_parent(self, writer, mock_neo4j, mock_qdrant):
+        """Image without parent_source_id should NOT create ATTACHED_TO edge."""
+        doc = _doc(
+            node_label="Image",
+            source_id="images/standalone.png",
+            node_props={
+                "name": "standalone.png",
+                "path": "images/standalone.png",
+                "sha256": "def456",
+                "vision_processed": False,
+            },
+        )
+        unit = _unit(doc=doc)
+
+        tx = MagicMock()
+        Writer._write_neo4j_tx(tx, unit)
+
+        attached_to_calls = [
+            c for c in tx.run.call_args_list
+            if "ATTACHED_TO" in str(c)
+        ]
+        assert len(attached_to_calls) == 0
+
+    def test_write_non_image_no_attached_to(self, writer, mock_neo4j, mock_qdrant):
+        """Non-Image nodes should NOT create ATTACHED_TO edge even with parent_source_id."""
+        doc = _doc(
+            node_label="File",
+            node_props={"name": "test.md", "path": "notes/test.md", "parent_source_id": "notes/"},
+        )
+        unit = _unit(doc=doc)
+
+        tx = MagicMock()
+        Writer._write_neo4j_tx(tx, unit)
+
+        attached_to_calls = [
+            c for c in tx.run.call_args_list
+            if "ATTACHED_TO" in str(c)
+        ]
+        assert len(attached_to_calls) == 0
+
+    def test_write_image_with_depicts_entities(self, writer, mock_neo4j, mock_qdrant):
+        """Image with depicts_entities should create Entity nodes and DEPICTS edges."""
+        doc = _doc(
+            node_label="Image",
+            source_id="images/team.jpg",
+            node_props={
+                "name": "team.jpg",
+                "sha256": "aaa111",
+                "vision_processed": False,
+                "parent_source_id": "notes/meeting.md",
+            },
+        )
+        depicts = [
+            {"name": "Alice", "type": "Person", "confidence": 0.8},
+            {"name": "Whiteboard", "type": "Concept", "confidence": 0.8},
+        ]
+        unit = _unit(doc=doc, depicts_entities=depicts)
+
+        tx = MagicMock()
+        Writer._write_neo4j_tx(tx, unit)
+
+        # Should have DEPICTS edges for each entity
+        depicts_calls = [
+            c for c in tx.run.call_args_list
+            if "DEPICTS" in str(c)
+        ]
+        assert len(depicts_calls) == 2
+
+        # Should also have ATTACHED_TO
+        attached_calls = [
+            c for c in tx.run.call_args_list
+            if "ATTACHED_TO" in str(c)
+        ]
+        assert len(attached_calls) == 1
+
+
+class TestMarkVisionProcessed:
+    def test_mark_vision_processed(self, writer, mock_neo4j, mock_qdrant):
+        """mark_vision_processed should set vision_processed=True on Image node."""
+        session = MagicMock()
+        mock_neo4j.session.return_value.__enter__ = MagicMock(return_value=session)
+        mock_neo4j.session.return_value.__exit__ = MagicMock(return_value=False)
+
+        writer.mark_vision_processed("images/photo.png")
+
+        session.run.assert_called_once()
+        args, kwargs = session.run.call_args
+        assert "Image" in args[0]
+        assert "vision_processed" in args[0]
+        assert kwargs["sid"] == "images/photo.png"
