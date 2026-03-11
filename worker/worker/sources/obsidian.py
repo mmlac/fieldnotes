@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import fnmatch
-import hashlib
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -26,6 +25,7 @@ from watchdog.events import (
 from watchdog.observers import Observer
 
 from .base import PythonSource
+from .files import DEFAULT_MAX_FILE_SIZE, _streaming_sha256
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +63,7 @@ class _VaultHandler(FileSystemEventHandler):
         vault_name: str,
         include_extensions: set[str] | None,
         exclude_patterns: list[str],
+        max_file_size: int = DEFAULT_MAX_FILE_SIZE,
     ) -> None:
         self._queue = queue
         self._loop = loop
@@ -70,6 +71,7 @@ class _VaultHandler(FileSystemEventHandler):
         self._vault_name = vault_name
         self._include_extensions = include_extensions
         self._exclude_patterns = exclude_patterns
+        self._max_file_size = max_file_size
 
     def _should_skip(self, path: str) -> bool:
         p = Path(path)
@@ -132,9 +134,17 @@ class _VaultHandler(FileSystemEventHandler):
                 ingest["source_modified_at"] = datetime.fromtimestamp(
                     stat.st_mtime, tz=timezone.utc
                 ).isoformat()
-                content = p.read_bytes()
-                ingest["meta"]["sha256"] = hashlib.sha256(content).hexdigest()
-                ingest["meta"]["size_bytes"] = len(content)
+                result = _streaming_sha256(p, self._max_file_size)
+                if result is None:
+                    logger.warning(
+                        "Skipping %s — exceeds max_file_size (%d bytes)",
+                        src_path,
+                        self._max_file_size,
+                    )
+                    return None
+                digest, size = result
+                ingest["meta"]["sha256"] = digest
+                ingest["meta"]["size_bytes"] = size
             except OSError:
                 logger.warning("Failed to read %s, emitting event without content hash", src_path)
                 ingest["source_modified_at"] = now
@@ -155,7 +165,7 @@ class _VaultHandler(FileSystemEventHandler):
     def _dispatch(self, event: FileSystemEvent) -> None:
         ingest = self._build_event(event)
         if ingest is not None:
-            self._loop.call_soon_threadsafe(self._queue.put_nowait, ingest)
+            asyncio.run_coroutine_threadsafe(self._queue.put(ingest), self._loop)
 
 
 class ObsidianSource(PythonSource):
@@ -173,6 +183,7 @@ class ObsidianSource(PythonSource):
         self._include_extensions: set[str] | None = None
         self._exclude_patterns: list[str] = []
         self._recursive: bool = True
+        self._max_file_size: int = DEFAULT_MAX_FILE_SIZE
 
     def name(self) -> str:
         return "obsidian"
@@ -191,6 +202,7 @@ class ObsidianSource(PythonSource):
 
         self._exclude_patterns = cfg.get("exclude_patterns", [])
         self._recursive = cfg.get("recursive", True)
+        self._max_file_size = cfg.get("max_file_size", DEFAULT_MAX_FILE_SIZE)
 
     async def start(self, queue: asyncio.Queue[dict[str, Any]]) -> None:
         loop = asyncio.get_running_loop()
@@ -214,6 +226,7 @@ class ObsidianSource(PythonSource):
                 vault_name=vault_name,
                 include_extensions=self._include_extensions,
                 exclude_patterns=self._exclude_patterns,
+                max_file_size=self._max_file_size,
             )
             observer.schedule(handler, str(vault), recursive=self._recursive)
             logger.info(

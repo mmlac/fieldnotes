@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 
 from worker.sources.base import PythonSource
-from worker.sources.files import FileSource
+from worker.sources.files import DEFAULT_MAX_FILE_SIZE, FileSource, _streaming_sha256
 
 
 # ── PythonSource ABC ────────────────────────────────────────────────
@@ -69,6 +69,13 @@ def test_file_source_configure_basic(tmp_path: Path):
     assert fs._include_extensions is None
     assert fs._exclude_patterns == []
     assert fs._recursive is True
+    assert fs._max_file_size == DEFAULT_MAX_FILE_SIZE
+
+
+def test_file_source_configure_max_file_size(tmp_path: Path):
+    fs = FileSource()
+    fs.configure({"watch_paths": [str(tmp_path)], "max_file_size": 1024})
+    assert fs._max_file_size == 1024
 
 
 def test_file_source_configure_extensions(tmp_path: Path):
@@ -241,3 +248,65 @@ async def test_file_source_delete_event(tmp_path: Path):
     deleted = [e for e in events if e["operation"] == "deleted"]
     assert len(deleted) >= 1
     assert "doomed.txt" in deleted[0]["source_id"]
+
+
+# ── Streaming SHA-256 ──────────────────────────────────────────────
+
+
+def test_streaming_sha256_small_file(tmp_path: Path):
+    p = tmp_path / "small.txt"
+    p.write_bytes(b"hello")
+    result = _streaming_sha256(p, max_size=1024)
+    assert result is not None
+    digest, size = result
+    assert size == 5
+    assert digest == hashlib.sha256(b"hello").hexdigest()
+
+
+def test_streaming_sha256_exceeds_max_size(tmp_path: Path):
+    p = tmp_path / "big.bin"
+    p.write_bytes(b"x" * 200)
+    result = _streaming_sha256(p, max_size=100)
+    assert result is None
+
+
+# ── Max file size skipping ─────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_file_source_skips_oversized_file(tmp_path: Path):
+    fs = FileSource()
+    fs.configure({
+        "watch_paths": [str(tmp_path)],
+        "max_file_size": 50,
+    })
+    q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+
+    task = asyncio.create_task(fs.start(q))
+    await asyncio.sleep(0.5)
+
+    # Create an oversized file (should be skipped)
+    (tmp_path / "big.md").write_bytes(b"x" * 100)
+    await asyncio.sleep(0.5)
+
+    # Create a small file (should pass)
+    (tmp_path / "small.md").write_text("ok")
+
+    events = []
+    try:
+        for _ in range(10):
+            await asyncio.sleep(0.3)
+            while not q.empty():
+                events.append(q.get_nowait())
+            if any("small.md" in e["source_id"] for e in events):
+                break
+    finally:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    source_ids = [e["source_id"] for e in events]
+    assert any("small.md" in sid for sid in source_ids)
+    assert not any("big.md" in sid for sid in source_ids)

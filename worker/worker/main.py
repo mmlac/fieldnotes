@@ -115,8 +115,10 @@ async def _run(cfg: Config) -> None:
         pipeline.close()
         return
 
-    # Shared event queue for all sources
-    queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    # Shared event queue for all sources — bounded to apply backpressure
+    # when the consumer falls behind (prevents unbounded memory growth on
+    # burst file-change events like git checkout).
+    queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=4096)
 
     # Start source tasks
     source_tasks: list[asyncio.Task[None]] = []

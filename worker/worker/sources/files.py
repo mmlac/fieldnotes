@@ -30,6 +30,32 @@ from .base import PythonSource
 logger = logging.getLogger(__name__)
 
 
+_SHA256_CHUNK_SIZE = 64 * 1024  # 64 KiB read chunks for streaming hash
+
+# Default 100 MiB — files above this are logged and skipped to prevent OOM.
+DEFAULT_MAX_FILE_SIZE = 100 * 1024 * 1024
+
+
+def _streaming_sha256(path: Path, max_size: int) -> tuple[str, int] | None:
+    """Compute SHA-256 by streaming *path* in chunks.
+
+    Returns ``(hex_digest, size_bytes)`` or ``None`` if the file exceeds
+    *max_size*.
+    """
+    h = hashlib.sha256()
+    total = 0
+    with path.open("rb") as f:
+        while True:
+            chunk = f.read(_SHA256_CHUNK_SIZE)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > max_size:
+                return None
+            h.update(chunk)
+    return h.hexdigest(), total
+
+
 class _Handler(FileSystemEventHandler):
     """Watchdog handler that filters events and pushes to an asyncio queue."""
 
@@ -39,11 +65,13 @@ class _Handler(FileSystemEventHandler):
         loop: asyncio.AbstractEventLoop,
         include_extensions: set[str] | None,
         exclude_patterns: list[str],
+        max_file_size: int = DEFAULT_MAX_FILE_SIZE,
     ) -> None:
         self._queue = queue
         self._loop = loop
         self._include_extensions = include_extensions
         self._exclude_patterns = exclude_patterns
+        self._max_file_size = max_file_size
 
     def _should_skip(self, path: str) -> bool:
         p = Path(path)
@@ -91,9 +119,17 @@ class _Handler(FileSystemEventHandler):
                 ingest["source_modified_at"] = datetime.fromtimestamp(
                     stat.st_mtime, tz=timezone.utc
                 ).isoformat()
-                content = p.read_bytes()
-                ingest["meta"]["sha256"] = hashlib.sha256(content).hexdigest()
-                ingest["meta"]["size_bytes"] = len(content)
+                result = _streaming_sha256(p, self._max_file_size)
+                if result is None:
+                    logger.warning(
+                        "Skipping %s — exceeds max_file_size (%d bytes)",
+                        src_path,
+                        self._max_file_size,
+                    )
+                    return None
+                digest, size = result
+                ingest["meta"]["sha256"] = digest
+                ingest["meta"]["size_bytes"] = size
             except OSError:
                 logger.warning("Failed to read %s, emitting event without content hash", src_path)
                 ingest["source_modified_at"] = now
@@ -114,7 +150,7 @@ class _Handler(FileSystemEventHandler):
     def _dispatch(self, event: FileSystemEvent) -> None:
         ingest = self._build_event(event)
         if ingest is not None:
-            self._loop.call_soon_threadsafe(self._queue.put_nowait, ingest)
+            asyncio.run_coroutine_threadsafe(self._queue.put(ingest), self._loop)
 
 
 class FileSource(PythonSource):
@@ -132,6 +168,7 @@ class FileSource(PythonSource):
         self._include_extensions: set[str] | None = None
         self._exclude_patterns: list[str] = []
         self._recursive: bool = True
+        self._max_file_size: int = DEFAULT_MAX_FILE_SIZE
 
     def name(self) -> str:
         return "files"
@@ -150,6 +187,7 @@ class FileSource(PythonSource):
 
         self._exclude_patterns = cfg.get("exclude_patterns", [])
         self._recursive = cfg.get("recursive", True)
+        self._max_file_size = cfg.get("max_file_size", DEFAULT_MAX_FILE_SIZE)
 
     async def start(self, queue: asyncio.Queue[dict[str, Any]]) -> None:
         loop = asyncio.get_running_loop()
@@ -158,6 +196,7 @@ class FileSource(PythonSource):
             loop=loop,
             include_extensions=self._include_extensions,
             exclude_patterns=self._exclude_patterns,
+            max_file_size=self._max_file_size,
         )
         observer = Observer()
         for watch_path in self._watch_paths:
