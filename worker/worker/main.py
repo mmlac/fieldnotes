@@ -28,6 +28,7 @@ from worker.models.resolver import ModelRegistry
 from worker.pipeline import Pipeline
 from worker.pipeline.writer import Writer
 from worker.sources.files import FileSource
+from worker.sources.gmail import GmailSource
 from worker.sources.obsidian import ObsidianSource
 from worker.sources.base import PythonSource
 
@@ -42,6 +43,7 @@ logger = logging.getLogger("worker")
 # All available source classes, keyed by their .name() value
 SOURCE_CLASSES: dict[str, type[PythonSource]] = {
     "files": FileSource,
+    "gmail": GmailSource,
     "obsidian": ObsidianSource,
 }
 
