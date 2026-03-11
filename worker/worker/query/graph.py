@@ -16,7 +16,10 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from langchain_community.chains.graph_qa.cypher import GraphCypherQAChain
+from langchain_community.chains.graph_qa.cypher import (
+    GraphCypherQAChain,
+    extract_cypher,
+)
 from langchain_community.graphs import Neo4jGraph
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.callbacks import CallbackManagerForLLMRun
@@ -155,32 +158,42 @@ class GraphQuerier:
             graph=self._graph,
             verbose=False,
             return_intermediate_steps=True,
-            allow_dangerous_requests=True,  # we enforce safety ourselves
+            allow_dangerous_requests=True,  # required by LangChain; we validate before execution
         )
 
     def query(self, question: str) -> GraphQueryResult:
-        """Translate *question* to Cypher, execute, and return structured results."""
+        """Translate *question* to Cypher, execute, and return structured results.
+
+        Safety: generates Cypher first, validates it is read-only, and only
+        then executes against Neo4j — so write operations never reach the DB.
+        """
         try:
-            response = self._chain.invoke({"query": question})
+            # Step 1: Generate Cypher (without executing against Neo4j).
+            schema = self._graph.get_structured_schema
+            raw_cypher = self._chain.cypher_generation_chain.run(
+                {"question": question, "schema": schema}
+            )
+            cypher = extract_cypher(raw_cypher)
 
-            steps = response.get("intermediate_steps", [])
-            cypher = ""
-            raw_results: list[dict[str, Any]] = []
-
-            # LangChain returns intermediate steps as a list of dicts
-            # with 'query' and 'context' keys.
-            for step in steps:
-                if isinstance(step, dict):
-                    cypher = cypher or step.get("query", "")
-                    ctx = step.get("context", [])
-                    if isinstance(ctx, list):
-                        raw_results = ctx
-
-            # Safety gate: reject any write operations.
+            # Step 2: Safety gate — reject write operations BEFORE execution.
             if cypher:
                 _validate_cypher_readonly(cypher)
 
-            answer = response.get("result", "")
+            # Step 3: Execute the validated Cypher against Neo4j.
+            raw_results: list[dict[str, Any]] = []
+            if cypher:
+                raw_results = self._graph.query(cypher)[: self._chain.top_k]
+
+            # Step 4: Generate human-readable answer via the QA chain.
+            qa_result = self._chain.qa_chain.invoke(
+                {"question": question, "context": raw_results}
+            )
+            # qa_chain.invoke returns a dict with 'text' key (LLMChain)
+            # or may return a string depending on the chain type.
+            if isinstance(qa_result, dict):
+                answer = qa_result.get("text", str(qa_result))
+            else:
+                answer = str(qa_result)
 
             return GraphQueryResult(
                 question=question,

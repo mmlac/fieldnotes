@@ -6,6 +6,7 @@ without running services.
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -105,6 +106,44 @@ class TestGraphQueryResult:
 # ------------------------------------------------------------------
 
 
+def _make_querier(
+    mock_neo4j_graph_cls: MagicMock,
+    mock_chain_cls: MagicMock,
+    *,
+    generated_cypher: str = "MATCH (n:Entity) RETURN n.name",
+    graph_results: list[dict[str, Any]] | None = None,
+    qa_answer: str = "Alice and Bob",
+    generation_side_effect: Exception | None = None,
+) -> GraphQuerier:
+    """Build a GraphQuerier with mocked Neo4j and LangChain sub-chains."""
+    registry = MagicMock()
+    resolved = MagicMock()
+    resolved.alias = "test-model"
+    registry.for_role.return_value = resolved
+
+    mock_graph = MagicMock()
+    mock_graph.get_structured_schema = {"nodes": [], "relationships": []}
+    mock_graph.query.return_value = graph_results if graph_results is not None else [{"name": "Alice"}, {"name": "Bob"}]
+    mock_neo4j_graph_cls.return_value = mock_graph
+
+    mock_chain = MagicMock()
+    gen_chain = MagicMock()
+    if generation_side_effect:
+        gen_chain.run.side_effect = generation_side_effect
+    else:
+        gen_chain.run.return_value = generated_cypher
+    mock_chain.cypher_generation_chain = gen_chain
+
+    qa_chain = MagicMock()
+    qa_chain.invoke.return_value = {"text": qa_answer}
+    mock_chain.qa_chain = qa_chain
+    mock_chain.top_k = 10
+
+    mock_chain_cls.from_llm.return_value = mock_chain
+
+    return GraphQuerier(registry)
+
+
 class TestGraphQuerier:
     """Tests for the GraphQuerier end-to-end flow with mocked deps."""
 
@@ -113,24 +152,7 @@ class TestGraphQuerier:
     def test_query_returns_structured_result(
         self, mock_neo4j_graph_cls: MagicMock, mock_chain_cls: MagicMock
     ) -> None:
-        registry = MagicMock()
-        resolved = MagicMock()
-        resolved.alias = "test-model"
-        registry.for_role.return_value = resolved
-
-        mock_graph = MagicMock()
-        mock_neo4j_graph_cls.return_value = mock_graph
-
-        mock_chain = MagicMock()
-        mock_chain.invoke.return_value = {
-            "result": "Alice and Bob",
-            "intermediate_steps": [
-                {"query": "MATCH (n:Entity) RETURN n.name", "context": [{"name": "Alice"}, {"name": "Bob"}]}
-            ],
-        }
-        mock_chain_cls.from_llm.return_value = mock_chain
-
-        querier = GraphQuerier(registry)
+        querier = _make_querier(mock_neo4j_graph_cls, mock_chain_cls)
         result = querier.query("Who is mentioned?")
 
         assert result.question == "Who is mentioned?"
@@ -141,48 +163,28 @@ class TestGraphQuerier:
 
     @patch("worker.query.graph.GraphCypherQAChain")
     @patch("worker.query.graph.Neo4jGraph")
-    def test_query_blocks_write_cypher(
+    def test_query_blocks_write_cypher_before_execution(
         self, mock_neo4j_graph_cls: MagicMock, mock_chain_cls: MagicMock
     ) -> None:
-        registry = MagicMock()
-        resolved = MagicMock()
-        resolved.alias = "test-model"
-        registry.for_role.return_value = resolved
-
-        mock_graph = MagicMock()
-        mock_neo4j_graph_cls.return_value = mock_graph
-
-        mock_chain = MagicMock()
-        mock_chain.invoke.return_value = {
-            "result": "done",
-            "intermediate_steps": [
-                {"query": "CREATE (n:File {name: 'evil'})", "context": []}
-            ],
-        }
-        mock_chain_cls.from_llm.return_value = mock_chain
-
-        querier = GraphQuerier(registry)
+        querier = _make_querier(
+            mock_neo4j_graph_cls, mock_chain_cls,
+            generated_cypher="CREATE (n:File {name: 'evil'})",
+        )
         with pytest.raises(ReadOnlyCypherViolation):
             querier.query("Do something bad")
+
+        # Crucially, the write query must NOT have been executed against Neo4j.
+        mock_neo4j_graph_cls.return_value.query.assert_not_called()
 
     @patch("worker.query.graph.GraphCypherQAChain")
     @patch("worker.query.graph.Neo4jGraph")
     def test_query_handles_chain_exception(
         self, mock_neo4j_graph_cls: MagicMock, mock_chain_cls: MagicMock
     ) -> None:
-        registry = MagicMock()
-        resolved = MagicMock()
-        resolved.alias = "test-model"
-        registry.for_role.return_value = resolved
-
-        mock_graph = MagicMock()
-        mock_neo4j_graph_cls.return_value = mock_graph
-
-        mock_chain = MagicMock()
-        mock_chain.invoke.side_effect = RuntimeError("neo4j down")
-        mock_chain_cls.from_llm.return_value = mock_chain
-
-        querier = GraphQuerier(registry)
+        querier = _make_querier(
+            mock_neo4j_graph_cls, mock_chain_cls,
+            generation_side_effect=RuntimeError("neo4j down"),
+        )
         result = querier.query("test?")
 
         assert result.error == "neo4j down"
@@ -193,17 +195,8 @@ class TestGraphQuerier:
     def test_refresh_schema(
         self, mock_neo4j_graph_cls: MagicMock, mock_chain_cls: MagicMock
     ) -> None:
-        registry = MagicMock()
-        resolved = MagicMock()
-        resolved.alias = "test-model"
-        registry.for_role.return_value = resolved
-
-        mock_graph = MagicMock()
-        mock_neo4j_graph_cls.return_value = mock_graph
-        mock_chain_cls.from_llm.return_value = MagicMock()
-
-        querier = GraphQuerier(registry)
-        # Called once in __init__, then once more on refresh
+        querier = _make_querier(mock_neo4j_graph_cls, mock_chain_cls)
+        mock_graph = mock_neo4j_graph_cls.return_value
         mock_graph.refresh_schema.reset_mock()
         querier.refresh_schema()
         mock_graph.refresh_schema.assert_called_once()
@@ -213,14 +206,6 @@ class TestGraphQuerier:
     def test_close(
         self, mock_neo4j_graph_cls: MagicMock, mock_chain_cls: MagicMock
     ) -> None:
-        registry = MagicMock()
-        resolved = MagicMock()
-        resolved.alias = "test-model"
-        registry.for_role.return_value = resolved
-
-        mock_neo4j_graph_cls.return_value = MagicMock()
-        mock_chain_cls.from_llm.return_value = MagicMock()
-
-        querier = GraphQuerier(registry)
+        querier = _make_querier(mock_neo4j_graph_cls, mock_chain_cls)
         querier.close()
         assert querier._graph is None
