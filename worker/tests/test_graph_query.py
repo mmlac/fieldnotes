@@ -54,6 +54,12 @@ class TestCypherReadOnlyValidation:
             "DROP CONSTRAINT constraint_name",
             "match (n) delete n",  # case insensitive
             "MATCH (n) CALL { CREATE (m:X) }",
+            "FOREACH (n IN [1,2] | CREATE (m:X))",
+            "LOAD CSV FROM 'file:///etc/passwd' AS row RETURN row",
+            "CALL apoc.periodic.commit('CREATE (n:X)', {})",
+            "CALL apoc.periodic.iterate('MATCH (n) RETURN n', 'DELETE n', {})",
+            "CALL apoc.cypher.run('CREATE (n:X)', {})",
+            "CALL apoc.cypher.doIt('CREATE (n:X)', {})",
         ],
     )
     def test_blocks_write_queries(self, cypher: str) -> None:
@@ -123,7 +129,20 @@ def _make_querier(
 
     mock_graph = MagicMock()
     mock_graph.get_structured_schema = {"nodes": [], "relationships": []}
-    mock_graph.query.return_value = graph_results if graph_results is not None else [{"name": "Alice"}, {"name": "Bob"}]
+
+    # Mock the driver for read-only transaction path.
+    mock_session = MagicMock()
+    mock_records = graph_results if graph_results is not None else [{"name": "Alice"}, {"name": "Bob"}]
+    # execute_read calls the work function with a transaction; the tx.run()
+    # result must yield record objects with a .data() method.
+    mock_record_objs = [MagicMock(**{"data.return_value": r}) for r in mock_records]
+    mock_tx_result = MagicMock()
+    mock_tx_result.__iter__ = lambda self: iter(mock_record_objs)
+    mock_session.__enter__ = lambda self: mock_session
+    mock_session.__exit__ = MagicMock(return_value=False)
+    mock_session.execute_read.side_effect = lambda fn: fn(MagicMock(**{"run.return_value": mock_tx_result}))
+    mock_graph._driver.session.return_value = mock_session
+
     mock_neo4j_graph_cls.return_value = mock_graph
 
     mock_chain = MagicMock()
@@ -174,7 +193,7 @@ class TestGraphQuerier:
             querier.query("Do something bad")
 
         # Crucially, the write query must NOT have been executed against Neo4j.
-        mock_neo4j_graph_cls.return_value.query.assert_not_called()
+        mock_neo4j_graph_cls.return_value._driver.session.assert_not_called()
 
     @patch("worker.query.graph.GraphCypherQAChain")
     @patch("worker.query.graph.Neo4jGraph")
@@ -189,6 +208,21 @@ class TestGraphQuerier:
 
         assert result.error == "neo4j down"
         assert result.cypher == ""
+
+    @patch("worker.query.graph.GraphCypherQAChain")
+    @patch("worker.query.graph.Neo4jGraph")
+    def test_query_uses_readonly_transaction(
+        self, mock_neo4j_graph_cls: MagicMock, mock_chain_cls: MagicMock
+    ) -> None:
+        querier = _make_querier(mock_neo4j_graph_cls, mock_chain_cls)
+        result = querier.query("Who is mentioned?")
+
+        # Verify execute_read was called (not a plain query/execute_write).
+        mock_graph = mock_neo4j_graph_cls.return_value
+        mock_graph._driver.session.assert_called_once()
+        # _make_querier sets up mock_session with custom __enter__ that returns itself
+        mock_session = mock_graph._driver.session.return_value
+        mock_session.execute_read.assert_called_once()
 
     @patch("worker.query.graph.GraphCypherQAChain")
     @patch("worker.query.graph.Neo4jGraph")

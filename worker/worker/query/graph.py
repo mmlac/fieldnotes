@@ -33,7 +33,13 @@ logger = logging.getLogger(__name__)
 
 # Cypher keywords that indicate a write operation.
 _WRITE_KEYWORDS = re.compile(
-    r"\b(MERGE|CREATE|DELETE|DETACH|SET|REMOVE|DROP|CALL\s*\{)\b",
+    r"\b(MERGE|CREATE|DELETE|DETACH|SET|REMOVE|DROP|CALL\s*\{|FOREACH\s*\(|LOAD\s+CSV)\b",
+    re.IGNORECASE,
+)
+
+# APOC procedures known to perform writes.
+_WRITE_APOC = re.compile(
+    r"\b(apoc\.periodic\.commit|apoc\.periodic\.iterate|apoc\.cypher\.run|apoc\.cypher\.doIt)\b",
     re.IGNORECASE,
 )
 
@@ -111,8 +117,12 @@ def _lc_role(msg: BaseMessage) -> str:
 
 
 def _validate_cypher_readonly(cypher: str) -> None:
-    """Raise if the Cypher contains write operations."""
-    if _WRITE_KEYWORDS.search(cypher):
+    """Raise if the Cypher contains write operations.
+
+    Defense-in-depth: this regex blocklist catches common mutation patterns,
+    but the real safety boundary is the read-only transaction in GraphQuerier.
+    """
+    if _WRITE_KEYWORDS.search(cypher) or _WRITE_APOC.search(cypher):
         raise ReadOnlyCypherViolation(cypher)
 
 
@@ -179,10 +189,12 @@ class GraphQuerier:
             if cypher:
                 _validate_cypher_readonly(cypher)
 
-            # Step 3: Execute the validated Cypher against Neo4j.
+            # Step 3: Execute the validated Cypher in a READ-ONLY transaction.
+            # Neo4j enforces this at the protocol level — even if the regex
+            # blocklist above is bypassed, the server will reject writes.
             raw_results: list[dict[str, Any]] = []
             if cypher:
-                raw_results = self._graph.query(cypher)[: self._chain.top_k]
+                raw_results = self._execute_readonly(cypher)[: self._chain.top_k]
 
             # Step 4: Generate human-readable answer via the QA chain.
             qa_result = self._chain.qa_chain.invoke(
@@ -210,6 +222,21 @@ class GraphQuerier:
                 cypher="",
                 error=str(exc),
             )
+
+    def _execute_readonly(self, cypher: str) -> list[dict[str, Any]]:
+        """Execute *cypher* inside a Neo4j read-only transaction.
+
+        Uses session.execute_read() so that Neo4j rejects any write
+        operations at the protocol level, regardless of the query content.
+        """
+        def _work(tx: Any) -> list[dict[str, Any]]:
+            result = tx.run(cypher)
+            return [record.data() for record in result]
+
+        with self._graph._driver.session(
+            database=self._graph._database,
+        ) as session:
+            return session.execute_read(_work)
 
     def refresh_schema(self) -> None:
         """Refresh the Neo4j schema cache (call after schema changes)."""
