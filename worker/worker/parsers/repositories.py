@@ -5,7 +5,8 @@ GraphHints. File events produce Repository→File CONTAINS relationships.
 Commit events produce Commit nodes with Person→Commit AUTHORED,
 Commit→File MODIFIED, and Commit→Repository PART_OF relationships.
 
-For manifest files (Cargo.toml, pyproject.toml, package.json, go.mod), dependency
+For manifest files (Cargo.toml, pyproject.toml, package.json, go.mod, *.csproj,
+*.fsproj, *.vbproj, Directory.Packages.props, packages.config), dependency
 sections are parsed and emitted as Repository → Package DEPENDS_ON GraphHints
 instead of free-text chunks.
 """
@@ -16,6 +17,7 @@ import json
 import logging
 import re
 import tomllib
+import xml.etree.ElementTree as ET
 from typing import Any
 
 from .base import BaseParser, GraphHint, ParsedDocument
@@ -29,7 +31,12 @@ _MANIFEST_FILENAMES: set[str] = {
     "pyproject.toml",
     "package.json",
     "go.mod",
+    "Directory.Packages.props",
+    "packages.config",
 }
+
+# Extensions that trigger dependency extraction (.NET project files)
+_MANIFEST_EXTENSIONS: set[str] = {".csproj", ".fsproj", ".vbproj"}
 
 
 @register
@@ -207,7 +214,11 @@ class RepositoryParser(BaseParser):
 
         # Check if this is a manifest file → extract dependencies
         filename = relative_path.rsplit("/", 1)[-1] if relative_path else ""
-        if filename in _MANIFEST_FILENAMES and text:
+        file_ext = _file_ext(relative_path)
+        is_manifest = (filename in _MANIFEST_FILENAMES) or (
+            file_ext in _MANIFEST_EXTENSIONS
+        )
+        if is_manifest and text:
             dep_hints = _extract_dependencies(
                 filename, text, repo_path, repo_name, remote_url
             )
@@ -272,6 +283,13 @@ def _extract_dependencies(
             return _parse_package_json(text, repo_path, repo_name, remote_url)
         if filename == "go.mod":
             return _parse_go_mod(text, repo_path, repo_name, remote_url)
+        ext = _file_ext(filename)
+        if ext in _MANIFEST_EXTENSIONS:
+            return _parse_dotnet_project(text, repo_path, repo_name, remote_url)
+        if filename == "Directory.Packages.props":
+            return _parse_directory_packages_props(text, repo_path, repo_name, remote_url)
+        if filename == "packages.config":
+            return _parse_packages_config(text, repo_path, repo_name, remote_url)
     except Exception:
         logger.exception("Failed to parse dependencies from %s in %s", filename, repo_name)
     return []
@@ -284,13 +302,14 @@ def _dep_hint(
     package_name: str,
     version_constraint: str,
     dep_type: str,
+    ecosystem: str,
 ) -> GraphHint:
     """Build a Repository → Package DEPENDS_ON GraphHint."""
     return GraphHint(
         subject_id=repo_path,
         subject_label="Repository",
         predicate="DEPENDS_ON",
-        object_id=f"pkg:{package_name}",
+        object_id=f"pkg:{ecosystem}:{package_name}",
         object_label="Package",
         subject_props={
             "name": repo_name,
@@ -301,6 +320,7 @@ def _dep_hint(
             "name": package_name,
             "version_constraint": version_constraint,
             "dependency_type": dep_type,
+            "ecosystem": ecosystem,
         },
         subject_merge_key="source_id",
         object_merge_key="name",
@@ -326,7 +346,7 @@ def _parse_cargo_toml(
         for pkg, spec in deps.items():
             version = _cargo_version(spec)
             hints.append(
-                _dep_hint(repo_path, repo_name, remote_url, pkg, version, dep_type)
+                _dep_hint(repo_path, repo_name, remote_url, pkg, version, dep_type, "cargo")
             )
     return hints
 
@@ -353,7 +373,7 @@ def _parse_pyproject_toml(
     for req in data.get("project", {}).get("dependencies", []):
         name, constraint = _parse_pep508(req)
         hints.append(
-            _dep_hint(repo_path, repo_name, remote_url, name, constraint, "runtime")
+            _dep_hint(repo_path, repo_name, remote_url, name, constraint, "runtime", "pypi")
         )
 
     # [project.optional-dependencies.*]
@@ -363,7 +383,7 @@ def _parse_pyproject_toml(
         for req in reqs:
             name, constraint = _parse_pep508(req)
             hints.append(
-                _dep_hint(repo_path, repo_name, remote_url, name, constraint, "dev")
+                _dep_hint(repo_path, repo_name, remote_url, name, constraint, "dev", "pypi")
             )
 
     # [tool.poetry.dependencies]
@@ -373,7 +393,7 @@ def _parse_pyproject_toml(
             continue
         version = spec if isinstance(spec, str) else spec.get("version", "*") if isinstance(spec, dict) else "*"
         hints.append(
-            _dep_hint(repo_path, repo_name, remote_url, pkg, version, "runtime")
+            _dep_hint(repo_path, repo_name, remote_url, pkg, version, "runtime", "pypi")
         )
 
     return hints
@@ -423,7 +443,7 @@ def _parse_package_json(
             hints.append(
                 _dep_hint(
                     repo_path, repo_name, remote_url, pkg,
-                    version if isinstance(version, str) else "*", dep_type,
+                    version if isinstance(version, str) else "*", dep_type, "npm",
                 )
             )
     return hints
@@ -450,16 +470,94 @@ def _parse_go_mod(
             if module.startswith("//"):
                 continue
             hints.append(
-                _dep_hint(repo_path, repo_name, remote_url, module, version, "runtime")
+                _dep_hint(repo_path, repo_name, remote_url, module, version, "runtime", "go")
             )
 
     # Single-line requires (e.g. "require github.com/foo/bar v1.0.0")
     for m in _GO_REQUIRE_SINGLE_RE.finditer(text):
         module, version = m.group(1), m.group(2)
         hints.append(
-            _dep_hint(repo_path, repo_name, remote_url, module, version, "runtime")
+            _dep_hint(repo_path, repo_name, remote_url, module, version, "runtime", "go")
         )
 
+    return hints
+
+
+# -- .NET / NuGet ---------------------------------------------------------------
+
+
+def _parse_dotnet_xml(text: str) -> ET.Element | None:
+    """Parse XML text, returning root element or None on malformed input."""
+    try:
+        return ET.fromstring(text)
+    except ET.ParseError:
+        logger.warning("Malformed XML in .NET project file, skipping")
+        return None
+
+
+def _parse_dotnet_project(
+    text: str, repo_path: str, repo_name: str, remote_url: str | None
+) -> list[GraphHint]:
+    """Parse PackageReference elements from csproj/fsproj/vbproj files."""
+    root = _parse_dotnet_xml(text)
+    if root is None:
+        return []
+    hints: list[GraphHint] = []
+    for ref in root.iter("PackageReference"):
+        pkg = ref.get("Include") or ref.get("include") or ""
+        if not pkg:
+            continue
+        # Version can be an attribute or a child element
+        version = ref.get("Version") or ref.get("version") or ""
+        if not version:
+            version_el = ref.find("Version")
+            if version_el is None:
+                version_el = ref.find("version")
+            if version_el is not None and version_el.text:
+                version = version_el.text.strip()
+        if not version:
+            version = "*"
+        hints.append(
+            _dep_hint(repo_path, repo_name, remote_url, pkg, version, "runtime", "nuget")
+        )
+    return hints
+
+
+def _parse_directory_packages_props(
+    text: str, repo_path: str, repo_name: str, remote_url: str | None
+) -> list[GraphHint]:
+    """Parse PackageVersion elements from Directory.Packages.props (Central Package Management)."""
+    root = _parse_dotnet_xml(text)
+    if root is None:
+        return []
+    hints: list[GraphHint] = []
+    for ref in root.iter("PackageVersion"):
+        pkg = ref.get("Include") or ref.get("include") or ""
+        if not pkg:
+            continue
+        version = ref.get("Version") or ref.get("version") or "*"
+        hints.append(
+            _dep_hint(repo_path, repo_name, remote_url, pkg, version, "runtime", "nuget")
+        )
+    return hints
+
+
+def _parse_packages_config(
+    text: str, repo_path: str, repo_name: str, remote_url: str | None
+) -> list[GraphHint]:
+    """Parse package elements from legacy packages.config (NuGet)."""
+    root = _parse_dotnet_xml(text)
+    if root is None:
+        return []
+    hints: list[GraphHint] = []
+    for ref in root.iter("package"):
+        pkg = ref.get("id") or ""
+        if not pkg:
+            continue
+        version = ref.get("version") or "*"
+        hints.append(
+            _dep_hint(repo_path, repo_name, remote_url, pkg, version, "runtime", "nuget")
+        )
     return hints
 
 

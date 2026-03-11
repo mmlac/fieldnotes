@@ -49,6 +49,11 @@ DEFAULT_INCLUDE_PATTERNS: list[str] = [
     "docs/**/*.md",
     "*.toml",
     "ADR/**/*.md",
+    "*.csproj",
+    "*.fsproj",
+    "*.vbproj",
+    "Directory.Packages.props",
+    "packages.config",
 ]
 
 DEFAULT_EXCLUDE_PATTERNS: list[str] = [
