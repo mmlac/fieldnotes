@@ -285,6 +285,38 @@ class TestBatchProcess:
 
             assert mock_process.call_count == 3
 
+    def test_process_batch_isolates_errors(self):
+        """One document failure must not prevent processing of remaining docs."""
+        pipeline, _, writer = _make_pipeline()
+
+        docs = [_doc(source_id=f"doc/{i}") for i in range(3)]
+
+        call_count = 0
+
+        def side_effect(doc):
+            nonlocal call_count
+            call_count += 1
+            if doc.source_id == "doc/1":
+                raise RuntimeError("simulated failure")
+
+        with patch.object(pipeline, "process", side_effect=side_effect):
+            failed = pipeline.process_batch(docs)
+
+        # All three documents were attempted
+        assert call_count == 3
+        # Only the failing document is returned
+        assert len(failed) == 1
+        assert failed[0].source_id == "doc/1"
+
+    def test_process_batch_returns_empty_on_success(self):
+        pipeline, _, writer = _make_pipeline()
+
+        with patch.object(pipeline, "process"):
+            docs = [_doc(source_id=f"doc/{i}") for i in range(2)]
+            failed = pipeline.process_batch(docs)
+
+        assert failed == []
+
 
 # ------------------------------------------------------------------
 # _resolved_to_entity_dicts

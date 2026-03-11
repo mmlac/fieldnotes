@@ -79,10 +79,35 @@ class Pipeline:
             # No text and no image — just write graph hints and source node
             self._writer.write(WriteUnit(doc=parsed_doc))
 
-    def process_batch(self, docs: list[ParsedDocument]) -> None:
-        """Process multiple documents sequentially."""
+    def process_batch(self, docs: list[ParsedDocument]) -> list[ParsedDocument]:
+        """Process multiple documents sequentially with error isolation.
+
+        Each document is processed independently — a failure in one document
+        does not prevent processing of remaining documents.
+
+        Returns
+        -------
+        list[ParsedDocument]
+            Documents that failed processing (empty list if all succeeded).
+        """
+        failed: list[ParsedDocument] = []
         for doc in docs:
-            self.process(doc)
+            try:
+                self.process(doc)
+            except Exception:
+                logger.exception(
+                    "Failed to process %s %s — skipping",
+                    doc.source_type,
+                    doc.source_id,
+                )
+                failed.append(doc)
+        if failed:
+            logger.warning(
+                "Batch complete: %d/%d documents failed",
+                len(failed),
+                len(docs),
+            )
+        return failed
 
     def close(self) -> None:
         """Release resources held by the writer."""
