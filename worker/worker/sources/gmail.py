@@ -33,6 +33,9 @@ logger = logging.getLogger(__name__)
 DEFAULT_CURSOR_PATH = Path.home() / ".fieldnotes" / "data" / "gmail_cursor.json"
 DEFAULT_POLL_INTERVAL = 300  # seconds
 DEFAULT_MAX_INITIAL_THREADS = 500
+BACKFILL_PAGE_DELAY = 0.5  # seconds between backfill page fetches
+BACKFILL_MAX_RETRIES = 3
+BACKFILL_INITIAL_BACKOFF = 1.0  # seconds
 
 
 def _load_cursor(path: Path) -> str | None:
@@ -187,7 +190,11 @@ class GmailSource(PythonSource):
         queue: asyncio.Queue[dict[str, Any]],
     ) -> str | None:
         """Fetch up to max_initial_threads recent messages and return the
-        latest historyId for subsequent incremental polling."""
+        latest historyId for subsequent incremental polling.
+
+        Includes rate limiting (delay between pages) and retry with
+        exponential backoff to avoid hitting Gmail API rate limits.
+        """
         loop = asyncio.get_running_loop()
         fetched = 0
         page_token: str | None = None
@@ -203,8 +210,8 @@ class GmailSource(PythonSource):
             if page_token:
                 kwargs["pageToken"] = page_token
 
-            result = await loop.run_in_executor(
-                None, lambda: messages_api.list(**kwargs).execute()
+            result = await self._api_call_with_retry(
+                loop, lambda: messages_api.list(**kwargs).execute()
             )
             msg_stubs = result.get("messages", [])
             if not msg_stubs:
@@ -213,8 +220,8 @@ class GmailSource(PythonSource):
             for stub in msg_stubs:
                 if fetched >= self._max_initial_threads:
                     break
-                msg = await loop.run_in_executor(
-                    None,
+                msg = await self._api_call_with_retry(
+                    loop,
                     lambda mid=stub["id"]: messages_api.get(
                         userId="me", id=mid, format="metadata",
                         metadataHeaders=["From", "To", "Cc", "Subject", "Date"],
@@ -236,8 +243,35 @@ class GmailSource(PythonSource):
             if not page_token:
                 break
 
+            # Rate-limit: pause between page fetches
+            await asyncio.sleep(BACKFILL_PAGE_DELAY)
+
         logger.info("Backfill complete: %d messages fetched", fetched)
         return latest_history_id
+
+    @staticmethod
+    async def _api_call_with_retry(
+        loop: asyncio.AbstractEventLoop,
+        call: Any,
+        max_retries: int = BACKFILL_MAX_RETRIES,
+        initial_backoff: float = BACKFILL_INITIAL_BACKOFF,
+    ) -> Any:
+        """Execute a Gmail API call in an executor with retry and exponential backoff."""
+        backoff = initial_backoff
+        for attempt in range(max_retries + 1):
+            try:
+                return await loop.run_in_executor(None, call)
+            except Exception:
+                if attempt == max_retries:
+                    raise
+                logger.warning(
+                    "Gmail API call failed (attempt %d/%d), retrying in %.1fs",
+                    attempt + 1,
+                    max_retries + 1,
+                    backoff,
+                )
+                await asyncio.sleep(backoff)
+                backoff *= 2
 
     async def _poll_incremental(
         self,
