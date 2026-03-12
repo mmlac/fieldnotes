@@ -132,6 +132,13 @@ class ClusteringConfig:
 
 
 @dataclass
+class HealthConfig:
+    enabled: bool = False
+    port: int = 9100
+    bind: str = "127.0.0.1"
+
+
+@dataclass
 class McpConfig:
     enabled: bool = True
     port: int = 3456
@@ -149,6 +156,7 @@ class Config:
     vision: VisionConfig = field(default_factory=VisionConfig)
     clustering: ClusteringConfig = field(default_factory=ClusteringConfig)
     mcp: McpConfig = field(default_factory=McpConfig)
+    health: HealthConfig = field(default_factory=HealthConfig)
 
     # Expected embedding dimension used by the clustering pipeline.
     _EXPECTED_VECTOR_SIZE = 768
@@ -396,6 +404,21 @@ def _parse(raw: dict[str, Any]) -> Config:
             min_corpus_size=cl.get("min_corpus_size", cfg.clustering.min_corpus_size),
             min_interval_seconds=cl.get("min_interval_seconds", cfg.clustering.min_interval_seconds),
             max_vectors=cl.get("max_vectors", cfg.clustering.max_vectors),
+        )
+
+    # [health]
+    if "health" in raw:
+        h = raw["health"]
+        if "enabled" in h:
+            _check_type("health", "enabled", h["enabled"], bool)
+        if "port" in h:
+            _check_type("health", "port", h["port"], int)
+        if "bind" in h:
+            _check_type("health", "bind", h["bind"], str)
+        cfg.health = HealthConfig(
+            enabled=h.get("enabled", cfg.health.enabled),
+            port=h.get("port", cfg.health.port),
+            bind=h.get("bind", cfg.health.bind),
         )
 
     # [mcp]

@@ -70,6 +70,15 @@ async def _run_daemon(cfg: Config) -> None:
         source_tasks.append(task)
     logger.info("Started %d source(s)", len(source_tasks))
 
+    # Health-check endpoint (off by default)
+    if cfg.health.enabled:
+        from worker.health import HealthServer
+
+        health_server = HealthServer(cfg, queue=queue, start_time=time.monotonic())
+        health_task = asyncio.create_task(health_server.run(), name="health-server")
+        background_tasks.append(health_task)
+        logger.info("Health endpoint enabled on %s:%d", cfg.health.bind, cfg.health.port)
+
     # MCP server on Unix socket
     async def _run_mcp() -> None:
         from worker.mcp_server import FieldnotesServer

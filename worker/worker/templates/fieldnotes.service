@@ -3,10 +3,11 @@ Description=Fieldnotes personal knowledge graph daemon
 After=network.target
 
 [Service]
-Type=simple
+Type=notify
 ExecStart={{EXECUTABLE}} serve --daemon
 Restart=on-failure
 RestartSec=5
+WatchdogSec=30
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
 StandardOutput=append:{{LOG_DIR}}/daemon.log
 StandardError=append:{{LOG_DIR}}/daemon.log
