@@ -81,8 +81,8 @@ def _parse_info_plist(app_path: Path) -> dict[str, Any] | None:
     try:
         with open(plist_path, "rb") as f:
             plist = plistlib.load(f)
-    except Exception:
-        logger.warning("Failed to parse Info.plist for %s", app_path.name)
+    except (plistlib.InvalidFileException, OSError, ValueError):
+        logger.error("Failed to parse Info.plist for %s", app_path.name)
         return None
 
     display_name = (

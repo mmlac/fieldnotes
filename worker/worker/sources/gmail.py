@@ -166,7 +166,11 @@ class GmailSource(PythonSource):
             self._cursor_path = Path(cursor).expanduser().resolve()
 
     async def start(self, queue: asyncio.Queue[dict[str, Any]]) -> None:
-        assert self._client_secrets_path is not None
+        if self._client_secrets_path is None:
+            raise ValueError(
+                "GmailSource.start() called before configure() — "
+                "client_secrets_path is not set"
+            )
 
         creds = get_credentials(self._client_secrets_path)
         service = build("gmail", "v1", credentials=creds)
@@ -354,7 +358,7 @@ class GmailSource(PythonSource):
                 cursor,
             )
             return cursor
-        except Exception:
+        except HttpError:
             logger.exception("Failed to fetch Gmail history (cursor=%s)", cursor)
             return cursor
 
@@ -391,8 +395,13 @@ class GmailSource(PythonSource):
                         source_type="gmail",
                     ).set_to_current_time()
                     count += 1
-                except Exception:
-                    logger.exception("Failed to fetch message %s", mid)
+                except asyncio.TimeoutError:
+                    logger.error(
+                        "Timed out fetching message %s after %ds",
+                        mid, API_CALL_TIMEOUT,
+                    )
+                except HttpError:
+                    logger.error("Failed to fetch message %s", mid, exc_info=True)
 
         if count:
             logger.info("Incremental poll: %d new message(s)", count)

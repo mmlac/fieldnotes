@@ -128,8 +128,8 @@ class FileParser(BaseParser):
 
         try:
             doc = pymupdf.open(stream=raw, filetype="pdf")
-        except Exception:
-            log.exception("Failed to open PDF %s", source_id)
+        except (pymupdf.FileDataError, pymupdf.EmptyFileError, ValueError, RuntimeError):
+            log.error("Failed to open PDF %s", source_id, exc_info=True)
             return []
 
         try:

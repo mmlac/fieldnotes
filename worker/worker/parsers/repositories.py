@@ -17,6 +17,7 @@ import json
 import logging
 import re
 import tomllib
+import defusedxml
 import defusedxml.ElementTree as ET
 from typing import Any
 
@@ -299,8 +300,8 @@ def _extract_dependencies(
             return _parse_directory_packages_props(text, repo_path, repo_name, remote_url)
         if filename == "packages.config":
             return _parse_packages_config(text, repo_path, repo_name, remote_url)
-    except Exception:
-        logger.exception("Failed to parse dependencies from %s in %s", filename, repo_name)
+    except (json.JSONDecodeError, tomllib.TOMLDecodeError, ET.ParseError, KeyError, ValueError) as exc:
+        logger.error("Failed to parse dependencies from %s in %s: %s", filename, repo_name, exc)
     return []
 
 
@@ -505,10 +506,10 @@ def _parse_dotnet_xml(text: str) -> ET.Element | None:
     except ET.ParseError:
         logger.warning("Malformed XML in .NET project file, skipping")
         return None
-    except Exception:
-        # defusedxml raises DTDForbidden / EntitiesForbidden / ExternalReferenceForbidden
+    except defusedxml.DefusedXmlException:
+        # DTDForbidden / EntitiesForbidden / ExternalReferenceForbidden
         # for malicious XML payloads (billion laughs, XXE, etc.)
-        logger.warning("Rejected unsafe XML in .NET project file (DTD/entity attack), skipping")
+        logger.error("Rejected unsafe XML in .NET project file (DTD/entity attack), skipping")
         return None
 
 

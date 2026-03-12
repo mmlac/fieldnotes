@@ -13,6 +13,8 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from googleapiclient.errors import HttpError
+from httplib2 import Response
 
 from worker.sources.gmail import (
     BACKFILL_PAGE_DELAY,
@@ -309,7 +311,9 @@ class TestPollIncremental:
         service = MagicMock()
         history_api = MagicMock()
         history_list_req = MagicMock()
-        history_list_req.execute.side_effect = Exception("API error")
+        history_list_req.execute.side_effect = HttpError(
+            Response({"status": "500"}), b"API error"
+        )
         history_api.list.return_value = history_list_req
         service.users.return_value.history.return_value = history_api
 
@@ -370,7 +374,7 @@ class TestApiCallWithRetry:
             nonlocal call_count
             call_count += 1
             if call_count < 3:
-                raise Exception("transient")
+                raise HttpError(Response({"status": "503"}), b"transient")
             return "recovered"
 
         with patch("worker.sources.gmail.asyncio.sleep", new_callable=AsyncMock):
@@ -387,11 +391,11 @@ class TestApiCallWithRetry:
     @pytest.mark.asyncio
     async def test_raises_after_max_retries(self) -> None:
         def always_fail():
-            raise Exception("permanent")
+            raise HttpError(Response({"status": "503"}), b"permanent")
 
         with (
             patch("worker.sources.gmail.asyncio.sleep", new_callable=AsyncMock),
-            pytest.raises(Exception, match="permanent"),
+            pytest.raises(HttpError),
         ):
             await GmailSource._api_call_with_retry(
                 asyncio.get_running_loop(),
@@ -409,7 +413,7 @@ class TestApiCallWithRetry:
             nonlocal call_count
             call_count += 1
             if call_count <= 2:
-                raise Exception("fail")
+                raise HttpError(Response({"status": "503"}), b"fail")
             return "ok"
 
         sleep_calls: list[float] = []
