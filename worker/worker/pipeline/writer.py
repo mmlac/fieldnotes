@@ -474,21 +474,29 @@ class Writer:
         for triple in unit.triples:
             _merge_entity_edge(tx, triple)
 
-        # 4. Create Chunk nodes linked via HAS_CHUNK
+        # 4. Delete stale Chunk nodes on modification (before writing new ones)
+        if doc.operation == "modified":
+            tx.run(
+                "MATCH (s {source_id: $sid})-[:HAS_CHUNK]->(c:Chunk) "
+                "DETACH DELETE c",
+                sid=doc.source_id,
+            )
+
+        # 5. Create Chunk nodes linked via HAS_CHUNK
         for chunk in unit.chunks:
             chunk_id = _chunk_node_id(doc.source_id, chunk.index)
             _upsert_chunk(tx, chunk_id, doc.source_id, chunk)
 
-        # 5. Write GraphHints directly (bypass LLM)
+        # 6. Write GraphHints directly (bypass LLM)
         for hint in doc.graph_hints:
             _write_graph_hint(tx, hint)
 
-        # 6. Upsert DEPICTS edges (vision-extracted entities)
+        # 7. Upsert DEPICTS edges (vision-extracted entities)
         for entity in unit.depicts_entities:
             _upsert_entity(tx, entity)
             _merge_depicts_edge(tx, doc.source_id, entity["name"])
 
-        # 7. Create ATTACHED_TO edge (Image→File for embedded images)
+        # 8. Create ATTACHED_TO edge (Image→File for embedded images)
         parent_source_id = doc.node_props.get("parent_source_id")
         if doc.node_label == "Image" and parent_source_id:
             _merge_attached_to_edge(tx, doc.source_id, parent_source_id)
