@@ -79,13 +79,13 @@ For POC: the daemon POSTs ingest events to a local HTTP endpoint on the worker (
 
 ### POC Path
 
-**For the initial POC, the worker runs standalone with Python source shims.** `worker/worker/sources/` contains lightweight Python implementations of the same watching and polling logic that will eventually live in the Go daemon — `watchdog` for files, direct Gmail API calls for email. They emit `IngestEvent` dicts to the worker's internal queue rather than over HTTP. Every other component (`parsers/`, `pipeline/`, `clustering/`, `query/`) is identical between Phase 1 and the target architecture. The shims are the only thing replaced when the Go daemon is built in Phase 4.
+**For the initial POC, the worker runs standalone with Python source shims.** `worker/worker/sources/` contains lightweight Python implementations of the same watching and polling logic that will eventually live in the Go daemon — `watchdog` for files, direct Gmail API calls for email. They emit `IngestEvent` dicts to the worker's internal queue rather than over HTTP. Every other component (`parsers/`, `pipeline/`, `clustering/`, `query/`) is identical between Phase 1 and the target architecture. The shims are the only thing replaced if the Go daemon is built in Phase 6.
 
-The Go `daemon/` skeleton — `Source` interface, `IngestEvent` struct, registry — is committed from day one even before any Go adapters are written. This keeps the contract stable and means Phase 4 is a drop-in replacement rather than a design-time decision made under pressure.
+The Go `daemon/` skeleton — `Source` interface, `IngestEvent` struct, registry — is committed from day one even before any Go adapters are written. This keeps the contract stable and means the Go daemon rewrite (Phase 6, optional) is a drop-in replacement rather than a design-time decision made under pressure.
 
 ```
 Phase 1 (shims):  Python sources + Python worker — fast to build, validates the full pipeline
-Phase 4 (target): Go daemon + Python worker — right tool for each job, single binary distribution
+Phase 6 (optional): Go daemon + Python worker — right tool for each job, single binary distribution
 ```
 
 ---
@@ -864,7 +864,7 @@ import (
 )
 ```
 
-A community adapter ships as a separate Go module. The user forks `fieldnotes-daemon`, adds the import, and rebuilds. In the future, a plugin host (e.g. hashicorp/go-plugin) could enable out-of-process adapters loaded from binaries — but that is a Phase 5 consideration.
+A community adapter ships as a separate Go module. The user forks `fieldnotes-daemon`, adds the import, and rebuilds. In the future, a plugin host (e.g. hashicorp/go-plugin) could enable out-of-process adapters loaded from binaries — but that is a future consideration.
 
 #### Python: The Parser Interface
 
@@ -1884,7 +1884,7 @@ volumes:
   qdrant_data:
 ```
 
-Ollama runs natively on macOS (Metal-accelerated). In the target architecture (Phase 4+), the Go daemon is managed by `launchd` on macOS as a persistent background service, and the Python worker is launched by the daemon on startup. In Phase 1, the worker runs standalone — `worker/worker/main.py` starts both the Python source shims and the pipeline in a single process, with no Go daemon required.
+Ollama runs natively on macOS (Metal-accelerated). In the target architecture (Phase 6, optional), the Go daemon would be managed by `launchd` on macOS as a persistent background service, and the Python worker launched by the daemon on startup. Currently, the worker runs standalone — `worker/worker/main.py` starts both the Python source shims and the pipeline in a single process, with no Go daemon required.
 
 ---
 
@@ -1913,7 +1913,7 @@ fieldnotes/
 │   │   │       └── adapter.go          # git log + file allowlist scanner
 │   │   ├── dispatcher/
 │   │   │   ├── dispatcher.go           # fan-in from all sources → worker queue
-│   │   │   └── redis.go                # optional Redis queue (Phase 4)
+│   │   │   └── redis.go                # optional Redis queue (Phase 6)
 │   │   ├── mcp/
 │   │   │   └── server.go               # MCP server + tool definitions
 │   │   └── api/
@@ -1967,50 +1967,66 @@ fieldnotes/
     └── pyproject.toml
 ```
 
-In Phase 1, `worker/worker/sources/` contains lightweight Python shims that implement the same watching and polling logic that will eventually live in the Go daemon. They emit `IngestEvent` dicts directly to the worker's internal queue rather than over HTTP. The `parsers/` package, the full pipeline, and all downstream code are identical between Phase 1 and the target architecture — the shims are the only thing that gets replaced when the Go daemon is built in Phase 4.
+In Phase 1, `worker/worker/sources/` contains lightweight Python shims that implement the same watching and polling logic that will eventually live in the Go daemon. They emit `IngestEvent` dicts directly to the worker's internal queue rather than over HTTP. The `parsers/` package, the full pipeline, and all downstream code are identical between Phase 1 and the target architecture — the shims are the only thing that gets replaced if the Go daemon is built (Phase 6, optional).
 
-The Go `daemon/` tree is committed from day one as a skeleton with the `Source` interface, `IngestEvent` types, and registry defined — even before the adapters are implemented. This keeps the contract stable and makes Phase 4 a drop-in replacement rather than a refactor.
+The Go `daemon/` tree is committed from day one as a skeleton with the `Source` interface, `IngestEvent` types, and registry defined — even before the adapters are implemented. This keeps the contract stable and means the Go rewrite would be a drop-in replacement rather than a refactor.
 
 ---
 
 ## Phased Roadmap
 
 ### Phase 1 — Core Pipeline (POC, pure Python)
-- [ ] `models/` package: `ModelProvider` interface, `OllamaProvider`, `ModelRegistry` with three-layer config loading
-- [ ] Python source shims in `worker/worker/sources/` (watchdog file watcher, Obsidian vault detection)
-- [ ] File and Obsidian parsers (`parsers/files.py`, `parsers/obsidian.py`) with `GraphHint` support
-- [ ] Full pipeline: chunker → embedder → entity extractor → resolver → Neo4j + Qdrant writer
-- [ ] Go `daemon/` skeleton committed: `Source` interface, `IngestEvent` types, registry defined (no adapters yet)
-- [ ] Basic hybrid query (NL→Cypher + vector)
-- [ ] CLI: `fieldnotes search "<query>"`
+- [x] `models/` package: `ModelProvider` interface, `OllamaProvider`, `ModelRegistry` with three-layer config loading
+- [x] Python source shims in `worker/worker/sources/` (watchdog file watcher, Obsidian vault detection)
+- [x] File and Obsidian parsers (`parsers/files.py`, `parsers/obsidian.py`) with `GraphHint` support
+- [x] Full pipeline: chunker → embedder → entity extractor → resolver → Neo4j + Qdrant writer
+- [x] Go `daemon/` skeleton committed: `Source` interface, `IngestEvent` types, registry defined (no adapters yet)
+- [x] Basic hybrid query (NL→Cypher + vector)
+- [x] CLI: `fieldnotes search "<query>"`
 
 ### Phase 2 — Email + Clustering + Vision
-- [ ] Gmail adapter
-- [ ] Person nodes and email relationship graph
-- [ ] HDBSCAN topic clustering + LLM labeling
-- [ ] Vision extraction worker queue (Qwen3.5-9B via Ollama)
-- [ ] `Image` nodes with `DEPICTS` and `ATTACHED_TO` edges
-- [ ] `fieldnotes topics` CLI command
+- [x] Gmail adapter
+- [x] Person nodes and email relationship graph
+- [x] HDBSCAN topic clustering + LLM labeling
+- [x] Vision extraction worker queue (Qwen3.5-9B via Ollama)
+- [x] `Image` nodes with `DEPICTS` and `ATTACHED_TO` edges
+- [x] `fieldnotes topics` CLI command
 
 ### Phase 3 — Repo Integration
-- [ ] Repository adapter (README/docs/commits)
-- [ ] Dependency graph from Cargo.toml / pyproject.toml
-- [ ] Cross-source entity resolution improvements
+- [x] Repository source adapter: git repo discovery and doc file scanning
+- [x] Repository parser: transform repo events into ParsedDocuments with GraphHints
+- [x] Commit history indexer: extract and index recent git commits
+- [x] Dependency graph parser: extract package dependencies from manifest files (Cargo.toml, pyproject.toml, package.json, go.mod)
+- [x] .NET/NuGet dependency support (csproj, fsproj, Directory.Packages.props)
+- [x] Config wiring: wire repository adapter into config and main.py startup
+- [x] Go daemon repository source skeleton
+- [x] Content update strategy: clean stale graph data on source modification (MENTIONS, GraphHint edges, Chunk nodes, orphan entities)
+- [x] Integration tests for content update flow
 
-### Phase 4 — Go Daemon Refactor
+### Phase 4 — Agent Interface
+- [x] Python MCP server exposing query tools (`fieldnotes serve --mcp`)
+- [x] MCP tool: `search` — hybrid graph+vector query, returns structured context
+- [x] MCP tool: `list_topics` — topic listing with document counts
+- [x] MCP tool: `show_topic` — single topic detail with linked entities/documents
+- [x] MCP tool: `topic_gaps` — cluster-discovered topics missing from user taxonomy
+- [x] `fieldnotes_search` tool in Claude Desktop via MCP
+- [x] Security hardening and code review fixes (19 beads: Cypher injection, SSRF, path traversal, XXE, race conditions, etc.)
+
+### Phase 5 — Packaging & Operations
+- [ ] MCP tool: `ingest_status` — pipeline health, source counts, last sync times
+- [ ] `launchd` plist / `systemd` unit for background daemon management
+- [ ] `uv tool install` / `pipx` packaging for single-command install
+- [ ] Cross-source entity resolution improvements
+- [ ] End-to-end integration tests across all sources and MCP tools
+
+### Phase 6 — Go Daemon Refactor (Optional)
 - [ ] `daemon/` — Go rewrite of all adapters (file watcher, Obsidian parser, Gmail poller, git scanner)
-- [ ] `worker/` — Python ML pipeline promoted from `poc/`, unchanged
+- [ ] `worker/` — Python ML pipeline unchanged
 - [ ] HTTP queue interface between daemon and worker
 - [ ] Go daemon distributed as single binary (`brew install fieldnotes`)
-- [ ] `launchd` plist for macOS background service management
 - [ ] Replace `watchdog` Python dependency with `fsnotify` in Go
 
-### Phase 5 — Agent Interface
-- [ ] MCP server in Go daemon (replaces Python MCP server from POC)
-- [ ] GasTown Polecat integration
-- [ ] `fieldnotes_search` tool in Claude Desktop via MCP
-
-### Phase 6 — Fine-tuning (Experimental)
+### Phase 7 — Fine-tuning (Experimental)
 - [ ] Generate fine-tuning dataset from extraction errors
 - [ ] LoRA fine-tune Qwen3.5-9B on personal corpus via mlx-lm
 - [ ] A/B eval: base model vs fine-tuned on extraction quality
