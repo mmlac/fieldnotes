@@ -19,6 +19,7 @@ from worker.pipeline.writer import (
     WriteUnit,
     Writer,
     _chunk_node_id,
+    _clean_source_edges,
     _merge_attached_to_edge,
     _merge_depicts_edge,
     _merge_entity_edge,
@@ -249,6 +250,59 @@ class TestNeo4jHelpers:
         # Object MERGE should include source property (prefixed with o_)
         obj_call = tx.run.call_args_list[1]
         assert "o_source" in obj_call[1]
+
+
+# ------------------------------------------------------------------
+# _clean_source_edges
+# ------------------------------------------------------------------
+
+
+class TestCleanSourceEdges:
+    def test_deletes_mentions_edges(self):
+        tx = MagicMock()
+        _clean_source_edges(tx, "notes/test.md", "MENTIONS")
+        tx.run.assert_called_once()
+        args, kwargs = tx.run.call_args
+        assert "MENTIONS" in args[0]
+        assert "DELETE r" in args[0]
+        assert kwargs["sid"] == "notes/test.md"
+
+    def test_rejects_unsafe_edge_type(self):
+        tx = MagicMock()
+        with pytest.raises(ValueError, match="edge_type"):
+            _clean_source_edges(tx, "notes/test.md", "BAD; DROP")
+        tx.run.assert_not_called()
+
+    def test_modified_operation_cleans_mentions(self):
+        """Modified sources should have MENTIONS edges deleted before re-write."""
+        doc = _doc(operation="modified")
+        unit = _unit(
+            doc=doc,
+            entities=[{"name": "NewEntity", "type": "Concept"}],
+        )
+        tx = MagicMock()
+        Writer._write_neo4j_tx(tx, unit)
+
+        # First tx.run after source upsert setup should be the cleanup
+        queries = [c[0][0] for c in tx.run.call_args_list]
+        # The cleanup DELETE query should appear before any MENTIONS MERGE
+        delete_idx = next(i for i, q in enumerate(queries) if "DELETE r" in q)
+        mentions_idx = next(i for i, q in enumerate(queries) if "MENTIONS" in q and "MERGE" in q)
+        assert delete_idx < mentions_idx
+
+    def test_created_operation_no_cleanup(self):
+        """Created sources should NOT have MENTIONS edges deleted."""
+        doc = _doc(operation="created")
+        unit = _unit(
+            doc=doc,
+            entities=[{"name": "Entity", "type": "Concept"}],
+        )
+        tx = MagicMock()
+        Writer._write_neo4j_tx(tx, unit)
+
+        queries = [c[0][0] for c in tx.run.call_args_list]
+        delete_queries = [q for q in queries if "DELETE r" in q]
+        assert len(delete_queries) == 0
 
 
 # ------------------------------------------------------------------
