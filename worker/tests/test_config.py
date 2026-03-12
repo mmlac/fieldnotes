@@ -353,6 +353,14 @@ class TestTypeValidation:
         cfg = _parse({"clustering": {"min_interval_seconds": 30}})
         assert cfg.clustering.min_interval_seconds == 30
 
+    def test_clustering_min_interval_seconds_rejects_below_10(self) -> None:
+        with pytest.raises(ValueError, match=r"min_interval_seconds must be >= 10\.0"):
+            _parse({"clustering": {"min_interval_seconds": 5}})
+
+    def test_clustering_min_interval_seconds_accepts_10(self) -> None:
+        cfg = _parse({"clustering": {"min_interval_seconds": 10}})
+        assert cfg.clustering.min_interval_seconds == 10
+
     def test_mcp_port_wrong_type(self) -> None:
         with pytest.raises(TypeError, match=r"\[mcp\] port: expected int"):
             _parse({"mcp": {"port": "3456"}})

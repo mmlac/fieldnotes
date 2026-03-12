@@ -222,10 +222,15 @@ def _upsert_topic_node(tx: Any, cluster: LabeledCluster) -> None:
 
 
 def _create_tagged_edge(tx: Any, source_id: str, topic_name: str) -> None:
-    """Create a TAGGED edge from a source node to a Topic."""
+    """Create a TAGGED edge from a source node to a Topic.
+
+    The WHERE clause restricts the label-less source_id scan to known
+    source node labels, preventing a full graph scan.
+    """
     tx.run(
         """
         MATCH (s {source_id: $sid})
+        WHERE s:File OR s:Email OR s:Commit OR s:Image
         MATCH (t:Topic {name: $name, source: 'cluster'})
         MERGE (s)-[:TAGGED {source: 'cluster'}]->(t)
         """,

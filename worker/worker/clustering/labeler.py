@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections import Counter
 from dataclasses import dataclass
 
 import numpy as np
@@ -86,6 +87,7 @@ def label_clusters(
                 cluster, model, client, qdrant_cfg.collection, top_k
             )
             results.append(labeled)
+        _deduplicate_labels(results)
         return results
     finally:
         client.close()
@@ -199,3 +201,32 @@ def _call_labeling_model(
     except (json.JSONDecodeError, KeyError, TypeError) as exc:
         logger.error("Failed to parse labeling response: %s", exc)
         return "Unknown Topic", "LLM response could not be parsed."
+
+
+def _deduplicate_labels(results: list[LabeledCluster]) -> None:
+    """Append disambiguator suffix to duplicate labels in-place.
+
+    If the LLM assigns the same label to multiple clusters, the writer
+    would MERGE them into a single Topic node.  Detect duplicates and
+    append " (#N)" so each cluster gets a unique Topic.
+    """
+    counts: Counter[str] = Counter(r.label for r in results)
+    dupes = {label for label, n in counts.items() if n > 1}
+    if not dupes:
+        return
+
+    seen: dict[str, int] = {}
+    for result in results:
+        if result.label not in dupes:
+            continue
+        idx = seen.get(result.label, 0) + 1
+        seen[result.label] = idx
+        if idx > 1:
+            old = result.label
+            result.label = f"{old} (#{idx})"
+            logger.warning(
+                "Duplicate label %r for cluster %d, renamed to %r",
+                old,
+                result.cluster_id,
+                result.label,
+            )

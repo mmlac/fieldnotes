@@ -11,6 +11,7 @@ from worker.clustering.labeler import (
     DEFAULT_TOP_K,
     LabeledCluster,
     _call_labeling_model,
+    _deduplicate_labels,
     _get_central_chunk_texts,
     label_clusters,
 )
@@ -217,7 +218,9 @@ class TestLabelClusters:
         assert all(isinstance(r, LabeledCluster) for r in results)
         assert results[0].cluster_id == 0
         assert results[0].label == "Topic Name"
+        # Second cluster gets deduplicated label since LLM returned the same name
         assert results[1].cluster_id == 1
+        assert results[1].label == "Topic Name (#2)"
         registry.for_role.assert_called_once_with("cluster_label")
 
     def test_empty_clusters_returns_empty(self) -> None:
@@ -274,3 +277,46 @@ class TestLabelClusters:
         assert len(results) == 1
         assert results[0].label == "Unknown Topic"
         assert "No chunk texts" in results[0].description
+
+
+# ---------------------------------------------------------------------------
+# _deduplicate_labels
+# ---------------------------------------------------------------------------
+
+
+class TestDeduplicateLabels:
+    def test_no_duplicates_unchanged(self) -> None:
+        results = [
+            LabeledCluster(0, "Topic A", "desc"),
+            LabeledCluster(1, "Topic B", "desc"),
+        ]
+        _deduplicate_labels(results)
+        assert results[0].label == "Topic A"
+        assert results[1].label == "Topic B"
+
+    def test_duplicate_labels_get_suffix(self) -> None:
+        results = [
+            LabeledCluster(0, "Machine Learning", "desc"),
+            LabeledCluster(1, "Machine Learning", "desc"),
+            LabeledCluster(2, "Machine Learning", "desc"),
+        ]
+        _deduplicate_labels(results)
+        assert results[0].label == "Machine Learning"
+        assert results[1].label == "Machine Learning (#2)"
+        assert results[2].label == "Machine Learning (#3)"
+
+    def test_mixed_unique_and_duplicate(self) -> None:
+        results = [
+            LabeledCluster(0, "Topic A", "desc"),
+            LabeledCluster(1, "Topic B", "desc"),
+            LabeledCluster(2, "Topic A", "desc"),
+        ]
+        _deduplicate_labels(results)
+        assert results[0].label == "Topic A"
+        assert results[1].label == "Topic B"
+        assert results[2].label == "Topic A (#2)"
+
+    def test_empty_list(self) -> None:
+        results: list[LabeledCluster] = []
+        _deduplicate_labels(results)
+        assert results == []

@@ -151,6 +151,16 @@ class TestCreateTaggedEdge:
         query = tx.run.call_args[0][0]
         assert "MERGE" in query
 
+    def test_constrains_source_node_labels(self) -> None:
+        tx = MagicMock()
+        _create_tagged_edge(tx, "notes/a.md", "ML")
+
+        query = tx.run.call_args[0][0]
+        assert "s:File" in query
+        assert "s:Email" in query
+        assert "s:Commit" in query
+        assert "s:Image" in query
+
 
 # ---------------------------------------------------------------------------
 # _write_tx (transaction body)
