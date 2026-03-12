@@ -13,6 +13,7 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from worker.cli.display import display_progress, spinner
 from worker.cli.reformulator import reformulate
 from worker.config import Config, load_config
 from worker.models.base import CompletionRequest
@@ -55,6 +56,8 @@ def _synthesize(
     session: _Session | None = None,
 ) -> str:
     """Run hybrid retrieval + LLM synthesis. Returns formatted answer text."""
+    verbose = session.verbose if session else False
+
     # --- 0. Reformulate follow-up questions ---
     search_query = question
     if session and session.history:
@@ -72,20 +75,30 @@ def _synthesize(
 
     # --- 1. Retrieve context ---
     graph_result: GraphQueryResult
-    try:
-        graph_result = graph_querier.query(search_query)
-    except Exception as exc:
-        logger.debug("Graph query failed: %s", exc)
-        graph_result = GraphQueryResult(question=search_query, cypher="", error=str(exc))
-
     vector_result: VectorQueryResult
-    try:
-        vector_result = vector_querier.query(search_query, top_k=20)
-    except Exception as exc:
-        logger.debug("Vector query failed: %s", exc)
-        vector_result = VectorQueryResult(question=search_query, error=str(exc))
 
-    hybrid = merge(search_query, graph_result, vector_result)
+    with spinner("Searching..."):
+        try:
+            graph_result = graph_querier.query(search_query)
+        except Exception as exc:
+            logger.debug("Graph query failed: %s", exc)
+            graph_result = GraphQueryResult(question=search_query, cypher="", error=str(exc))
+
+        try:
+            vector_result = vector_querier.query(search_query, top_k=20)
+        except Exception as exc:
+            logger.debug("Vector query failed: %s", exc)
+            vector_result = VectorQueryResult(question=search_query, error=str(exc))
+
+        hybrid = merge(search_query, graph_result, vector_result)
+
+    # Show progress tree with source breakdown.
+    display_progress(
+        hybrid,
+        graph_result=graph_result,
+        vector_result=vector_result,
+        verbose=verbose,
+    )
 
     # --- 2. Build RAG prompt ---
     context_text = hybrid.context
@@ -168,7 +181,8 @@ def _synthesize(
         temperature=0.2,
         timeout=120.0,
     )
-    resp = model.complete(req, task="ask")
+    with spinner("Thinking..."):
+        resp = model.complete(req, task="ask")
 
     # --- 3. Format response ---
     parts: list[str] = []
@@ -314,6 +328,7 @@ def run_ask(
     question: str | None,
     *,
     config_path: Path | None,
+    verbose: bool = False,
 ) -> int:
     """Entry point for the ``ask`` subcommand.
 
@@ -328,12 +343,16 @@ def run_ask(
     graph_querier = GraphQuerier(registry, cfg.neo4j)
     vector_querier = VectorQuerier(registry, cfg.qdrant)
 
+    # Create a session to carry verbose state for one-shot mode.
+    session = _Session(verbose=verbose) if verbose else None
+
     try:
         answer = _synthesize(
             question,
             registry=registry,
             graph_querier=graph_querier,
             vector_querier=vector_querier,
+            session=session,
         )
         print(answer)
         return 0

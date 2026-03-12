@@ -118,6 +118,12 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Question to ask (omit for interactive REPL mode)",
     )
+    ask_p.add_argument(
+        "--verbose",
+        action="store_true",
+        dest="ask_verbose",
+        help="Show query details (Cypher, vector scores, context size)",
+    )
 
     # ── topics ──────────────────────────────────────────────────────
     topics_p = sub.add_parser("topics", help="Browse and inspect topics")
@@ -309,7 +315,11 @@ def main(argv: list[str] | None = None) -> int:
 
         question = " ".join(args.question) if args.question else None
         try:
-            return run_ask(question, config_path=args.config)
+            return run_ask(
+                question,
+                config_path=args.config,
+                verbose=args.ask_verbose,
+            )
         except Exception as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
