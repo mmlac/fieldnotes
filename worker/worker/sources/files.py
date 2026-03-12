@@ -19,6 +19,7 @@ from typing import Any
 from watchdog.observers import Observer
 
 from worker.metrics import (
+    CURSOR_CHECKPOINT_WRITES,
     INITIAL_SCAN_DURATION_SECONDS,
     INITIAL_SCAN_FILES_TOTAL,
     WATCHER_ACTIVE,
@@ -41,6 +42,7 @@ _streaming_sha256 = streaming_sha256
 logger = logging.getLogger(__name__)
 
 _DEFAULT_CURSOR_PATH = Path("~/.fieldnotes/data/file_cursor.json")
+DEFAULT_CHECKPOINT_INTERVAL = 300  # 5 minutes
 
 
 class _Handler(BaseHandler):
@@ -58,6 +60,7 @@ class FileSource(PythonSource):
         exclude_patterns: list[str]  — glob patterns to skip (optional)
         recursive: bool              — watch subdirectories (default: true)
         cursor_path: str             — cursor persistence file (optional)
+        cursor_checkpoint_interval: int — seconds between checkpoints (default: 300)
     """
 
     def __init__(self) -> None:
@@ -67,6 +70,7 @@ class FileSource(PythonSource):
         self._recursive: bool = True
         self._max_file_size: int = DEFAULT_MAX_FILE_SIZE
         self._cursor_path: Path = _DEFAULT_CURSOR_PATH.expanduser()
+        self._checkpoint_interval: int = DEFAULT_CHECKPOINT_INTERVAL
 
     def name(self) -> str:
         return "files"
@@ -98,6 +102,10 @@ class FileSource(PythonSource):
         cursor = cfg.get("cursor_path")
         if cursor:
             self._cursor_path = Path(cursor).expanduser().resolve()
+
+        interval = cfg.get("cursor_checkpoint_interval")
+        if interval is not None:
+            self._checkpoint_interval = int(interval)
 
     def _should_skip(self, path: str) -> bool:
         """Apply the same filtering rules as the watchdog handler."""
@@ -237,6 +245,11 @@ class FileSource(PythonSource):
             exclude_patterns=self._exclude_patterns,
             max_file_size=self._max_file_size,
         )
+
+        # Load existing cursor into handler for incremental tracking
+        stored_cursor = load_cursor(self._cursor_path)
+        handler.set_cursor(stored_cursor)
+
         observer = Observer()
         for watch_path in self._watch_paths:
             if not watch_path.is_dir():
@@ -254,8 +267,19 @@ class FileSource(PythonSource):
         WATCHER_ACTIVE.labels(source_type="files").set(1)
         try:
             while True:
-                await asyncio.sleep(1)
+                await asyncio.sleep(self._checkpoint_interval)
+                self._save_checkpoint(handler)
+        except asyncio.CancelledError:
+            self._save_checkpoint(handler)
+            raise
         finally:
             WATCHER_ACTIVE.labels(source_type="files").set(0)
             observer.stop()
             observer.join()
+
+    def _save_checkpoint(self, handler: _Handler) -> None:
+        """Persist the handler's in-memory cursor to disk."""
+        cursor = handler.get_cursor_snapshot()
+        save_cursor(self._cursor_path, cursor)
+        CURSOR_CHECKPOINT_WRITES.labels(source_type="files").inc()
+        logger.info("Cursor checkpoint saved: %d files tracked", len(cursor))

@@ -285,6 +285,13 @@ OBSIDIAN_VAULTS_DISCOVERED = Gauge(
     registry=REGISTRY,
 )
 
+CURSOR_CHECKPOINT_WRITES = Counter(
+    "fieldnotes_cursor_checkpoint_writes_total",
+    "Total cursor checkpoint writes to disk",
+    ["source_type"],
+    registry=REGISTRY,
+)
+
 GMAIL_POLL_DURATION = Histogram(
     "fieldnotes_gmail_poll_duration_seconds",
     "Duration of Gmail poll cycles",

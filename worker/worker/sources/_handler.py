@@ -12,6 +12,7 @@ import fnmatch
 import hashlib
 import logging
 import os
+import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -26,6 +27,8 @@ from watchdog.events import (
 )
 
 from worker.metrics import SOURCE_WATCHER_EVENTS, WATCHER_LAST_EVENT_TIMESTAMP
+
+from .cursor import FileEntry
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +129,8 @@ class BaseHandler(FileSystemEventHandler):
         self._include_extensions = include_extensions
         self._exclude_patterns = exclude_patterns
         self._max_file_size = max_file_size
+        self._cursor: dict[str, FileEntry] = {}
+        self._cursor_lock = threading.Lock()
 
     # -- Filtering ----------------------------------------------------------
 
@@ -216,6 +221,45 @@ class BaseHandler(FileSystemEventHandler):
 
         return ingest
 
+    # -- Cursor tracking ----------------------------------------------------
+
+    def get_cursor_snapshot(self) -> dict[str, FileEntry]:
+        """Return a thread-safe copy of the in-memory cursor."""
+        with self._cursor_lock:
+            return dict(self._cursor)
+
+    def set_cursor(self, cursor: dict[str, FileEntry]) -> None:
+        """Replace the in-memory cursor (e.g. from a loaded checkpoint)."""
+        with self._cursor_lock:
+            self._cursor = dict(cursor)
+
+    def _update_cursor(self, ingest: dict[str, Any]) -> None:
+        """Update in-memory cursor from a dispatched event."""
+        src_path = ingest["source_id"]
+        op = ingest["operation"]
+        with self._cursor_lock:
+            if op == "deleted":
+                self._cursor.pop(src_path, None)
+            else:
+                meta = ingest.get("meta", {})
+                sha256 = meta.get("sha256", "")
+                size = meta.get("size_bytes", 0)
+                # mtime_ns from source_modified_at (ISO string -> ns)
+                modified_at = ingest.get("source_modified_at", "")
+                mtime_ns = 0
+                if modified_at:
+                    try:
+                        from datetime import datetime
+
+                        dt = datetime.fromisoformat(modified_at)
+                        mtime_ns = int(dt.timestamp() * 1e9)
+                    except (ValueError, OSError):
+                        pass
+                if sha256:
+                    self._cursor[src_path] = FileEntry(
+                        sha256=sha256, mtime_ns=mtime_ns, size=size,
+                    )
+
     # -- Dispatch -----------------------------------------------------------
 
     def on_created(self, event: FileSystemEvent) -> None:
@@ -230,6 +274,7 @@ class BaseHandler(FileSystemEventHandler):
     def _dispatch(self, event: FileSystemEvent) -> None:
         ingest = self._build_event(event)
         if ingest is not None:
+            self._update_cursor(ingest)
             SOURCE_WATCHER_EVENTS.labels(
                 source_type=self._source_type,
                 event_type=ingest["operation"],

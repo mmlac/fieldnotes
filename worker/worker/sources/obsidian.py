@@ -20,6 +20,7 @@ from typing import Any
 from watchdog.observers import Observer
 
 from worker.metrics import (
+    CURSOR_CHECKPOINT_WRITES,
     INITIAL_SCAN_DURATION_SECONDS,
     INITIAL_SCAN_FILES_TOTAL,
     OBSIDIAN_VAULTS_DISCOVERED,
@@ -33,6 +34,7 @@ from .cursor import CursorDiff, FileEntry, diff_cursor, load_cursor, save_cursor
 logger = logging.getLogger(__name__)
 
 DEFAULT_CURSOR_PATH = Path.home() / ".fieldnotes" / "data" / "obsidian_cursor.json"
+DEFAULT_CHECKPOINT_INTERVAL = 300  # 5 minutes
 
 
 def discover_vaults(search_paths: list[Path]) -> list[Path]:
@@ -262,6 +264,7 @@ class ObsidianSource(PythonSource):
         exclude_patterns: list[str]  — glob patterns to skip (optional)
         recursive: bool              — watch subdirectories (default: true)
         cursor_path: str             — cursor persistence file (optional)
+        cursor_checkpoint_interval: int — seconds between checkpoints (default: 300)
     """
 
     def __init__(self) -> None:
@@ -271,6 +274,7 @@ class ObsidianSource(PythonSource):
         self._recursive: bool = True
         self._max_file_size: int = DEFAULT_MAX_FILE_SIZE
         self._cursor_path: Path = DEFAULT_CURSOR_PATH
+        self._checkpoint_interval: int = DEFAULT_CHECKPOINT_INTERVAL
 
     def name(self) -> str:
         return "obsidian"
@@ -302,6 +306,11 @@ class ObsidianSource(PythonSource):
         cursor = cfg.get("cursor_path")
         if cursor:
             self._cursor_path = Path(cursor).expanduser().resolve()
+
+        interval = cfg.get("cursor_checkpoint_interval")
+        if interval is not None:
+            self._checkpoint_interval = int(interval)
+
 
     async def start(self, queue: asyncio.Queue[dict[str, Any]]) -> None:
         loop = asyncio.get_running_loop()
@@ -412,6 +421,7 @@ class ObsidianSource(PythonSource):
 
         # -- Start watchdog observer --
         observer = Observer()
+        handlers: list[_VaultHandler] = []
         for vault in vaults:
             vault_name = vault.name
             handler = _VaultHandler(
@@ -423,6 +433,8 @@ class ObsidianSource(PythonSource):
                 exclude_patterns=self._exclude_patterns,
                 max_file_size=self._max_file_size,
             )
+            handler.set_cursor(stored_cursor)
+            handlers.append(handler)
             observer.schedule(handler, str(vault), recursive=self._recursive)
             logger.info(
                 "Watching Obsidian vault '%s' at %s (recursive=%s)",
@@ -435,8 +447,21 @@ class ObsidianSource(PythonSource):
         WATCHER_ACTIVE.labels(source_type="obsidian").set(1)
         try:
             while True:
-                await asyncio.sleep(1)
+                await asyncio.sleep(self._checkpoint_interval)
+                self._save_checkpoint(handlers)
+        except asyncio.CancelledError:
+            self._save_checkpoint(handlers)
+            raise
         finally:
             WATCHER_ACTIVE.labels(source_type="obsidian").set(0)
             observer.stop()
             observer.join()
+
+    def _save_checkpoint(self, handlers: list[_VaultHandler]) -> None:
+        """Merge all vault handler cursors and persist to disk."""
+        merged: dict[str, Any] = {}
+        for h in handlers:
+            merged.update(h.get_cursor_snapshot())
+        save_cursor(self._cursor_path, merged)
+        CURSOR_CHECKPOINT_WRITES.labels(source_type="obsidian").inc()
+        logger.info("Cursor checkpoint saved: %d files tracked", len(merged))
