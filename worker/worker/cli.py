@@ -66,8 +66,17 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Run ingest pipeline and MCP server as a background daemon",
     )
 
-    # ── daemon ─────────────────────────────────────────────────────
-    daemon_p = sub.add_parser("daemon", help="Manage the fieldnotes background daemon")
+    # ── service ────────────────────────────────────────────────────
+    service_p = sub.add_parser("service", help="Manage the fieldnotes background service")
+    service_sub = service_p.add_subparsers(dest="service_command")
+    service_sub.add_parser("install", help="Install and start the service")
+    service_sub.add_parser("uninstall", help="Stop and remove the service")
+    service_sub.add_parser("status", help="Show service status")
+    service_sub.add_parser("start", help="Start the service")
+    service_sub.add_parser("stop", help="Stop the service")
+
+    # ── daemon (deprecated alias) ─────────────────────────────────
+    daemon_p = sub.add_parser("daemon", help="(deprecated: use 'service') Manage the background daemon")
     daemon_sub = daemon_p.add_subparsers(dest="daemon_command")
     daemon_sub.add_parser("install", help="Install and start the daemon service")
     daemon_sub.add_parser("uninstall", help="Stop and remove the daemon service")
@@ -238,19 +247,36 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: {exc}", file=sys.stderr)
             return 1
 
+    if args.command == "service":
+        from worker import service
+
+        if args.service_command == "install":
+            return service.install()
+        if args.service_command == "uninstall":
+            return service.uninstall()
+        if args.service_command == "status":
+            return service.status()
+        if args.service_command == "start":
+            return service.start()
+        if args.service_command == "stop":
+            return service.stop()
+        print("Usage: fieldnotes service {install,uninstall,status,start,stop}",
+              file=sys.stderr)
+        return 1
+
     if args.command == "daemon":
-        from worker import daemon
+        from worker import service
 
         if args.daemon_command == "install":
-            return daemon.install()
+            return service.install()
         if args.daemon_command == "uninstall":
-            return daemon.uninstall()
+            return service.uninstall()
         if args.daemon_command == "status":
-            return daemon.status()
+            return service.status()
         if args.daemon_command == "start":
-            return daemon.start()
+            return service.start()
         if args.daemon_command == "stop":
-            return daemon.stop()
+            return service.stop()
         print("Usage: fieldnotes daemon {install,uninstall,status,start,stop}",
               file=sys.stderr)
         return 1

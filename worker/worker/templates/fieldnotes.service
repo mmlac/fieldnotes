@@ -8,6 +8,8 @@ ExecStart={{EXECUTABLE}} serve --daemon
 Restart=on-failure
 RestartSec=5
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
+StandardOutput=append:{{LOG_DIR}}/daemon.log
+StandardError=append:{{LOG_DIR}}/daemon.log
 
 [Install]
 WantedBy=default.target
