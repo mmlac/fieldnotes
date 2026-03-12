@@ -102,7 +102,7 @@ def extract_image(
     )
 
     try:
-        resp = model.complete(req)
+        resp = model.complete(req, task="vision")
         return _parse_response(resp)
     except (json.JSONDecodeError, ValueError) as exc:
         logger.warning("Vision extraction failed: %s", exc)

@@ -8,6 +8,8 @@ Single entry point for the pipeline to access any model. Resolution layers:
 
 from __future__ import annotations
 
+import logging
+import time
 from dataclasses import dataclass
 
 from .base import (
@@ -19,6 +21,15 @@ from .base import (
 )
 from .registry import get_provider
 from ..config import Config
+from ..metrics import (
+    EMBEDDING_BATCH_SIZE,
+    EMBEDDING_DURATION,
+    LLM_ERRORS,
+    LLM_REQUEST_DURATION,
+    LLM_TOKENS,
+)
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -29,13 +40,43 @@ class ResolvedModel:
     model: str
     provider: ModelProvider
 
-    def complete(self, req: CompletionRequest) -> CompletionResponse:
-        """Passthrough to the underlying provider's complete()."""
-        return self.provider.complete(self.model, req)
+    def complete(self, req: CompletionRequest, *, task: str = "unknown") -> CompletionResponse:
+        """Run a completion with latency, token, and error tracking."""
+        start = time.monotonic()
+        try:
+            resp = self.provider.complete(self.model, req)
+        except Exception as exc:
+            elapsed = time.monotonic() - start
+            LLM_REQUEST_DURATION.labels(model=self.model, task=task).observe(elapsed)
+            LLM_ERRORS.labels(
+                model=self.model, task=task, error_type=type(exc).__name__,
+            ).inc()
+            raise
+        elapsed = time.monotonic() - start
+        LLM_REQUEST_DURATION.labels(model=self.model, task=task).observe(elapsed)
+        if resp.input_tokens or resp.output_tokens:
+            LLM_TOKENS.labels(model=self.model, task=task, direction="input").inc(resp.input_tokens)
+            LLM_TOKENS.labels(model=self.model, task=task, direction="output").inc(resp.output_tokens)
+        return resp
 
-    def embed(self, req: EmbedRequest) -> EmbedResponse:
-        """Passthrough to the underlying provider's embed()."""
-        return self.provider.embed(self.model, req)
+    def embed(self, req: EmbedRequest, *, task: str = "embed") -> EmbedResponse:
+        """Run an embedding call with latency, token, and error tracking."""
+        start = time.monotonic()
+        try:
+            resp = self.provider.embed(self.model, req)
+        except Exception as exc:
+            elapsed = time.monotonic() - start
+            EMBEDDING_DURATION.labels(model=self.model).observe(elapsed)
+            LLM_ERRORS.labels(
+                model=self.model, task=task, error_type=type(exc).__name__,
+            ).inc()
+            raise
+        elapsed = time.monotonic() - start
+        EMBEDDING_DURATION.labels(model=self.model).observe(elapsed)
+        EMBEDDING_BATCH_SIZE.labels(model=self.model).observe(len(req.texts))
+        if resp.input_tokens:
+            LLM_TOKENS.labels(model=self.model, task=task, direction="input").inc(resp.input_tokens)
+        return resp
 
 
 class ModelRegistry:

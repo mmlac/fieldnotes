@@ -119,7 +119,7 @@ class _RegistryLLM(BaseChatModel):
             messages=non_system or [{"role": "user", "content": ""}],
             temperature=0.0,
         )
-        resp = self.resolved.complete(req)
+        resp = self.resolved.complete(req, task="graph_query")
         return ChatResult(
             generations=[ChatGeneration(message=AIMessage(content=resp.text))]
         )

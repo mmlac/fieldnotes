@@ -276,8 +276,8 @@ def _resolve_by_embedding(
     existing_names = [e["name"] for e in existing]
 
     try:
-        unresolved_resp = embed_model.embed(EmbedRequest(texts=unresolved_names))
-        existing_resp = embed_model.embed(EmbedRequest(texts=existing_names))
+        unresolved_resp = embed_model.embed(EmbedRequest(texts=unresolved_names), task="resolve_entities")
+        existing_resp = embed_model.embed(EmbedRequest(texts=existing_names), task="resolve_entities")
     except Exception:
         logger.warning("Embedding fallback failed, keeping entities as new", exc_info=True)
         for entity in unresolved:

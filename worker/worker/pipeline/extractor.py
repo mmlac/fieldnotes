@@ -189,7 +189,7 @@ def _call_and_parse(
     ValidationError
         If the parsed JSON is missing required fields.
     """
-    resp = model.complete(req)
+    resp = model.complete(req, task="extract_entities")
 
     # Try to extract from tool_calls first
     if resp.tool_calls:

@@ -181,7 +181,7 @@ def _call_labeling_model(
         timeout=LLM_TIMEOUT,
     )
 
-    resp = model.complete(req)
+    resp = model.complete(req, task="label_topic")
 
     try:
         data = json.loads(resp.text)

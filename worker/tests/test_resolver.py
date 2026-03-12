@@ -50,7 +50,7 @@ def _mock_embed_model(vectors_map: dict[str, list[float]]) -> ResolvedModel:
     """Create a mock embed model that returns vectors based on text lookup."""
     model = MagicMock(spec=ResolvedModel)
 
-    def embed_side_effect(req):
+    def embed_side_effect(req, **kwargs):
         vecs = [vectors_map.get(t, [0.0] * 3) for t in req.texts]
         return EmbedResponse(vectors=vecs, model="mock", input_tokens=0)
 

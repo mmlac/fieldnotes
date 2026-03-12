@@ -201,6 +201,21 @@ EMBEDDING_DURATION = Histogram(
     registry=REGISTRY,
 )
 
+EMBEDDING_BATCH_SIZE = Histogram(
+    "embedding_batch_size",
+    "Number of texts per embedding call",
+    ["model"],
+    buckets=(1, 2, 5, 10, 25, 50, 100, 250, 500),
+    registry=REGISTRY,
+)
+
+LLM_ERRORS = Counter(
+    "llm_errors_total",
+    "Total LLM API errors",
+    ["model", "task", "error_type"],
+    registry=REGISTRY,
+)
+
 # ---------------------------------------------------------------------------
 # Operational gauges / counters
 # ---------------------------------------------------------------------------
