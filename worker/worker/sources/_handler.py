@@ -121,6 +121,8 @@ def guess_mime(path: str) -> str:
         ".html": "text/html",
         ".csv": "text/csv",
         ".canvas": "application/json",
+        ".pages": "application/x-iwork-pages",
+        ".key": "application/x-iwork-keynote",
     }
     return mime_map.get(ext, "application/octet-stream")
 
@@ -283,7 +285,11 @@ class BaseHandler(FileSystemEventHandler):
                 mime = ingest["mime_type"]
                 if mime.startswith("text/"):
                     ingest["text"] = data.decode("utf-8", errors="replace")
-                elif mime.startswith("image/") or mime == "application/pdf":
+                elif (
+                    mime.startswith("image/")
+                    or mime == "application/pdf"
+                    or mime.startswith("application/x-iwork-")
+                ):
                     ingest["raw_bytes"] = data
             except OSError:
                 logger.warning("Failed to read %s, emitting event without content hash", src_path)

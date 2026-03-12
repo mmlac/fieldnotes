@@ -17,6 +17,7 @@ from typing import Any
 import pymupdf
 
 from .base import BaseParser, ParsedDocument
+from .iwork import IWORK_MIME_TYPES, IWorkParser
 from .registry import register
 
 log = logging.getLogger(__name__)
@@ -36,6 +37,7 @@ class FileParser(BaseParser):
         self._max_pdf_pages: int = _DEFAULT_MAX_PDF_PAGES
         self._max_text_bytes: int = _DEFAULT_MAX_TEXT_BYTES
         self._max_image_bytes: int = _DEFAULT_MAX_IMAGE_BYTES
+        self._iwork_parser = IWorkParser()
 
     @property
     def source_type(self) -> str:
@@ -52,6 +54,8 @@ class FileParser(BaseParser):
             return self._parse_pdf(event, source_id, operation)
         elif mime.startswith("image/"):
             return self._parse_image(event, mime, source_id, operation)
+        elif mime in IWORK_MIME_TYPES:
+            return self._iwork_parser.parse(event)
         else:
             return []
 
