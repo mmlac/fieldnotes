@@ -198,10 +198,24 @@ class FieldnotesServer:
     # -- connection management ----------------------------------------------
 
     def _connect(self) -> None:
-        """Initialise ModelRegistry, GraphQuerier, and VectorQuerier."""
+        """Initialise ModelRegistry, GraphQuerier, and VectorQuerier.
+
+        Uses try/except so that a failure in a later connection (e.g. Qdrant)
+        cleans up already-opened connections (e.g. Neo4j) instead of leaking
+        them.
+        """
         self._registry = ModelRegistry(self._cfg)
-        self._graph_querier = GraphQuerier(self._registry, self._cfg.neo4j)
-        self._vector_querier = VectorQuerier(self._registry, self._cfg.qdrant)
+        try:
+            self._graph_querier = GraphQuerier(self._registry, self._cfg.neo4j)
+            try:
+                self._vector_querier = VectorQuerier(self._registry, self._cfg.qdrant)
+            except Exception:
+                self._graph_querier.close()
+                self._graph_querier = None
+                raise
+        except Exception:
+            self._registry = None
+            raise
         logger.info("Fieldnotes MCP server: connections initialised")
 
     def _disconnect(self) -> None:

@@ -114,15 +114,25 @@ async def _run_daemon(cfg: Config) -> None:
                     source_type, source_id, operation,
                 )
     finally:
+        _DRAIN_TIMEOUT = 10  # seconds to wait for in-progress work
+
         mcp_task.cancel()
         for task in background_tasks:
             task.cancel()
         for task in source_tasks:
             task.cancel()
-        await asyncio.gather(
-            mcp_task, *background_tasks, *source_tasks,
-            return_exceptions=True,
-        )
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(
+                    mcp_task, *background_tasks, *source_tasks,
+                    return_exceptions=True,
+                ),
+                timeout=_DRAIN_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Tasks did not finish within %ds — forcing shutdown", _DRAIN_TIMEOUT
+            )
         pipeline.close()
         logger.info("Daemon shutdown complete")
 

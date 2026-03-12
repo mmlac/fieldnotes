@@ -219,17 +219,27 @@ class GraphQuerier:
             username=neo4j_cfg.user,
             password=neo4j_cfg.password,
         )
-        self._graph.refresh_schema()
+        try:
+            self._graph.refresh_schema()
 
-        # Maintain our own driver instance instead of reaching into
-        # LangChain internals (_graph._driver) which are not part of the
-        # public API and may break across versions.
-        self._driver = GraphDatabase.driver(
-            neo4j_cfg.uri,
-            auth=(neo4j_cfg.user, neo4j_cfg.password),
-            connection_timeout=_CONNECTION_TIMEOUT_S,
-            max_transaction_retry_time=_MAX_TRANSACTION_RETRY_TIME_S,
-        )
+            # Maintain our own driver instance instead of reaching into
+            # LangChain internals (_graph._driver) which are not part of the
+            # public API and may break across versions.
+            self._driver = GraphDatabase.driver(
+                neo4j_cfg.uri,
+                auth=(neo4j_cfg.user, neo4j_cfg.password),
+                connection_timeout=_CONNECTION_TIMEOUT_S,
+                max_transaction_retry_time=_MAX_TRANSACTION_RETRY_TIME_S,
+            )
+        except Exception:
+            # Close the already-opened Neo4jGraph to avoid leaking its
+            # internal driver connection pool.
+            try:
+                self._graph._driver.close()
+            except Exception:
+                pass
+            raise
+
         self._database = getattr(self._graph, "_database", None) or "neo4j"
 
         self._llm = _RegistryLLM(resolved=self._resolved)

@@ -206,17 +206,21 @@ class Writer:
             neo4j_cfg.uri,
             auth=(neo4j_cfg.user, neo4j_cfg.password),
         )
-        self._qdrant = QdrantClient(
-            host=qdrant_cfg.host,
-            port=qdrant_cfg.port,
-        )
-        self._collection = qdrant_cfg.collection or COLLECTION_NAME
-        self._vector_size = qdrant_cfg.vector_size or VECTOR_SIZE
-        self._entity_cache: list[dict[str, Any]] | None = None
-        self._entity_cache_ts: float = 0.0
-        self._entity_cache_lock = threading.Lock()
-        self._ensure_qdrant_collection()
-        self._ensure_entity_fulltext_index()
+        try:
+            self._qdrant = QdrantClient(
+                host=qdrant_cfg.host,
+                port=qdrant_cfg.port,
+            )
+            self._collection = qdrant_cfg.collection or COLLECTION_NAME
+            self._vector_size = qdrant_cfg.vector_size or VECTOR_SIZE
+            self._entity_cache: list[dict[str, Any]] | None = None
+            self._entity_cache_ts: float = 0.0
+            self._entity_cache_lock = threading.Lock()
+            self._ensure_qdrant_collection()
+            self._ensure_entity_fulltext_index()
+        except Exception:
+            self._neo4j_driver.close()
+            raise
 
     @_qdrant_retry
     def _ensure_qdrant_collection(self) -> None:
@@ -573,9 +577,19 @@ class Writer:
         self.close()
 
     def close(self) -> None:
-        """Release connections."""
-        self._neo4j_driver.close()
-        self._qdrant.close()
+        """Release connections.
+
+        Safe to call multiple times — silently ignores already-closed
+        resources.
+        """
+        try:
+            self._neo4j_driver.close()
+        except Exception:
+            logger.debug("Error closing Neo4j driver", exc_info=True)
+        try:
+            self._qdrant.close()
+        except Exception:
+            logger.debug("Error closing Qdrant client", exc_info=True)
 
     # ------------------------------------------------------------------
     # Neo4j writes

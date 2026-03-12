@@ -233,16 +233,30 @@ async def _run(cfg: Config) -> None:
                     source_type, source_id, operation,
                 )
     finally:
+        _DRAIN_TIMEOUT = 10  # seconds to wait for in-progress work
+
         # Cancel background tasks (clustering scheduler)
         for task in background_tasks:
             task.cancel()
-        await asyncio.gather(*background_tasks, return_exceptions=True)
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*background_tasks, return_exceptions=True),
+                timeout=_DRAIN_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            logger.warning("Background tasks did not finish within %ds", _DRAIN_TIMEOUT)
 
         # Cancel all source tasks
         logger.info("Shutting down sources...")
         for task in source_tasks:
             task.cancel()
-        await asyncio.gather(*source_tasks, return_exceptions=True)
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*source_tasks, return_exceptions=True),
+                timeout=_DRAIN_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            logger.warning("Source tasks did not finish within %ds", _DRAIN_TIMEOUT)
 
         # Close pipeline (releases Neo4j + Qdrant connections)
         pipeline.close()

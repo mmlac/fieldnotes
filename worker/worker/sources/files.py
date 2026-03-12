@@ -102,8 +102,7 @@ class FileSource(PythonSource):
         try:
             while True:
                 await asyncio.sleep(1)
-        except asyncio.CancelledError:
+        finally:
             WATCHER_ACTIVE.labels(source_type="files").set(0)
             observer.stop()
             observer.join()
-            raise
