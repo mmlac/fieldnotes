@@ -1,6 +1,5 @@
 """Tests for the Gmail parser."""
 
-from worker.parsers.base import GraphHint, ParsedDocument
 from worker.parsers.gmail import GmailParser, _parse_email_address, _strip_html
 
 

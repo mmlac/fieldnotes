@@ -31,7 +31,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-from neo4j import GraphDatabase, Driver, Session as Neo4jSession
+from neo4j import GraphDatabase, Driver
 from neo4j.exceptions import ServiceUnavailable, TransientError
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
@@ -62,7 +62,6 @@ from worker.metrics import (
 from worker.parsers.base import GraphHint, ParsedDocument
 from worker.pipeline.chunker import Chunk
 from worker.pipeline.resolver import (
-    CrossSourceMatch,
     resolve_cross_source,
 )
 

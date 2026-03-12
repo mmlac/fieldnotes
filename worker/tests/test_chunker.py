@@ -1,6 +1,5 @@
 """Tests for pipeline/chunker.py — sentence-aware text splitting."""
 
-import pytest
 
 from worker.pipeline.chunker import (
     Chunk,
@@ -9,9 +8,6 @@ from worker.pipeline.chunker import (
     _tokenize,
     _detokenize,
     _merge_short_chunks,
-    DEFAULT_CHUNK_SIZE,
-    DEFAULT_OVERLAP,
-    MIN_CHUNK_TOKENS,
 )
 
 

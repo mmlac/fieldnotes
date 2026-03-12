@@ -6,7 +6,6 @@ import io
 import json
 
 from worker.cli.stream import (
-    StreamResult,
     format_sources,
     render_json,
     render_no_stream,

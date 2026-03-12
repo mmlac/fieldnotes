@@ -2,16 +2,14 @@
 
 import json
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
-import pytest
 
 from worker.models.base import CompletionResponse
 from worker.pipeline.app_describer import (
     AppDescriptionCache,
     AppInfo,
     BATCH_SIZE,
-    _describe_batch,
     _major_version,
     _parse_response,
     describe_apps,

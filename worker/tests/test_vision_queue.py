@@ -13,8 +13,6 @@ from worker.parsers.base import ParsedDocument
 from worker.pipeline.vision_queue import (
     VisionQueue,
     VisionResult,
-    VisionQueueStats,
-    _SEEN_HASHES_MAX,
     _compute_sha256,
     check_vision_processed_neo4j,
 )

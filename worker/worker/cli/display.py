@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Iterator
 if TYPE_CHECKING:
     from worker.query.graph import GraphQueryResult
     from worker.query.hybrid import HybridResult
-    from worker.query.vector import VectorQueryResult, VectorResult
+    from worker.query.vector import VectorQueryResult
 
 
 def _use_rich() -> bool:

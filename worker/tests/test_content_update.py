@@ -13,7 +13,6 @@ from typing import Any, Generator
 import pytest
 from neo4j import GraphDatabase, Driver
 from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, VectorParams
 
 from worker.config import Neo4jConfig, QdrantConfig
 from worker.parsers.base import GraphHint, ParsedDocument

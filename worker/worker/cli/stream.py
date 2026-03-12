@@ -15,7 +15,7 @@ import re
 import signal
 import sys
 from collections.abc import Iterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from worker.models.base import StreamChunk
 

@@ -2,13 +2,10 @@
 
 from unittest.mock import MagicMock, patch
 
-import numpy as np
 import pytest
 
 from worker.clustering.cluster import ClusterResult
 from worker.clustering.labeler import (
-    CLUSTER_LABEL_ROLE,
-    DEFAULT_TOP_K,
     LabeledCluster,
     _call_labeling_model,
     _deduplicate_labels,

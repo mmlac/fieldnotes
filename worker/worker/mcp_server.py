@@ -256,7 +256,7 @@ class FieldnotesServer:
             if name == "ingest_status":
                 return self._handle_ingest_status()
             raise ValueError(f"Unknown tool: {name}")
-        except Exception as exc:
+        except Exception:
             logger.exception("Tool %s failed", name)
             return [TextContent(type="text", text="error: internal server error")]
 

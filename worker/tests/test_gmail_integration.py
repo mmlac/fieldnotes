@@ -10,15 +10,13 @@ the real parsing, chunking, extraction-result handling, and graph hint logic.
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from worker.config import Config, ModelConfig, ProviderConfig, RolesConfig, SourceConfig
+from worker.config import Config, ModelConfig, ProviderConfig, RolesConfig
 from worker.models.resolver import ModelRegistry
-from worker.parsers.base import ParsedDocument
 from worker.parsers.gmail import GmailParser
 from worker.pipeline import Pipeline
 from worker.pipeline.extractor import ExtractionResult

@@ -30,7 +30,7 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from neo4j import GraphDatabase
 
 from worker.config import Neo4jConfig
-from worker.models.resolver import ModelRegistry, ResolvedModel
+from worker.models.resolver import ModelRegistry
 
 logger = logging.getLogger(__name__)
 

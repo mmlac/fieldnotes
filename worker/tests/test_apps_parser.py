@@ -1,7 +1,6 @@
 """Tests for the macOS apps and Homebrew parsers."""
 
 from worker.parsers.apps import HomebrewParser, MacOSAppsParser
-from worker.parsers.base import GraphHint, ParsedDocument
 
 
 # ---------------------------------------------------------------------------

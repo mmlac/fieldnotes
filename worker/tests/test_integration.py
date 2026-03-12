@@ -10,19 +10,16 @@ import hashlib
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
 
-from worker.config import Config, ModelConfig, ProviderConfig, RolesConfig, VisionConfig
+from worker.config import Config, ModelConfig, ProviderConfig, RolesConfig
 from worker.models.resolver import ModelRegistry
 from worker.parsers.base import ParsedDocument, GraphHint
 from worker.parsers.files import FileParser
 from worker.parsers.obsidian import ObsidianParser
 from worker.pipeline import Pipeline
-from worker.pipeline.chunker import Chunk, chunk_text
 from worker.pipeline.extractor import ExtractionResult
 from worker.pipeline.resolver import ResolvedEntity, ResolutionResult
 from worker.pipeline.vision import VisionResult
-from worker.pipeline.vision_queue import VisionResult as VisionQueueResult
 from worker.pipeline.writer import WriteUnit, Writer
 
 # Ensure provider decorators run

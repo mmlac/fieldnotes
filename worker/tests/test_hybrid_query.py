@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
 
 from worker.query.graph import GraphQueryResult
 from worker.query.vector import VectorQueryResult, VectorResult

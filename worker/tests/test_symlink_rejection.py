@@ -6,11 +6,8 @@ symlink-following attacks that could index arbitrary files.
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
-from typing import Any
 
-import pytest
 
 from worker.sources.files import FileSource
 from worker.sources.homebrew import _formula_binaries

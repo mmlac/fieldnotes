@@ -8,11 +8,6 @@ import pytest
 from worker.clustering.cluster import (
     ClusterResult,
     CorpusTooSmallError,
-    DEFAULT_HDBSCAN_METRIC,
-    DEFAULT_MAX_VECTORS,
-    DEFAULT_MIN_CLUSTER_SIZE,
-    DEFAULT_MIN_CORPUS_SIZE,
-    DEFAULT_UMAP_DIMS,
     _build_results,
     _hdbscan_cluster,
     _scroll_vectors,

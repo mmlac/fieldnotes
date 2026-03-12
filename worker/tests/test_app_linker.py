@@ -1,9 +1,8 @@
 """Tests for clustering/app_linker.py — Application/Tool to Topic linking."""
 
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import numpy as np
-import pytest
 
 from worker.clustering.app_linker import (
     AppNode,
@@ -212,7 +211,7 @@ class TestWriteEdgesTx:
         matches = [
             ("app://com.docker.docker", "Application", "Containerization", 0.85),
         ]
-        count = _write_edges_tx(tx, matches)
+        _write_edges_tx(tx, matches)
 
         # First call: delete old edges
         delete_call = tx.run.call_args_list[0]
@@ -227,7 +226,7 @@ class TestWriteEdgesTx:
 
     def test_empty_matches_still_deletes(self):
         tx = MagicMock()
-        count = _write_edges_tx(tx, [])
+        _write_edges_tx(tx, [])
         # Should still delete old auto-linked edges
         assert tx.run.call_count == 1
         assert "DELETE r" in tx.run.call_args.args[0]

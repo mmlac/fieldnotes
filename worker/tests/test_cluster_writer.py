@@ -1,6 +1,6 @@
 """Tests for clustering/writer.py — Topic node writer with TAGGED edges."""
 
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 

@@ -6,11 +6,10 @@ external services or models.
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
-import pytest
 
-from worker.parsers.base import GraphHint, ParsedDocument
+from worker.parsers.base import ParsedDocument
 from worker.pipeline import Pipeline, _resolved_to_entity_dicts
 from worker.pipeline.chunker import Chunk
 from worker.pipeline.extractor import ExtractionResult
@@ -94,7 +93,6 @@ class TestImageRouting:
 
     def test_image_doc_submitted_to_vision_queue(self):
         """Image docs are submitted to the vision queue when available."""
-        import asyncio
 
         async def _fake_submit(doc):
             return True

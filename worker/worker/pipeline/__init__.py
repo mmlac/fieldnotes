@@ -16,10 +16,7 @@ import hashlib
 import logging
 from typing import Any
 
-from neo4j import Driver
-
 from worker.circuit_breaker import CircuitOpenError
-from worker.config import VisionConfig
 from worker.metrics import (
     CHUNKS_EMBEDDED,
     DOCUMENTS_FAILED,
@@ -34,7 +31,7 @@ from worker.models.resolver import ModelRegistry
 from worker.parsers.base import ParsedDocument
 from worker.pipeline.chunker import Chunk, chunk_text
 from worker.pipeline.embedder import embed_chunks
-from worker.pipeline.extractor import ExtractionResult, extract_chunks
+from worker.pipeline.extractor import extract_chunks
 from worker.pipeline.resolver import (
     ResolutionResult,
     resolve_entities_from_registry,

@@ -2,7 +2,6 @@
 
 from pathlib import Path
 
-from worker.parsers.base import GraphHint, ParsedDocument
 from worker.parsers.obsidian import ObsidianParser
 
 

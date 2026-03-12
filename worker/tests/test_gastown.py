@@ -7,7 +7,6 @@ import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 from worker.gastown import (
     detect_rig_root,

@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -381,10 +380,6 @@ class TestDaemonCompat:
     def test_daemon_reexports(self) -> None:
         from worker.daemon import (
             install,
-            uninstall,
-            status,
-            start,
-            stop,
             platform_backend,
         )
         # Just verify they're callable

@@ -439,12 +439,6 @@ def init_metrics(config: Config) -> None:
     """
     global _push_thread  # noqa: PLW0603
 
-    metrics_settings = {}
-    if hasattr(config, "sources"):
-        # Metrics config may live under a dedicated section; fall back to
-        # sensible defaults when not present.
-        pass
-
     # Try to read from a [metrics] section in the raw config, if wired up.
     gateway = getattr(config, "_metrics_pushgateway_url", "") or ""
     interval = getattr(config, "_metrics_push_interval", DEFAULT_PUSH_INTERVAL)

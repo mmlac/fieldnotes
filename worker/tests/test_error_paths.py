@@ -15,14 +15,12 @@ Covers untested paths identified during code review:
 from __future__ import annotations
 
 import asyncio
-import base64
 import hashlib
 import json
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
-import numpy as np
 import pytest
 
 # ---------------------------------------------------------------------------
@@ -31,7 +29,6 @@ import pytest
 
 from worker.query.graph import (
     ReadOnlyCypherViolation,
-    _ensure_limit,
     _normalize_cypher_for_validation,
     _validate_cypher_readonly,
 )
@@ -131,7 +128,7 @@ class TestCypherOverlongLabels:
     """Test overlong entity names in writer."""
 
     def test_truncate_entity_name_normal(self) -> None:
-        from worker.pipeline.writer import _truncate_entity_name, MAX_ENTITY_NAME_LEN
+        from worker.pipeline.writer import _truncate_entity_name
 
         short = "Normal Name"
         assert _truncate_entity_name(short) == short
@@ -876,7 +873,7 @@ class TestWriterPredicateValidation:
         assert "RELATED_TO" in call_args[0][0]
 
     def test_allowed_predicate_passes_through(self) -> None:
-        from worker.pipeline.writer import ALLOWED_PREDICATES, _merge_entity_edge
+        from worker.pipeline.writer import _merge_entity_edge
 
         tx = MagicMock()
         triple = {"subject": "A", "predicate": "KNOWS", "object": "B"}

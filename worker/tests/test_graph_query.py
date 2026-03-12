@@ -18,7 +18,6 @@ from worker.query.graph import (
     _normalize_cypher_for_validation,
     _validate_cypher_readonly,
     _ensure_limit,
-    _RegistryLLM,
     _lc_role,
 )
 

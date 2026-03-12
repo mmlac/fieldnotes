@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-import pytest
 
 from worker.cli.reformulator import _needs_reformulation, reformulate
 from worker.models.base import CompletionResponse

@@ -6,7 +6,6 @@ tokens to disk, and automatically refreshes expired credentials.
 
 from __future__ import annotations
 
-import json
 import logging
 from pathlib import Path
 

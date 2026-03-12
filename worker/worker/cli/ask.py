@@ -19,7 +19,7 @@ from pathlib import Path
 
 from worker.cli.display import display_progress, spinner
 from worker.cli.reformulator import reformulate
-from worker.config import Config, load_config
+from worker.config import load_config
 from worker.models.base import CompletionRequest
 from worker.models.resolver import ModelRegistry
 from worker.query.graph import GraphQuerier, GraphQueryResult

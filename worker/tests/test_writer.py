@@ -6,7 +6,7 @@ without running services.
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -15,7 +15,6 @@ from worker.pipeline.chunker import Chunk
 from worker.pipeline.writer import (
     ALLOWED_PREDICATES,
     COLLECTION_NAME,
-    VECTOR_SIZE,
     WriteUnit,
     Writer,
     _chunk_node_id,

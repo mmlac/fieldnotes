@@ -1,12 +1,11 @@
 """Tests for metrics.py — index status collector and gauge updates."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 from worker.metrics import (
     CHUNKS_TOTAL,
     EDGES_TOTAL,
     ENTITIES_TOTAL,
-    NEO4J_STORE_BYTES,
     QDRANT_COLLECTION_BYTES,
     QDRANT_POINTS_TOTAL,
     SOURCES_TOTAL,

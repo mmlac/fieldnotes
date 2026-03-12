@@ -9,7 +9,6 @@ from __future__ import annotations
 import logging
 import os
 import re
-import traceback
 from urllib.parse import urlparse, urlunparse
 
 

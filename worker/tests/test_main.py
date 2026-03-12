@@ -9,8 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import signal
-from unittest.mock import MagicMock, patch, call, AsyncMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 

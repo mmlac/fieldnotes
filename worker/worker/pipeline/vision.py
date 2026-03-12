@@ -186,7 +186,7 @@ def _parse_response(resp: CompletionResponse) -> VisionResult:
     if text.startswith("```"):
         lines = text.split("\n")
         # Remove first line (```json or ```) and last line (```)
-        lines = [l for l in lines[1:] if l.strip() != "```"]
+        lines = [line for line in lines[1:] if line.strip() != "```"]
         text = "\n".join(lines).strip()
 
     if not text:

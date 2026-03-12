@@ -2,12 +2,10 @@
 
 import base64
 import hashlib
-from unittest.mock import MagicMock, patch
 
 import pytest
 
 from worker.parsers.files import FileParser
-from worker.parsers.base import ParsedDocument
 
 
 @pytest.fixture()

@@ -8,15 +8,11 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-import pytest
 
 from worker.models.base import EmbedResponse
 from worker.models.resolver import ResolvedModel
 from worker.pipeline.resolver import (
-    ANCHOR_CONFIDENCE,
-    COSINE_THRESHOLD,
     CROSS_SOURCE_CONFIDENCE_THRESHOLD,
-    CrossSourceMatch,
     FUZZY_THRESHOLD,
     FUZZY_THRESHOLD_MEDIUM,
     FUZZY_THRESHOLD_SHORT,
@@ -564,7 +560,6 @@ class TestEmailValidation:
 class TestNaNVectorHandling:
     def test_nan_vector_treated_as_new(self) -> None:
         """All-NaN embedding vectors should not crash or produce false matches."""
-        import numpy as np
 
         vectors = {
             "Unknown": [float("nan")] * 3,

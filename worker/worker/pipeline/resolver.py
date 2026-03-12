@@ -121,8 +121,6 @@ def resolve_entities(
     anchors: list[dict[str, Any]] = [
         e for e in existing if e.get("confidence", 0) >= ANCHOR_CONFIDENCE
     ]
-    anchor_names = [a["name"] for a in anchors]
-
     result = ResolutionResult()
     unresolved: list[dict[str, Any]] = []
 

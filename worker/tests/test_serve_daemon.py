@@ -278,7 +278,7 @@ class TestRunDaemon:
 # ------------------------------------------------------------------
 
 
-class TestRunDaemon:
+class TestRunDaemonSync:
     @patch("worker.serve_daemon.asyncio.run")
     @patch("worker.serve_daemon._check_qdrant")
     @patch("worker.serve_daemon._check_neo4j")

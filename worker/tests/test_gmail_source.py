@@ -474,7 +474,6 @@ class TestBackfillRateLimiting:
         source._label_filter = "INBOX"
 
         sleep_calls: list[float] = []
-        original_sleep = asyncio.sleep
 
         async def mock_sleep(seconds):
             sleep_calls.append(seconds)

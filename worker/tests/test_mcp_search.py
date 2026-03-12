@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -96,7 +95,6 @@ class TestSearchTool:
 
         # Verify source_type and top_k were passed to vector query
         server._vector_querier.query.assert_called_once()
-        call_kwargs = server._vector_querier.query.call_args
         # The lambda captures args, so we check the mock was called
         assert server._vector_querier.query.called
 
