@@ -24,6 +24,8 @@ from watchdog.events import (
     FileSystemEventHandler,
 )
 
+from worker.metrics import SOURCE_WATCHER_EVENTS, WATCHER_LAST_EVENT_TIMESTAMP
+
 logger = logging.getLogger(__name__)
 
 _SHA256_CHUNK_SIZE = 64 * 1024  # 64 KiB read chunks for streaming hash
@@ -225,4 +227,11 @@ class BaseHandler(FileSystemEventHandler):
     def _dispatch(self, event: FileSystemEvent) -> None:
         ingest = self._build_event(event)
         if ingest is not None:
+            SOURCE_WATCHER_EVENTS.labels(
+                source_type=self._source_type,
+                event_type=ingest["operation"],
+            ).inc()
+            WATCHER_LAST_EVENT_TIMESTAMP.labels(
+                source_type=self._source_type,
+            ).set_to_current_time()
             asyncio.run_coroutine_threadsafe(self._queue.put(ingest), self._loop)

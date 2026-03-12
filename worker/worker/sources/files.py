@@ -14,6 +14,8 @@ from typing import Any
 
 from watchdog.observers import Observer
 
+from worker.metrics import WATCHER_ACTIVE
+
 from ._handler import DEFAULT_MAX_FILE_SIZE, BaseHandler, streaming_sha256
 from .base import PythonSource
 
@@ -83,10 +85,12 @@ class FileSource(PythonSource):
             logger.info("Watching %s (recursive=%s)", watch_path, self._recursive)
 
         observer.start()
+        WATCHER_ACTIVE.labels(source_type="files").set(1)
         try:
             while True:
                 await asyncio.sleep(1)
         except asyncio.CancelledError:
+            WATCHER_ACTIVE.labels(source_type="files").set(0)
             observer.stop()
             observer.join()
             raise

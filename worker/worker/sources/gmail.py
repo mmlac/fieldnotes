@@ -26,6 +26,14 @@ from typing import Any
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
+from worker.metrics import (
+    GMAIL_POLL_DURATION,
+    SOURCE_WATCHER_EVENTS,
+    WATCHER_ACTIVE,
+    WATCHER_LAST_EVENT_TIMESTAMP,
+    observe_duration,
+)
+
 from .base import PythonSource
 from .gmail_auth import get_credentials
 
@@ -165,6 +173,8 @@ class GmailSource(PythonSource):
 
         cursor = _load_cursor(self._cursor_path)
 
+        WATCHER_ACTIVE.labels(source_type="gmail").set(1)
+
         if cursor is None:
             # Initial backfill: fetch recent messages up to max_initial_threads
             logger.info(
@@ -180,10 +190,12 @@ class GmailSource(PythonSource):
         try:
             while True:
                 await asyncio.sleep(self._poll_interval)
-                cursor = await self._poll_incremental(
-                    service, messages_api, queue, cursor
-                )
+                with observe_duration(GMAIL_POLL_DURATION):
+                    cursor = await self._poll_incremental(
+                        service, messages_api, queue, cursor
+                    )
         except asyncio.CancelledError:
+            WATCHER_ACTIVE.labels(source_type="gmail").set(0)
             raise
 
     async def _backfill(
@@ -231,6 +243,12 @@ class GmailSource(PythonSource):
                 )
                 event = _build_ingest_event(msg)
                 await queue.put(event)
+                SOURCE_WATCHER_EVENTS.labels(
+                    source_type="gmail", event_type="created",
+                ).inc()
+                WATCHER_LAST_EVENT_TIMESTAMP.labels(
+                    source_type="gmail",
+                ).set_to_current_time()
                 fetched += 1
 
                 # Track the highest historyId seen
@@ -333,6 +351,12 @@ class GmailSource(PythonSource):
                     )
                     event = _build_ingest_event(msg)
                     await queue.put(event)
+                    SOURCE_WATCHER_EVENTS.labels(
+                        source_type="gmail", event_type="created",
+                    ).inc()
+                    WATCHER_LAST_EVENT_TIMESTAMP.labels(
+                        source_type="gmail",
+                    ).set_to_current_time()
                     count += 1
                 except Exception:
                     logger.exception("Failed to fetch message %s", mid)

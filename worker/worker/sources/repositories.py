@@ -32,6 +32,12 @@ from typing import Any
 
 import git
 
+from worker.metrics import (
+    SOURCE_WATCHER_EVENTS,
+    WATCHER_ACTIVE,
+    WATCHER_LAST_EVENT_TIMESTAMP,
+)
+
 from ._handler import guess_mime, streaming_sha256
 from .base import PythonSource
 
@@ -281,6 +287,7 @@ class RepositorySource(PythonSource):
         if not cursors:
             logger.info("No repo cursors found — performing initial scan")
 
+        WATCHER_ACTIVE.labels(source_type="repositories").set(1)
         try:
             while True:
                 repos = _discover_repos(self._repo_roots)
@@ -289,6 +296,7 @@ class RepositorySource(PythonSource):
                 _save_cursor(self._cursor_path, cursors)
                 await asyncio.sleep(self._poll_interval)
         except asyncio.CancelledError:
+            WATCHER_ACTIVE.labels(source_type="repositories").set(0)
             raise
 
     async def _scan_repo(
@@ -372,6 +380,12 @@ class RepositorySource(PythonSource):
             )
             if event is not None:
                 await queue.put(event)
+                SOURCE_WATCHER_EVENTS.labels(
+                    source_type="repositories", event_type="created",
+                ).inc()
+                WATCHER_LAST_EVENT_TIMESTAMP.labels(
+                    source_type="repositories",
+                ).set_to_current_time()
                 count += 1
 
         logger.info(
@@ -431,6 +445,12 @@ class RepositorySource(PythonSource):
             )
             if event is not None:
                 await queue.put(event)
+                SOURCE_WATCHER_EVENTS.labels(
+                    source_type="repositories", event_type=operation,
+                ).inc()
+                WATCHER_LAST_EVENT_TIMESTAMP.labels(
+                    source_type="repositories",
+                ).set_to_current_time()
                 count += 1
 
         if count:
@@ -491,6 +511,12 @@ class RepositorySource(PythonSource):
                 commit_obj, repo_path, repo_name, remote_url, changed
             )
             await queue.put(event)
+            SOURCE_WATCHER_EVENTS.labels(
+                source_type="repositories", event_type="created",
+            ).inc()
+            WATCHER_LAST_EVENT_TIMESTAMP.labels(
+                source_type="repositories",
+            ).set_to_current_time()
             count += 1
 
         if count:

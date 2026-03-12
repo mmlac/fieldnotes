@@ -236,6 +236,33 @@ SOURCE_WATCHER_EVENTS = Counter(
     registry=REGISTRY,
 )
 
+WATCHER_ACTIVE = Gauge(
+    "fieldnotes_watcher_active",
+    "Whether a source watcher is currently running (1) or stopped (0)",
+    ["source_type"],
+    registry=REGISTRY,
+)
+
+WATCHER_LAST_EVENT_TIMESTAMP = Gauge(
+    "fieldnotes_watcher_last_event_timestamp",
+    "Unix timestamp of the last event emitted by a source watcher",
+    ["source_type"],
+    registry=REGISTRY,
+)
+
+OBSIDIAN_VAULTS_DISCOVERED = Gauge(
+    "fieldnotes_obsidian_vaults_discovered",
+    "Number of Obsidian vaults discovered and being watched",
+    registry=REGISTRY,
+)
+
+GMAIL_POLL_DURATION = Histogram(
+    "fieldnotes_gmail_poll_duration_seconds",
+    "Duration of Gmail poll cycles",
+    buckets=DURATION_BUCKETS,
+    registry=REGISTRY,
+)
+
 # ---------------------------------------------------------------------------
 # Timing context manager
 # ---------------------------------------------------------------------------

@@ -14,6 +14,8 @@ from typing import Any
 
 from watchdog.observers import Observer
 
+from worker.metrics import OBSIDIAN_VAULTS_DISCOVERED, WATCHER_ACTIVE
+
 from ._handler import DEFAULT_MAX_FILE_SIZE, BaseHandler
 from .base import PythonSource
 
@@ -126,6 +128,7 @@ class ObsidianSource(PythonSource):
     async def start(self, queue: asyncio.Queue[dict[str, Any]]) -> None:
         loop = asyncio.get_running_loop()
         vaults = discover_vaults(self._vault_paths)
+        OBSIDIAN_VAULTS_DISCOVERED.set(len(vaults))
         if not vaults:
             logger.warning("No Obsidian vaults found under configured vault_paths")
             # Still run the loop so we can be cleanly cancelled
@@ -156,9 +159,11 @@ class ObsidianSource(PythonSource):
             )
 
         observer.start()
+        WATCHER_ACTIVE.labels(source_type="obsidian").set(1)
         try:
             while True:
                 await asyncio.sleep(1)
         finally:
+            WATCHER_ACTIVE.labels(source_type="obsidian").set(0)
             observer.stop()
             observer.join()
