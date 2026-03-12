@@ -14,6 +14,7 @@ LLM mentions preferentially merge into them.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -38,6 +39,26 @@ EMBED_ROLE = "embed"
 # Cross-source resolution defaults
 CROSS_SOURCE_CONFIDENCE_THRESHOLD = 0.8
 CROSS_SOURCE_FUZZY_THRESHOLD = 85  # slightly relaxed for known cross-source pairs
+EMAIL_MAX_LENGTH = 254  # RFC 5321 max email length
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def _clamp_confidence(value: Any) -> float:
+    """Clamp a confidence score to [0.0, 1.0]."""
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return 0.75  # default
+    if f != f:  # NaN check
+        return 0.75
+    return max(0.0, min(1.0, f))
+
+
+def _is_valid_email(email: str) -> bool:
+    """Validate email format and length per RFC 5321."""
+    if not email or len(email) > EMAIL_MAX_LENGTH:
+        return False
+    return _EMAIL_RE.match(email) is not None
 
 
 @dataclass
@@ -84,6 +105,12 @@ def resolve_entities(
     """
     if not extracted:
         return ResolutionResult()
+
+    # Clamp confidence scores to [0.0, 1.0] on ingestion
+    for ent in extracted:
+        ent["confidence"] = _clamp_confidence(ent.get("confidence", 0.75))
+    for ent in existing:
+        ent["confidence"] = _clamp_confidence(ent.get("confidence", 0.75))
 
     # Build lookup of existing entities by lowercased name
     existing_by_lower: dict[str, dict[str, Any]] = {}
@@ -294,10 +321,21 @@ def _resolve_by_embedding(
     sim_matrix = _batch_cosine_similarity(unresolved_vecs, existing_vecs)
 
     for i, entity in enumerate(unresolved):
-        best_idx = int(np.argmax(sim_matrix[i]))
-        best_sim = float(sim_matrix[i, best_idx])
+        row = sim_matrix[i]
+        # Handle NaN vectors: if entire row is NaN, treat as no match
+        if np.all(np.isnan(row)):
+            result.entities.append(ResolvedEntity(
+                name=entity["name"],
+                type=entity.get("type", "Concept"),
+                confidence=entity.get("confidence", 0.75),
+            ))
+            continue
+        # Replace NaN entries with -1 so argmax ignores them
+        safe_row = np.where(np.isnan(row), -1.0, row)
+        best_idx = int(np.argmax(safe_row))
+        best_sim = float(safe_row[best_idx])
 
-        if best_sim > COSINE_THRESHOLD and best_idx >= 0:
+        if best_sim > COSINE_THRESHOLD and best_idx < len(existing_names):
             target_name = existing_names[best_idx]
             result.entities.append(ResolvedEntity(
                 name=entity["name"],
@@ -374,11 +412,11 @@ def _match_entity_lists(
     matches: list[CrossSourceMatch] = []
     matched_b: set[int] = set()
 
-    # Build email index for list B
+    # Build email index for list B (validated emails only)
     email_index_b: dict[str, int] = {}
     for idx, ent in enumerate(entities_b):
         email = ent.get("email", "")
-        if email:
+        if email and _is_valid_email(email.strip()):
             email_index_b[email.lower().strip()] = idx
 
     # Build lowercased name index for list B
@@ -405,7 +443,7 @@ def _match_entity_lists(
 
         # Strategy 2: Email-based matching (Person entities)
         email_a = ent_a.get("email", "")
-        if email_a:
+        if email_a and _is_valid_email(email_a.strip()):
             norm_email = email_a.lower().strip()
             if norm_email in email_index_b:
                 idx_b = email_index_b[norm_email]

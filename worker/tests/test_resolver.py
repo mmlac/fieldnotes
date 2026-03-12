@@ -22,8 +22,10 @@ from worker.pipeline.resolver import (
     FUZZY_THRESHOLD_SHORT,
     ResolutionResult,
     ResolvedEntity,
+    _clamp_confidence,
     _fuzzy_match,
     _fuzzy_threshold_for_length,
+    _is_valid_email,
     resolve_cross_source,
     resolve_entities,
 )
@@ -470,3 +472,125 @@ class TestCrossSourceResolution:
         matches = resolve_cross_source(entities_by_source)
         # Should match on either exact name or email
         assert len(matches) == 1
+
+    def test_invalid_email_not_used_for_matching(self) -> None:
+        """Invalid emails should be ignored in cross-source matching."""
+        entities_by_source = {
+            "gmail": [{"name": "Alice", "type": "Person", "confidence": 0.9, "email": "not-an-email"}],
+            "repositories": [{"name": "Bob", "type": "Person", "confidence": 0.9, "email": "not-an-email"}],
+        }
+        matches = resolve_cross_source(entities_by_source)
+        assert len(matches) == 0
+
+    def test_overlong_email_rejected(self) -> None:
+        """Emails exceeding RFC 5321 max length (254) should be rejected."""
+        long_email = "a" * 245 + "@test.com"  # 254 chars
+        entities_by_source = {
+            "gmail": [{"name": "A", "type": "Person", "confidence": 0.9, "email": long_email}],
+            "repositories": [{"name": "B", "type": "Person", "confidence": 0.9, "email": long_email}],
+        }
+        matches = resolve_cross_source(entities_by_source)
+        # 254 chars is exactly the limit, should work
+        assert any(m.match_type == "email" for m in matches)
+
+        too_long_email = "a" * 246 + "@test.com"  # 255 chars
+        entities_by_source2 = {
+            "gmail": [{"name": "C", "type": "Person", "confidence": 0.9, "email": too_long_email}],
+            "repositories": [{"name": "D", "type": "Person", "confidence": 0.9, "email": too_long_email}],
+        }
+        matches2 = resolve_cross_source(entities_by_source2)
+        assert not any(m.match_type == "email" for m in matches2)
+
+
+# ------------------------------------------------------------------
+# Confidence clamping
+# ------------------------------------------------------------------
+
+
+class TestConfidenceClamping:
+    def test_clamp_high_value(self) -> None:
+        assert _clamp_confidence(999) == 1.0
+
+    def test_clamp_negative_value(self) -> None:
+        assert _clamp_confidence(-0.5) == 0.0
+
+    def test_clamp_normal_value(self) -> None:
+        assert _clamp_confidence(0.8) == 0.8
+
+    def test_clamp_nan(self) -> None:
+        assert _clamp_confidence(float("nan")) == 0.75
+
+    def test_clamp_non_numeric(self) -> None:
+        assert _clamp_confidence("invalid") == 0.75
+
+    def test_clamp_none(self) -> None:
+        assert _clamp_confidence(None) == 0.75
+
+    def test_high_confidence_clamped_in_resolve(self) -> None:
+        """Confidence of 999 should be clamped to 1.0 during resolution."""
+        extracted = [_entity("X", "Concept", 999)]
+        existing = [_entity("X", "Concept", 0.5)]
+        result = resolve_entities(extracted, existing)
+        assert result.entities[0].confidence <= 1.0
+
+
+# ------------------------------------------------------------------
+# Email validation
+# ------------------------------------------------------------------
+
+
+class TestEmailValidation:
+    def test_valid_email(self) -> None:
+        assert _is_valid_email("user@example.com") is True
+
+    def test_invalid_no_at(self) -> None:
+        assert _is_valid_email("userexample.com") is False
+
+    def test_invalid_no_domain(self) -> None:
+        assert _is_valid_email("user@") is False
+
+    def test_invalid_empty(self) -> None:
+        assert _is_valid_email("") is False
+
+    def test_invalid_spaces(self) -> None:
+        assert _is_valid_email("user @example.com") is False
+
+
+# ------------------------------------------------------------------
+# NaN vector handling
+# ------------------------------------------------------------------
+
+
+class TestNaNVectorHandling:
+    def test_nan_vector_treated_as_new(self) -> None:
+        """All-NaN embedding vectors should not crash or produce false matches."""
+        import numpy as np
+
+        vectors = {
+            "Unknown": [float("nan")] * 3,
+            "Known": [0.9, 0.1, 0.0],
+        }
+        embed_model = _mock_embed_model(vectors)
+
+        extracted = [_entity("Unknown")]
+        existing = [_entity("Known")]
+
+        result = resolve_entities(extracted, existing, embed_model=embed_model)
+        assert len(result.entities) == 1
+        assert result.entities[0].same_as is None
+
+    def test_zero_vector_no_false_match(self) -> None:
+        """All-zero embedding vectors should not produce a false SAME_AS match."""
+        vectors = {
+            "ZeroVec": [0.0, 0.0, 0.0],
+            "Known": [0.9, 0.1, 0.0],
+        }
+        embed_model = _mock_embed_model(vectors)
+
+        extracted = [_entity("ZeroVec")]
+        existing = [_entity("Known")]
+
+        result = resolve_entities(extracted, existing, embed_model=embed_model)
+        assert len(result.entities) == 1
+        # Zero vector normalized to itself (0/1=0), dot product is 0, below threshold
+        assert result.entities[0].same_as is None
