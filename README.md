@@ -235,14 +235,31 @@ port = 3456
 
 | Source | Sync Mode | What It Indexes |
 |---|---|---|
-| **Files** | Real-time (watchdog) | Markdown, text, and other configured file types |
-| **Obsidian** | Real-time (watchdog) | Notes with frontmatter, wikilinks, and #tags |
-| **Gmail** | Polling (configurable interval) | Email threads — subjects, bodies, metadata |
-| **Git Repositories** | Polling (configurable interval) | READMEs, changelogs, docs, commit messages |
+| **Files** | Initial scan + real-time (watchdog) | Markdown, text, and other configured file types |
+| **Obsidian** | Initial scan + real-time (watchdog) | Notes with frontmatter, wikilinks, and #tags |
+| **Gmail** | Backfill + polling (configurable interval) | Email threads — subjects, bodies, metadata |
+| **Git Repositories** | Initial scan + polling (configurable interval) | READMEs, changelogs, docs, commit messages |
 | **macOS Apps** | On-demand | Installed application bundles (Info.plist) |
 | **Homebrew** | On-demand | Installed formulae and casks with descriptions |
 
 Each source emits `IngestEvent` dicts into the pipeline queue. Modified files trigger a delete-before-rewrite cycle that cleans stale graph data (edges, chunks, orphan entities) in a single Neo4j transaction before writing the updated version.
+
+### Initial Scan and Cursor Persistence
+
+On first startup, file and obsidian sources walk all configured directories and index every matching file. A SHA256-based cursor is saved to disk after the scan completes, recording the hash and mtime of every indexed file.
+
+On subsequent startups, the cursor is loaded and diffed against the current filesystem state — only new, modified, or deleted files generate events. Unchanged files are skipped entirely.
+
+| Source | Cursor File | What It Tracks |
+|---|---|---|
+| **Files** | `~/.fieldnotes/data/files_cursor.json` | Per-file SHA256 + mtime |
+| **Obsidian** | `~/.fieldnotes/data/obsidian_cursor.json` | Per-file SHA256 + mtime |
+| **Gmail** | `~/.fieldnotes/data/gmail_cursor.json` | Gmail History API ID |
+| **Git Repos** | `~/.fieldnotes/data/repo_cursor.json` | Per-repo HEAD commit SHA |
+
+Cursors are checkpointed every 5 minutes during operation and saved on graceful shutdown, so a restart only re-processes files that changed since the last checkpoint.
+
+To prevent duplicate events between the initial scan and the watchdog starting, a short dedup window (default 5 seconds) filters out watchdog events for files already processed during the scan. The watchdog starts only after the scan completes.
 
 ## CLI Reference
 
