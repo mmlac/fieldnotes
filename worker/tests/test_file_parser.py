@@ -89,7 +89,7 @@ class TestFileParserText:
 
 class TestFileParserUnsupported:
     def test_returns_empty_for_unsupported_mime(self, parser: FileParser) -> None:
-        event = {"mime_type": "image/png", "source_id": "photo.png"}
+        event = {"mime_type": "application/octet-stream", "source_id": "data.bin"}
         docs = parser.parse(event)
         assert docs == []
 
@@ -97,6 +97,98 @@ class TestFileParserUnsupported:
         event = {"source_id": "unknown"}
         docs = parser.parse(event)
         assert docs == []
+
+
+class TestFileParserImage:
+    """Tests for standalone image file parsing."""
+
+    _SAMPLE_PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
+
+    def test_standalone_png_emits_parsed_document_with_image_bytes(
+        self, parser: FileParser
+    ) -> None:
+        event = {
+            "mime_type": "image/png",
+            "source_id": "/vault/photos/screenshot.png",
+            "operation": "created",
+            "raw_bytes": self._SAMPLE_PNG,
+        }
+        docs = parser.parse(event)
+        assert len(docs) == 1
+        doc = docs[0]
+        assert doc.source_type == "files"
+        assert doc.source_id == "/vault/photos/screenshot.png"
+        assert doc.operation == "created"
+        assert doc.text == ""
+        assert doc.image_bytes == self._SAMPLE_PNG
+        assert doc.mime_type == "image/png"
+        assert doc.node_label == "File"
+        assert doc.node_props["sha256"] == hashlib.sha256(self._SAMPLE_PNG).hexdigest()
+
+    def test_image_jpeg_parsed(self, parser: FileParser) -> None:
+        jpeg_bytes = b"\xff\xd8\xff\xe0" + b"\x00" * 64
+        event = {
+            "mime_type": "image/jpeg",
+            "source_id": "photo.jpg",
+            "raw_bytes": jpeg_bytes,
+        }
+        docs = parser.parse(event)
+        assert len(docs) == 1
+        assert docs[0].image_bytes == jpeg_bytes
+        assert docs[0].mime_type == "image/jpeg"
+
+    def test_image_no_raw_bytes_returns_empty(self, parser: FileParser) -> None:
+        event = {"mime_type": "image/png", "source_id": "photo.png"}
+        docs = parser.parse(event)
+        assert docs == []
+
+    def test_image_empty_raw_bytes_returns_empty(self, parser: FileParser) -> None:
+        event = {"mime_type": "image/png", "source_id": "photo.png", "raw_bytes": b""}
+        docs = parser.parse(event)
+        assert docs == []
+
+    def test_oversized_image_skipped(self, parser: FileParser) -> None:
+        parser._max_image_bytes = 10
+        event = {
+            "mime_type": "image/png",
+            "source_id": "huge.png",
+            "raw_bytes": b"x" * 100,
+        }
+        docs = parser.parse(event)
+        assert docs == []
+
+    def test_base64_encoded_image(self, parser: FileParser) -> None:
+        encoded = base64.b64encode(self._SAMPLE_PNG).decode()
+        event = {
+            "mime_type": "image/png",
+            "source_id": "photo.png",
+            "raw_bytes": encoded,
+        }
+        docs = parser.parse(event)
+        assert len(docs) == 1
+        assert docs[0].image_bytes == self._SAMPLE_PNG
+
+    def test_image_node_props(self, parser: FileParser) -> None:
+        event = {
+            "mime_type": "image/png",
+            "source_id": "/vault/img/test.png",
+            "raw_bytes": self._SAMPLE_PNG,
+        }
+        docs = parser.parse(event)
+        props = docs[0].node_props
+        assert props["path"] == "/vault/img/test.png"
+        assert props["name"] == "test.png"
+        assert props["ext"] == ".png"
+
+    def test_webp_mime_type(self, parser: FileParser) -> None:
+        event = {
+            "mime_type": "image/webp",
+            "source_id": "photo.webp",
+            "raw_bytes": b"RIFF" + b"\x00" * 64,
+        }
+        docs = parser.parse(event)
+        assert len(docs) == 1
+        assert docs[0].mime_type == "image/webp"
 
 
 class TestFileParserPdf:

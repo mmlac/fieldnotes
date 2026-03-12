@@ -50,6 +50,20 @@ def _make_handler(
 
 
 class TestGuessMime:
+    def test_webp(self):
+        assert guess_mime("photo.webp") == "image/webp"
+
+    def test_bmp(self):
+        assert guess_mime("image.bmp") == "image/bmp"
+
+    def test_tiff(self):
+        assert guess_mime("scan.tiff") == "image/tiff"
+        assert guess_mime("scan.tif") == "image/tiff"
+
+    def test_heic(self):
+        assert guess_mime("photo.heic") == "image/heic"
+        assert guess_mime("photo.heif") == "image/heif"
+
     def test_markdown(self):
         assert guess_mime("notes/hello.md") == "text/markdown"
 
@@ -207,6 +221,26 @@ class TestShouldSkip:
         # .py → excluded by include filter
         assert h._should_skip("/notes/final/code.py") is True
 
+    def test_image_extensions_pass_through_include_filter(self):
+        """Image extensions always pass through include_extensions filter."""
+        h = _make_handler(include_extensions={".md", ".txt"})
+        assert h._should_skip("/path/photo.png") is False
+        assert h._should_skip("/path/photo.jpg") is False
+        assert h._should_skip("/path/photo.webp") is False
+        assert h._should_skip("/path/photo.bmp") is False
+        assert h._should_skip("/path/photo.heic") is False
+        # Non-image, non-included ext should still be skipped
+        assert h._should_skip("/path/code.py") is True
+
+    def test_image_extensions_respect_exclude_patterns(self):
+        """Image extensions pass include filter but still respect exclude patterns."""
+        h = _make_handler(
+            include_extensions={".md"},
+            exclude_patterns=["*favicon*"],
+        )
+        assert h._should_skip("/path/photo.png") is False
+        assert h._should_skip("/path/favicon.png") is True
+
     def test_extra_skip_hook(self):
         h = _make_handler()
         h._extra_skip = lambda path: ".obsidian" in path  # type: ignore[assignment]
@@ -283,15 +317,28 @@ class TestBuildEvent:
         assert "sha256" not in result.get("meta", {})
         assert "text" not in result
 
-    def test_binary_file_no_text_key(self, tmp_path: Path):
+    def test_image_file_gets_raw_bytes(self, tmp_path: Path):
         p = tmp_path / "image.png"
-        p.write_bytes(b"\x89PNG" + b"\x00" * 20)
+        img_data = b"\x89PNG" + b"\x00" * 20
+        p.write_bytes(img_data)
         h = _make_handler()
         ev = FileCreatedEvent(str(p))
         result = h._build_event(ev)
         assert result is not None
         assert result["mime_type"] == "image/png"
         assert "text" not in result
+        assert result["raw_bytes"] == img_data
+
+    def test_pdf_file_gets_raw_bytes(self, tmp_path: Path):
+        p = tmp_path / "doc.pdf"
+        pdf_data = b"%PDF-1.4 fake"
+        p.write_bytes(pdf_data)
+        h = _make_handler()
+        ev = FileCreatedEvent(str(p))
+        result = h._build_event(ev)
+        assert result is not None
+        assert result["mime_type"] == "application/pdf"
+        assert result["raw_bytes"] == pdf_data
 
     def test_oversized_file_returns_none(self, tmp_path: Path):
         p = tmp_path / "huge.md"

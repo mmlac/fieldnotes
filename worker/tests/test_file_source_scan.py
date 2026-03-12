@@ -198,6 +198,46 @@ async def test_unchanged_files_no_events(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_scan_picks_up_image_files(tmp_path: Path) -> None:
+    """Initial scan discovers standalone image files with raw_bytes."""
+    watched = tmp_path / "watched"
+    watched.mkdir()
+    png_data = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
+    (watched / "screenshot.png").write_bytes(png_data)
+    (watched / "note.md").write_text("hello")
+
+    fs = _make_source(tmp_path)
+    q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    events = await _run_source_briefly(fs, q)
+
+    created = [e for e in events if e["operation"] == "created"]
+    img_events = [e for e in created if "screenshot.png" in e["source_id"]]
+    assert len(img_events) == 1
+    assert img_events[0]["mime_type"] == "image/png"
+    assert img_events[0]["raw_bytes"] == png_data
+
+
+@pytest.mark.asyncio
+async def test_scan_image_passes_include_extensions(tmp_path: Path) -> None:
+    """Images pass through include_extensions filter during scan."""
+    watched = tmp_path / "watched"
+    watched.mkdir()
+    (watched / "photo.png").write_bytes(b"\x89PNG" + b"\x00" * 20)
+    (watched / "note.md").write_text("hello")
+    (watched / "code.py").write_text("x = 1")
+
+    fs = _make_source(tmp_path, include_extensions=[".md"])
+    q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    events = await _run_source_briefly(fs, q)
+
+    created = [e for e in events if e["operation"] == "created"]
+    source_ids = [e["source_id"] for e in created]
+    assert any("note.md" in s for s in source_ids)
+    assert any("photo.png" in s for s in source_ids)
+    assert not any("code.py" in s for s in source_ids)
+
+
+@pytest.mark.asyncio
 async def test_scan_respects_include_extensions(tmp_path: Path) -> None:
     """Initial scan only includes files matching include_extensions."""
     watched = tmp_path / "watched"
