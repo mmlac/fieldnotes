@@ -216,7 +216,9 @@ class VisionQueue:
             self._stats.increment("skipped_pattern")
             return False
 
-        # SHA256 dedup — in-memory check first, then external
+        # SHA256 dedup — in-memory check first, then external.
+        # Reserve the hash BEFORE the external check to prevent concurrent
+        # workers from passing the in-memory gate for the same image.
         sha256 = _compute_sha256(doc.image_bytes)
 
         if sha256 in self._seen_hashes:
@@ -227,6 +229,11 @@ class VisionQueue:
             self._stats.increment("skipped_dedup")
             return False
 
+        # Reserve the hash atomically before the slow external check.
+        # This closes the TOCTOU window: any concurrent submit() for the
+        # same image will hit the in-memory check above and short-circuit.
+        self._record_seen(sha256)
+
         # Blocking dedup checker (e.g. Neo4j query) — run off the event loop.
         loop = asyncio.get_running_loop()
         already_processed = await loop.run_in_executor(
@@ -236,11 +243,8 @@ class VisionQueue:
             logger.debug(
                 "Vision skip %s: SHA256 %s already processed", doc.source_id, sha256[:12]
             )
-            self._record_seen(sha256)
             self._stats.increment("skipped_dedup")
             return False
-
-        self._record_seen(sha256)
 
         await self._queue.put(doc)
         logger.debug(

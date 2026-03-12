@@ -22,8 +22,11 @@ Config section ``[sources.repositories]``::
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
+import os
+import tempfile
 import uuid
 from datetime import datetime, timezone
 from fnmatch import fnmatch
@@ -87,10 +90,32 @@ def _load_cursor(path: Path) -> dict[str, str]:
 
 
 def _save_cursor(path: Path, cursors: dict[str, str]) -> None:
-    """Persist per-repo HEAD cursors to disk."""
+    """Persist per-repo HEAD cursors to disk atomically.
+
+    Writes to a temporary file in the same directory, then renames it
+    into place.  On POSIX systems ``os.replace`` is atomic, so a crash
+    mid-write can never leave a partially-written cursor file.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(cursors))
-    path.chmod(0o600)
+    fd = tempfile.NamedTemporaryFile(
+        mode="w",
+        dir=path.parent,
+        prefix=".cursor_",
+        suffix=".tmp",
+        delete=False,
+    )
+    try:
+        fd.write(json.dumps(cursors))
+        fd.flush()
+        os.fsync(fd.fileno())
+        fd.close()
+        os.chmod(fd.name, 0o600)
+        os.replace(fd.name, path)
+    except BaseException:
+        fd.close()
+        with contextlib.suppress(OSError):
+            os.unlink(fd.name)
+        raise
 
 
 def _matches_any(rel_path: str, patterns: list[str]) -> bool:

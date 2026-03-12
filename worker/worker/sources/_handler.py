@@ -11,6 +11,7 @@ import asyncio
 import fnmatch
 import hashlib
 import logging
+import os
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -64,9 +65,11 @@ def _read_file_atomic(path: Path, max_size: int) -> tuple[bytes, int] | None:
     fd = path.open("rb")
     try:
         data = fd.read(max_size + 1)
+        # fstat on the open fd instead of path.stat() after close —
+        # this eliminates the TOCTOU window where the file could be
+        # deleted or replaced between read and stat.
+        mtime_ns = os.fstat(fd.fileno()).st_mtime_ns
     finally:
-        # Grab mtime from the same fd before closing to minimise window.
-        mtime_ns = path.stat().st_mtime_ns
         fd.close()
     if len(data) > max_size:
         return None
