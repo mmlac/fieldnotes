@@ -42,6 +42,13 @@ _SHA256_CHUNK_SIZE = 64 * 1024  # 64 KiB read chunks for streaming hash
 # Default 100 MiB — files above this are logged and skipped to prevent OOM.
 DEFAULT_MAX_FILE_SIZE = 100 * 1024 * 1024
 
+# Image extensions that pass through include_extensions filters so standalone
+# images reach the vision pipeline even when the user restricts file types.
+IMAGE_EXTENSIONS: frozenset[str] = frozenset({
+    ".png", ".jpg", ".jpeg", ".gif", ".svg",
+    ".webp", ".bmp", ".tiff", ".tif", ".heic", ".heif",
+})
+
 
 def streaming_sha256(path: Path, max_size: int) -> tuple[str, int] | None:
     """Compute SHA-256 by streaming *path* in chunks.
@@ -101,6 +108,12 @@ def guess_mime(path: str) -> str:
         ".jpeg": "image/jpeg",
         ".gif": "image/gif",
         ".svg": "image/svg+xml",
+        ".webp": "image/webp",
+        ".bmp": "image/bmp",
+        ".tiff": "image/tiff",
+        ".tif": "image/tiff",
+        ".heic": "image/heic",
+        ".heif": "image/heif",
         ".json": "application/json",
         ".yaml": "text/yaml",
         ".yml": "text/yaml",
@@ -194,8 +207,12 @@ class BaseHandler(FileSystemEventHandler):
         if self._extra_skip(path):
             return True
         p = Path(path)
-        if self._include_extensions and p.suffix.lower() not in self._include_extensions:
-            return True
+        suffix = p.suffix.lower()
+        if self._include_extensions and suffix not in self._include_extensions:
+            # Image extensions always pass through so standalone images
+            # reach the vision pipeline even with a restricted extension list.
+            if suffix not in IMAGE_EXTENSIONS:
+                return True
         for pattern in self._exclude_patterns:
             if fnmatch.fnmatch(path, pattern) or fnmatch.fnmatch(p.name, pattern):
                 return True
@@ -263,8 +280,11 @@ class BaseHandler(FileSystemEventHandler):
 
                 # Decode text content for text MIME types so downstream
                 # parsers (FileParser, ObsidianParser) receive the file body.
-                if ingest["mime_type"].startswith("text/"):
+                mime = ingest["mime_type"]
+                if mime.startswith("text/"):
                     ingest["text"] = data.decode("utf-8", errors="replace")
+                elif mime.startswith("image/") or mime == "application/pdf":
+                    ingest["raw_bytes"] = data
             except OSError:
                 logger.warning("Failed to read %s, emitting event without content hash", src_path)
                 ingest["source_modified_at"] = now

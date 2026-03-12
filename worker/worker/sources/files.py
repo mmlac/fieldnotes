@@ -27,6 +27,7 @@ from worker.metrics import (
 
 from ._handler import (
     DEFAULT_MAX_FILE_SIZE,
+    IMAGE_EXTENSIONS,
     BaseHandler,
     _read_file_atomic,
     _sha256_of,
@@ -110,8 +111,10 @@ class FileSource(PythonSource):
     def _should_skip(self, path: str) -> bool:
         """Apply the same filtering rules as the watchdog handler."""
         p = Path(path)
-        if self._include_extensions and p.suffix.lower() not in self._include_extensions:
-            return True
+        suffix = p.suffix.lower()
+        if self._include_extensions and suffix not in self._include_extensions:
+            if suffix not in IMAGE_EXTENSIONS:
+                return True
         for pattern in self._exclude_patterns:
             if fnmatch.fnmatch(path, pattern) or fnmatch.fnmatch(p.name, pattern):
                 return True
@@ -172,12 +175,16 @@ class FileSource(PythonSource):
             ingest["meta"]["size_bytes"] = entry.size
 
             p = Path(file_path)
-            if ingest["mime_type"].startswith("text/") and p.is_file():
+            mime = ingest["mime_type"]
+            if p.is_file():
                 try:
                     result = _read_file_atomic(p, self._max_file_size)
                     if result is not None:
                         data, _ = result
-                        ingest["text"] = data.decode("utf-8", errors="replace")
+                        if mime.startswith("text/"):
+                            ingest["text"] = data.decode("utf-8", errors="replace")
+                        elif mime.startswith("image/") or mime == "application/pdf":
+                            ingest["raw_bytes"] = data
                 except OSError:
                     pass
         else:

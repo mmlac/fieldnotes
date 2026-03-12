@@ -24,6 +24,7 @@ log = logging.getLogger(__name__)
 _DEFAULT_MAX_PDF_BYTES = 100 * 1024 * 1024  # 100 MiB
 _DEFAULT_MAX_PDF_PAGES = 2000
 _DEFAULT_MAX_TEXT_BYTES = 10 * 1024 * 1024  # 10 MiB
+_DEFAULT_MAX_IMAGE_BYTES = 50 * 1024 * 1024  # 50 MiB
 
 
 @register
@@ -34,6 +35,7 @@ class FileParser(BaseParser):
         self._max_pdf_bytes: int = _DEFAULT_MAX_PDF_BYTES
         self._max_pdf_pages: int = _DEFAULT_MAX_PDF_PAGES
         self._max_text_bytes: int = _DEFAULT_MAX_TEXT_BYTES
+        self._max_image_bytes: int = _DEFAULT_MAX_IMAGE_BYTES
 
     @property
     def source_type(self) -> str:
@@ -48,6 +50,8 @@ class FileParser(BaseParser):
             return self._parse_text(event, mime, source_id, operation)
         elif mime == "application/pdf":
             return self._parse_pdf(event, source_id, operation)
+        elif mime.startswith("image/"):
+            return self._parse_image(event, mime, source_id, operation)
         else:
             return []
 
@@ -93,6 +97,48 @@ class FileParser(BaseParser):
                 mime_type=mime,
                 node_label="File",
                 node_props=props,
+            )
+        ]
+
+    def _parse_image(
+        self,
+        event: dict[str, Any],
+        mime: str,
+        source_id: str,
+        operation: str,
+    ) -> list[ParsedDocument]:
+        raw = event.get("raw_bytes")
+        if isinstance(raw, str):
+            if len(raw) > self._max_image_bytes:
+                log.warning(
+                    "Image %s exceeds max size (%d > %d bytes encoded), skipping",
+                    source_id, len(raw), self._max_image_bytes,
+                )
+                return []
+            raw = base64.b64decode(raw)
+        if not raw:
+            return []
+
+        if len(raw) > self._max_image_bytes:
+            log.warning(
+                "Image %s exceeds max size (%d > %d bytes), skipping",
+                source_id, len(raw), self._max_image_bytes,
+            )
+            return []
+
+        props = self._node_props(source_id, event)
+        props["sha256"] = self._sha256(raw)
+
+        return [
+            ParsedDocument(
+                source_type="files",
+                source_id=source_id,
+                operation=operation,
+                text="",
+                mime_type=mime,
+                node_label="File",
+                node_props=props,
+                image_bytes=raw,
             )
         ]
 
