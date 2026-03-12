@@ -577,6 +577,8 @@ class Writer:
         try:
             self._write_neo4j(unit)
             self.neo4j_breaker.record_success()
+            if unit.entities or unit.depicts_entities:
+                self.invalidate_entity_cache()
         except CircuitOpenError:
             raise
         except Exception:

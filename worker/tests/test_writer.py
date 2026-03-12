@@ -580,6 +580,45 @@ class TestWriterWrite:
         assert len(range_conds) == 1
         assert range_conds[0].range.gte == 2  # chunk count
 
+    def test_write_invalidates_entity_cache_when_entities(self, writer, mock_neo4j, mock_qdrant):
+        """Entity cache should be invalidated after writing entities."""
+        unit = _unit(
+            entities=[{"name": "Test", "type": "Concept"}],
+            chunks=[Chunk(text="hello", index=0)],
+            vectors=[[0.1] * 768],
+        )
+        session = MagicMock()
+        mock_neo4j.session.return_value.__enter__ = MagicMock(return_value=session)
+        mock_neo4j.session.return_value.__exit__ = MagicMock(return_value=False)
+
+        # Prime the cache
+        writer._entity_cache = [{"name": "Old", "type": "Concept", "confidence": 0.75}]
+        writer._entity_cache_ts = 9999999999.0  # far future so it's "valid"
+
+        writer.write(unit)
+
+        assert writer._entity_cache is None
+        assert writer._entity_cache_ts == 0.0
+
+    def test_write_no_cache_invalidation_without_entities(self, writer, mock_neo4j, mock_qdrant):
+        """Entity cache should NOT be invalidated when no entities are written."""
+        unit = _unit(
+            chunks=[Chunk(text="hello", index=0)],
+            vectors=[[0.1] * 768],
+        )
+        session = MagicMock()
+        mock_neo4j.session.return_value.__enter__ = MagicMock(return_value=session)
+        mock_neo4j.session.return_value.__exit__ = MagicMock(return_value=False)
+
+        # Prime the cache
+        cached = [{"name": "Old", "type": "Concept", "confidence": 0.75}]
+        writer._entity_cache = cached
+        writer._entity_cache_ts = 9999999999.0
+
+        writer.write(unit)
+
+        assert writer._entity_cache is cached  # unchanged
+
 
 # ------------------------------------------------------------------
 # Writer.write — deletion
