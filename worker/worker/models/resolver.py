@@ -9,6 +9,7 @@ Single entry point for the pipeline to access any model. Resolution layers:
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -22,8 +23,10 @@ from .base import (
     StreamChunk,
 )
 from .registry import get_provider
+from ..circuit_breaker import CircuitBreaker, CircuitOpenError, get_breaker
 from ..config import Config
 from ..metrics import (
+    CIRCUIT_BREAKER_REJECTIONS,
     EMBEDDING_BATCH_SIZE,
     EMBEDDING_DURATION,
     LLM_ERRORS,
@@ -32,6 +35,28 @@ from ..metrics import (
 )
 
 logger = logging.getLogger(__name__)
+
+# LLM circuit breaker: one breaker per provider type (e.g. "llm:openai",
+# "llm:anthropic", "llm:ollama").  Created lazily on first use.
+_llm_breaker_lock = threading.Lock()
+
+
+def _llm_breaker(provider_type: str) -> CircuitBreaker:
+    """Get or create a circuit breaker for the given LLM provider type."""
+    name = f"llm:{provider_type}"
+    breaker = get_breaker(name)
+    if breaker is not None:
+        return breaker
+    with _llm_breaker_lock:
+        # Double-check after acquiring lock
+        breaker = get_breaker(name)
+        if breaker is not None:
+            return breaker
+        return CircuitBreaker(
+            name,
+            failure_threshold=5,
+            recovery_timeout=120.0,
+        )
 
 
 @dataclass
@@ -43,26 +68,40 @@ class ResolvedModel:
     provider: ModelProvider
 
     def complete(self, req: CompletionRequest, *, task: str = "unknown") -> CompletionResponse:
-        """Run a completion with latency, token, and error tracking."""
+        """Run a completion with latency, token, error, and circuit breaker tracking."""
+        breaker = _llm_breaker(self.provider.provider_type)
+        if not breaker.allow_request():
+            CIRCUIT_BREAKER_REJECTIONS.labels(service=breaker.name).inc()
+            raise CircuitOpenError(breaker.name)
+
         start = time.monotonic()
         try:
             resp = self.provider.complete(self.model, req)
+        except CircuitOpenError:
+            raise
         except Exception as exc:
             elapsed = time.monotonic() - start
             LLM_REQUEST_DURATION.labels(model=self.model, task=task).observe(elapsed)
             LLM_ERRORS.labels(
                 model=self.model, task=task, error_type=type(exc).__name__,
             ).inc()
+            breaker.record_failure()
             raise
         elapsed = time.monotonic() - start
         LLM_REQUEST_DURATION.labels(model=self.model, task=task).observe(elapsed)
         if resp.input_tokens or resp.output_tokens:
             LLM_TOKENS.labels(model=self.model, task=task, direction="input").inc(resp.input_tokens)
             LLM_TOKENS.labels(model=self.model, task=task, direction="output").inc(resp.output_tokens)
+        breaker.record_success()
         return resp
 
     def stream_complete(self, req: CompletionRequest, *, task: str = "unknown") -> Iterator[StreamChunk]:
         """Stream a completion with metrics tracking on the final chunk."""
+        breaker = _llm_breaker(self.provider.provider_type)
+        if not breaker.allow_request():
+            CIRCUIT_BREAKER_REJECTIONS.labels(service=breaker.name).inc()
+            raise CircuitOpenError(breaker.name)
+
         start = time.monotonic()
         try:
             for chunk in self.provider.stream_complete(self.model, req):
@@ -72,32 +111,45 @@ class ResolvedModel:
                     if chunk.input_tokens or chunk.output_tokens:
                         LLM_TOKENS.labels(model=self.model, task=task, direction="input").inc(chunk.input_tokens)
                         LLM_TOKENS.labels(model=self.model, task=task, direction="output").inc(chunk.output_tokens)
+                    breaker.record_success()
                 yield chunk
+        except CircuitOpenError:
+            raise
         except Exception as exc:
             elapsed = time.monotonic() - start
             LLM_REQUEST_DURATION.labels(model=self.model, task=task).observe(elapsed)
             LLM_ERRORS.labels(
                 model=self.model, task=task, error_type=type(exc).__name__,
             ).inc()
+            breaker.record_failure()
             raise
 
     def embed(self, req: EmbedRequest, *, task: str = "embed") -> EmbedResponse:
-        """Run an embedding call with latency, token, and error tracking."""
+        """Run an embedding call with latency, token, error, and circuit breaker tracking."""
+        breaker = _llm_breaker(self.provider.provider_type)
+        if not breaker.allow_request():
+            CIRCUIT_BREAKER_REJECTIONS.labels(service=breaker.name).inc()
+            raise CircuitOpenError(breaker.name)
+
         start = time.monotonic()
         try:
             resp = self.provider.embed(self.model, req)
+        except CircuitOpenError:
+            raise
         except Exception as exc:
             elapsed = time.monotonic() - start
             EMBEDDING_DURATION.labels(model=self.model).observe(elapsed)
             LLM_ERRORS.labels(
                 model=self.model, task=task, error_type=type(exc).__name__,
             ).inc()
+            breaker.record_failure()
             raise
         elapsed = time.monotonic() - start
         EMBEDDING_DURATION.labels(model=self.model).observe(elapsed)
         EMBEDDING_BATCH_SIZE.labels(model=self.model).observe(len(req.texts))
         if resp.input_tokens:
             LLM_TOKENS.labels(model=self.model, task=task, direction="input").inc(resp.input_tokens)
+        breaker.record_success()
         return resp
 
 

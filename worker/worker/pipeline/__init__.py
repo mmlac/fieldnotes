@@ -18,6 +18,7 @@ from typing import Any
 
 from neo4j import Driver
 
+from worker.circuit_breaker import CircuitOpenError
 from worker.config import VisionConfig
 from worker.metrics import (
     CHUNKS_EMBEDDED,
@@ -148,10 +149,15 @@ class Pipeline:
         Each document is processed independently — a failure in one document
         does not prevent processing of remaining documents.
 
+        Documents that fail due to a circuit breaker being open are collected
+        separately and returned for retry on the next pipeline run (they are
+        not counted as permanent failures).
+
         Returns
         -------
         list[ParsedDocument]
             Documents that failed processing (empty list if all succeeded).
+            Includes both permanent failures and circuit-breaker-deferred docs.
         """
         # Enrich app descriptions before processing
         try:
@@ -163,9 +169,21 @@ class Pipeline:
             )
 
         failed: list[ParsedDocument] = []
+        circuit_deferred: list[ParsedDocument] = []
         for doc in docs:
             try:
                 self.process(doc)
+            except CircuitOpenError as exc:
+                logger.warning(
+                    "Circuit breaker open (%s) — deferring %s %s for retry",
+                    exc.breaker_name,
+                    doc.source_type,
+                    doc.source_id,
+                )
+                DOCUMENTS_FAILED.labels(
+                    source_type=doc.source_type, stage="circuit_breaker"
+                ).inc()
+                circuit_deferred.append(doc)
             except Exception:
                 logger.exception(
                     "Failed to process %s %s — skipping",
@@ -176,6 +194,13 @@ class Pipeline:
                     source_type=doc.source_type, stage="process"
                 ).inc()
                 failed.append(doc)
+
+        if circuit_deferred:
+            logger.warning(
+                "Batch: %d/%d documents deferred (circuit breaker open) — queued for retry",
+                len(circuit_deferred),
+                len(docs),
+            )
         if failed:
             logger.warning(
                 "Batch complete: %d/%d documents failed",
@@ -202,7 +227,10 @@ class Pipeline:
                 exc_info=True,
             )
 
-        return failed
+        # Return all docs that need re-processing: permanent failures +
+        # circuit-breaker-deferred docs.  Callers should re-submit deferred
+        # docs on the next pipeline run when services recover.
+        return failed + circuit_deferred
 
     def __enter__(self) -> Pipeline:
         return self

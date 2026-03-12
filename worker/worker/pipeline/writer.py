@@ -50,9 +50,11 @@ from tenacity import (
     wait_exponential_jitter,
 )
 
+from worker.circuit_breaker import CircuitBreaker, CircuitOpenError
 from worker.config import Neo4jConfig, QdrantConfig
 from worker.log_sanitizer import sanitize_exception
 from worker.metrics import (
+    CIRCUIT_BREAKER_REJECTIONS,
     NEO4J_WRITE_DURATION,
     QDRANT_WRITE_DURATION,
     observe_duration,
@@ -221,6 +223,15 @@ class Writer:
             self._entity_cache: list[dict[str, Any]] | None = None
             self._entity_cache_ts: float = 0.0
             self._entity_cache_lock = threading.Lock()
+
+            # Circuit breakers for downstream services
+            self.neo4j_breaker = CircuitBreaker(
+                "neo4j", failure_threshold=5, recovery_timeout=60.0,
+            )
+            self.qdrant_breaker = CircuitBreaker(
+                "qdrant", failure_threshold=5, recovery_timeout=60.0,
+            )
+
             self._ensure_qdrant_collection()
             self._ensure_entity_fulltext_index()
         except Exception:
@@ -546,6 +557,9 @@ class Writer:
         For creates/modifications, upserts the source node, entities,
         edges, chunks, and vectors.
 
+        If a circuit breaker is open, raises CircuitOpenError so the
+        pipeline can mark the document for retry on the next run.
+
         Neo4j is written first (ACID transaction). Qdrant is retried on
         failure to avoid cross-store inconsistency. If Qdrant still fails
         after retries, the error is raised so the caller can re-process
@@ -557,8 +571,31 @@ class Writer:
             self._delete(doc.source_id, doc.source_type)
             return
 
-        self._write_neo4j(unit)
-        self._write_qdrant(unit)
+        if not self.neo4j_breaker.allow_request():
+            CIRCUIT_BREAKER_REJECTIONS.labels(service="neo4j").inc()
+            raise CircuitOpenError("neo4j")
+
+        try:
+            self._write_neo4j(unit)
+            self.neo4j_breaker.record_success()
+        except CircuitOpenError:
+            raise
+        except Exception:
+            self.neo4j_breaker.record_failure()
+            raise
+
+        if not self.qdrant_breaker.allow_request():
+            CIRCUIT_BREAKER_REJECTIONS.labels(service="qdrant").inc()
+            raise CircuitOpenError("qdrant")
+
+        try:
+            self._write_qdrant(unit)
+            self.qdrant_breaker.record_success()
+        except CircuitOpenError:
+            raise
+        except Exception:
+            self.qdrant_breaker.record_failure()
+            raise
 
         logger.info(
             "Wrote %s %s: %d chunks, %d entities, %d triples, %d hints",
@@ -747,8 +784,29 @@ class Writer:
 
     def _delete(self, source_id: str, source_type: str) -> None:
         """Remove all Neo4j nodes and Qdrant vectors for a source_id."""
-        self._delete_neo4j(source_id)
-        self._delete_qdrant_vectors(source_id)
+        if not self.neo4j_breaker.allow_request():
+            CIRCUIT_BREAKER_REJECTIONS.labels(service="neo4j").inc()
+            raise CircuitOpenError("neo4j")
+        try:
+            self._delete_neo4j(source_id)
+            self.neo4j_breaker.record_success()
+        except CircuitOpenError:
+            raise
+        except Exception:
+            self.neo4j_breaker.record_failure()
+            raise
+
+        if not self.qdrant_breaker.allow_request():
+            CIRCUIT_BREAKER_REJECTIONS.labels(service="qdrant").inc()
+            raise CircuitOpenError("qdrant")
+        try:
+            self._delete_qdrant_vectors(source_id)
+            self.qdrant_breaker.record_success()
+        except CircuitOpenError:
+            raise
+        except Exception:
+            self.qdrant_breaker.record_failure()
+            raise
 
         logger.info("Deleted %s %s", source_type, source_id)
 

@@ -23,6 +23,7 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
+from worker.circuit_breaker import all_breakers
 from worker.config import Config, load_config
 from worker.models.base import CompletionRequest
 from worker.models.resolver import ModelRegistry
@@ -169,7 +170,9 @@ TOOLS: list[Tool] = [
         name="ingest_status",
         description=(
             "Check the health and sync status of the fieldnotes ingestion "
-            "pipeline. Returns source counts, last sync times, and any errors."
+            "pipeline. Returns source counts, last sync times, circuit breaker "
+            "states for downstream services (Neo4j, Qdrant, LLM providers), "
+            "and any errors."
         ),
         inputSchema={"type": "object", "properties": {}},
     ),
@@ -587,6 +590,13 @@ class FieldnotesServer:
             "neo4j": neo4j_health,
             "qdrant": qdrant_health,
         }
+
+        # --- Circuit breaker status ---
+        breakers = all_breakers()
+        if breakers:
+            result["circuit_breakers"] = {
+                name: cb.status() for name, cb in sorted(breakers.items())
+            }
 
         return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
 

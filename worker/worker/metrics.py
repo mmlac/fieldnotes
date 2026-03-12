@@ -278,6 +278,20 @@ GMAIL_POLL_DURATION = Histogram(
     registry=REGISTRY,
 )
 
+CIRCUIT_BREAKER_STATE = Gauge(
+    "circuit_breaker_state",
+    "Circuit breaker state (0=closed, 1=open, 2=half_open)",
+    ["service"],
+    registry=REGISTRY,
+)
+
+CIRCUIT_BREAKER_REJECTIONS = Counter(
+    "circuit_breaker_rejections_total",
+    "Total requests rejected by circuit breaker",
+    ["service"],
+    registry=REGISTRY,
+)
+
 # ---------------------------------------------------------------------------
 # Timing context manager
 # ---------------------------------------------------------------------------
