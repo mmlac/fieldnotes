@@ -208,11 +208,22 @@ class ObsidianParser(BaseParser):
             # Load image bytes from disk when vault_path is available
             image_bytes: bytes | None = None
             if vault_path:
-                image_file = (Path(vault_path) / embed_path).resolve()
                 vault_resolved = Path(vault_path).resolve()
-                if not image_file.is_relative_to(vault_resolved):
+                # Check unresolved path first to reject traversal attempts
+                # like "../../../etc/passwd" before symlink resolution.
+                image_unresolved = Path(vault_path) / embed_path
+                if not image_unresolved.is_relative_to(vault_resolved):
                     logger.warning(
                         "Embed path %r escapes vault directory, skipping",
+                        embed_path,
+                    )
+                    continue
+                # Resolve symlinks, then re-check to catch symlink escapes.
+                image_file = image_unresolved.resolve()
+                if not image_file.is_relative_to(vault_resolved):
+                    logger.warning(
+                        "Embed path %r resolves outside vault directory "
+                        "(symlink escape), skipping",
                         embed_path,
                     )
                     continue

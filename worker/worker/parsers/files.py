@@ -11,6 +11,7 @@ Registered for source_type='files'. Handles:
 from __future__ import annotations
 
 import base64
+import binascii
 import hashlib
 import logging
 import os
@@ -159,7 +160,14 @@ class FileParser(BaseParser):
                     source_id, len(raw), self._max_image_bytes,
                 )
                 return []
-            raw = base64.b64decode(raw)
+            try:
+                raw = base64.b64decode(raw)
+            except binascii.Error:
+                log.warning(
+                    "Image %s has malformed base64 encoding, skipping",
+                    source_id,
+                )
+                return []
         if not raw:
             return []
 
@@ -202,7 +210,14 @@ class FileParser(BaseParser):
                     source_id, len(raw), self._max_pdf_bytes,
                 )
                 return []
-            raw = base64.b64decode(raw)
+            try:
+                raw = base64.b64decode(raw)
+            except binascii.Error:
+                log.warning(
+                    "PDF %s has malformed base64 encoding, skipping",
+                    source_id,
+                )
+                return []
         if not raw:
             return []
 
