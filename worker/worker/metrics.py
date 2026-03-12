@@ -321,6 +321,38 @@ GMAIL_POLL_DURATION = Histogram(
     registry=REGISTRY,
 )
 
+RATE_LIMIT_WAITS = Counter(
+    "rate_limit_waits_total",
+    "Total times a request had to wait for a rate limit slot",
+    ["provider"],
+    registry=REGISTRY,
+)
+
+RATE_LIMIT_REJECTIONS = Counter(
+    "rate_limit_rejections_total",
+    "Total requests rejected by rate limiter (timeout)",
+    ["provider"],
+    registry=REGISTRY,
+)
+
+TOKEN_BUDGET_USED = Gauge(
+    "token_budget_used_total",
+    "Total tokens consumed against the daily budget",
+    registry=REGISTRY,
+)
+
+TOKEN_BUDGET_REJECTIONS = Counter(
+    "token_budget_rejections_total",
+    "Total requests rejected due to exhausted token budget",
+    registry=REGISTRY,
+)
+
+CONCURRENCY_LIMIT_WAITS = Counter(
+    "concurrency_limit_waits_total",
+    "Total times a request waited for a concurrency slot",
+    registry=REGISTRY,
+)
+
 CIRCUIT_BREAKER_STATE = Gauge(
     "circuit_breaker_state",
     "Circuit breaker state (0=closed, 1=open, 2=half_open)",

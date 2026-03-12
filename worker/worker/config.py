@@ -145,6 +145,17 @@ class McpConfig:
 
 
 @dataclass
+class RateLimitConfig:
+    """Parsed ``[rate_limits]`` section.
+
+    All fields default to 0 (disabled / unlimited).
+    """
+    requests_per_minute: int = 0    # per-provider RPM; 0 = unlimited
+    daily_token_budget: int = 0     # total tokens (input + output) per day; 0 = unlimited
+    max_concurrency: int = 0        # max parallel LLM calls; 0 = unlimited
+
+
+@dataclass
 class Config:
     core: CoreConfig = field(default_factory=CoreConfig)
     neo4j: Neo4jConfig = field(default_factory=Neo4jConfig)
@@ -157,6 +168,7 @@ class Config:
     clustering: ClusteringConfig = field(default_factory=ClusteringConfig)
     mcp: McpConfig = field(default_factory=McpConfig)
     health: HealthConfig = field(default_factory=HealthConfig)
+    rate_limits: RateLimitConfig = field(default_factory=RateLimitConfig)
 
     # Expected embedding dimension used by the clustering pipeline.
     _EXPECTED_VECTOR_SIZE = 768
@@ -431,6 +443,28 @@ def _parse(raw: dict[str, Any]) -> Config:
         cfg.mcp = McpConfig(
             enabled=m.get("enabled", cfg.mcp.enabled),
             port=m.get("port", cfg.mcp.port),
+        )
+
+    # [rate_limits]
+    if "rate_limits" in raw:
+        rl = raw["rate_limits"]
+        for k in ("requests_per_minute", "daily_token_budget", "max_concurrency"):
+            if k in rl:
+                _check_type("rate_limits", k, rl[k], int)
+                if rl[k] < 0:
+                    raise ValueError(
+                        f"[rate_limits] {k} must be >= 0, got {rl[k]}"
+                    )
+        cfg.rate_limits = RateLimitConfig(
+            requests_per_minute=rl.get(
+                "requests_per_minute", cfg.rate_limits.requests_per_minute,
+            ),
+            daily_token_budget=rl.get(
+                "daily_token_budget", cfg.rate_limits.daily_token_budget,
+            ),
+            max_concurrency=rl.get(
+                "max_concurrency", cfg.rate_limits.max_concurrency,
+            ),
         )
 
     return cfg

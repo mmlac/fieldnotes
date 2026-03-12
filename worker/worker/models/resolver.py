@@ -12,7 +12,7 @@ import logging
 import threading
 import time
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from .base import (
     CompletionRequest,
@@ -22,16 +22,28 @@ from .base import (
     ModelProvider,
     StreamChunk,
 )
+from .rate_limiter import (
+    ConcurrencyLimiter,
+    RateLimiter,
+    RateLimitExceeded,
+    TokenBudget,
+    TokenBudgetExhausted,
+)
 from .registry import get_provider
 from ..circuit_breaker import CircuitBreaker, CircuitOpenError, get_breaker
 from ..config import Config
 from ..metrics import (
     CIRCUIT_BREAKER_REJECTIONS,
+    CONCURRENCY_LIMIT_WAITS,
     EMBEDDING_BATCH_SIZE,
     EMBEDDING_DURATION,
     LLM_ERRORS,
     LLM_REQUEST_DURATION,
     LLM_TOKENS,
+    RATE_LIMIT_REJECTIONS,
+    RATE_LIMIT_WAITS,
+    TOKEN_BUDGET_REJECTIONS,
+    TOKEN_BUDGET_USED,
 )
 
 logger = logging.getLogger(__name__)
@@ -61,11 +73,72 @@ def _llm_breaker(provider_type: str) -> CircuitBreaker:
 
 @dataclass
 class ResolvedModel:
-    """A fully resolved model: alias + model string + configured provider instance."""
+    """A fully resolved model: alias + model string + configured provider instance.
+
+    Rate limiting, token budgets, and concurrency limits are optional and
+    injected by :class:`ModelRegistry` from the ``[rate_limits]`` config.
+    """
 
     alias: str
     model: str
     provider: ModelProvider
+    _rate_limiter: RateLimiter | None = field(default=None, repr=False)
+    _token_budget: TokenBudget | None = field(default=None, repr=False)
+    _concurrency_limiter: ConcurrencyLimiter | None = field(default=None, repr=False)
+
+    # -- internal helpers ---------------------------------------------------
+
+    def _pre_request(self, *, task: str) -> None:
+        """Run pre-request gates: token budget check, rate limit, concurrency."""
+        if self._token_budget is not None:
+            try:
+                self._token_budget.check()
+            except TokenBudgetExhausted:
+                TOKEN_BUDGET_REJECTIONS.inc()
+                raise
+        if self._rate_limiter is not None:
+            t0 = time.monotonic()
+            try:
+                self._rate_limiter.acquire()
+            except RateLimitExceeded:
+                RATE_LIMIT_REJECTIONS.labels(
+                    provider=self.provider.provider_type,
+                ).inc()
+                raise
+            waited = time.monotonic() - t0
+            if waited > 0.05:
+                RATE_LIMIT_WAITS.labels(
+                    provider=self.provider.provider_type,
+                ).inc()
+        if self._concurrency_limiter is not None:
+            t0 = time.monotonic()
+            ok = self._concurrency_limiter.acquire()
+            if not ok:
+                raise RateLimitExceeded(
+                    "Timed out waiting for concurrency slot"
+                )
+            waited = time.monotonic() - t0
+            if waited > 0.05:
+                CONCURRENCY_LIMIT_WAITS.inc()
+
+    def _post_request(
+        self,
+        input_tokens: int,
+        output_tokens: int,
+    ) -> None:
+        """Run post-request accounting: release concurrency, record tokens."""
+        if self._concurrency_limiter is not None:
+            self._concurrency_limiter.release()
+        if self._token_budget is not None:
+            self._token_budget.record(input_tokens, output_tokens)
+            TOKEN_BUDGET_USED.set(self._token_budget.used)
+
+    def _release_concurrency(self) -> None:
+        """Release the concurrency slot on error paths."""
+        if self._concurrency_limiter is not None:
+            self._concurrency_limiter.release()
+
+    # -- public API ---------------------------------------------------------
 
     def complete(self, req: CompletionRequest, *, task: str = "unknown") -> CompletionResponse:
         """Run a completion with latency, token, error, and circuit breaker tracking."""
@@ -74,12 +147,15 @@ class ResolvedModel:
             CIRCUIT_BREAKER_REJECTIONS.labels(service=breaker.name).inc()
             raise CircuitOpenError(breaker.name)
 
+        self._pre_request(task=task)
         start = time.monotonic()
         try:
             resp = self.provider.complete(self.model, req)
         except CircuitOpenError:
+            self._release_concurrency()
             raise
         except Exception as exc:
+            self._release_concurrency()
             elapsed = time.monotonic() - start
             LLM_REQUEST_DURATION.labels(model=self.model, task=task).observe(elapsed)
             LLM_ERRORS.labels(
@@ -93,6 +169,7 @@ class ResolvedModel:
             LLM_TOKENS.labels(model=self.model, task=task, direction="input").inc(resp.input_tokens)
             LLM_TOKENS.labels(model=self.model, task=task, direction="output").inc(resp.output_tokens)
         breaker.record_success()
+        self._post_request(resp.input_tokens, resp.output_tokens)
         return resp
 
     def stream_complete(self, req: CompletionRequest, *, task: str = "unknown") -> Iterator[StreamChunk]:
@@ -102,6 +179,7 @@ class ResolvedModel:
             CIRCUIT_BREAKER_REJECTIONS.labels(service=breaker.name).inc()
             raise CircuitOpenError(breaker.name)
 
+        self._pre_request(task=task)
         start = time.monotonic()
         try:
             for chunk in self.provider.stream_complete(self.model, req):
@@ -112,10 +190,13 @@ class ResolvedModel:
                         LLM_TOKENS.labels(model=self.model, task=task, direction="input").inc(chunk.input_tokens)
                         LLM_TOKENS.labels(model=self.model, task=task, direction="output").inc(chunk.output_tokens)
                     breaker.record_success()
+                    self._post_request(chunk.input_tokens, chunk.output_tokens)
                 yield chunk
         except CircuitOpenError:
+            self._release_concurrency()
             raise
         except Exception as exc:
+            self._release_concurrency()
             elapsed = time.monotonic() - start
             LLM_REQUEST_DURATION.labels(model=self.model, task=task).observe(elapsed)
             LLM_ERRORS.labels(
@@ -131,12 +212,15 @@ class ResolvedModel:
             CIRCUIT_BREAKER_REJECTIONS.labels(service=breaker.name).inc()
             raise CircuitOpenError(breaker.name)
 
+        self._pre_request(task=task)
         start = time.monotonic()
         try:
             resp = self.provider.embed(self.model, req)
         except CircuitOpenError:
+            self._release_concurrency()
             raise
         except Exception as exc:
+            self._release_concurrency()
             elapsed = time.monotonic() - start
             EMBEDDING_DURATION.labels(model=self.model).observe(elapsed)
             LLM_ERRORS.labels(
@@ -150,6 +234,7 @@ class ResolvedModel:
         if resp.input_tokens:
             LLM_TOKENS.labels(model=self.model, task=task, direction="input").inc(resp.input_tokens)
         breaker.record_success()
+        self._post_request(resp.input_tokens, 0)
         return resp
 
 
@@ -160,6 +245,9 @@ class ModelRegistry:
       1. [modelproviders.*] → provider instances (configured via .configure())
       2. [models.*] → alias → ResolvedModel
       3. [models.roles] → role → ResolvedModel
+
+    Rate limiters, token budgets, and concurrency limits from ``[rate_limits]``
+    are injected into every :class:`ResolvedModel`.
     """
 
     def __init__(self, cfg: Config) -> None:
@@ -170,6 +258,27 @@ class ModelRegistry:
             instance = cls()
             instance.configure(pcfg.settings)
             providers[name] = instance
+
+        # Build shared rate-limit controls from [rate_limits] config
+        rl = cfg.rate_limits
+
+        # Per-provider rate limiters (one per provider *type*)
+        rate_limiters: dict[str, RateLimiter] = {}
+        if rl.requests_per_minute > 0:
+            for prov in providers.values():
+                pt = prov.provider_type
+                if pt not in rate_limiters:
+                    rate_limiters[pt] = RateLimiter(rl.requests_per_minute)
+
+        # Shared token budget (global, not per-provider)
+        token_budget: TokenBudget | None = None
+        if rl.daily_token_budget > 0:
+            token_budget = TokenBudget(rl.daily_token_budget)
+
+        # Shared concurrency limiter (global)
+        concurrency_limiter: ConcurrencyLimiter | None = None
+        if rl.max_concurrency > 0:
+            concurrency_limiter = ConcurrencyLimiter(rl.max_concurrency)
 
         # Layer 2: alias → ResolvedModel
         self._by_alias: dict[str, ResolvedModel] = {}
@@ -185,6 +294,9 @@ class ModelRegistry:
                 alias=alias,
                 model=mcfg.model,
                 provider=provider,
+                _rate_limiter=rate_limiters.get(provider.provider_type),
+                _token_budget=token_budget,
+                _concurrency_limiter=concurrency_limiter,
             )
 
         # Layer 3: role → ResolvedModel
