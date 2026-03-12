@@ -55,16 +55,20 @@ def redact_home_path(text: str) -> str:
     return text
 
 
+_URI_PATTERN: re.Pattern[str] = re.compile(r"https?://\S+", re.IGNORECASE)
+
+
 def sanitize_exception(exc: BaseException) -> str:
     """Return a sanitized single-line representation of an exception.
 
-    Redacts filesystem paths and known secret patterns from the
-    exception string so it is safe for log output.
+    Redacts filesystem paths, known secret patterns, and URI credentials
+    from the exception string so it is safe for log output.
     """
     msg = str(exc)
     msg = redact_home_path(msg)
     for pat in _SECRET_PATTERNS:
         msg = pat.sub(r"\1\2<REDACTED>", msg)
+    msg = _URI_PATTERN.sub(lambda m: redact_uri(m.group(0)), msg)
     return msg
 
 
