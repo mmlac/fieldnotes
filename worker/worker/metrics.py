@@ -299,6 +299,13 @@ CURSOR_CHECKPOINT_WRITES = Counter(
     registry=REGISTRY,
 )
 
+METADATA_ONLY_FILES = Counter(
+    "fieldnotes_metadata_only_files_total",
+    "Files indexed with metadata only (no content parsing)",
+    ["source_type"],
+    registry=REGISTRY,
+)
+
 IWORK_EXTRACTION_DURATION_SECONDS = Histogram(
     "fieldnotes_iwork_extraction_duration_seconds",
     "Duration of iWork file text extraction via osascript",

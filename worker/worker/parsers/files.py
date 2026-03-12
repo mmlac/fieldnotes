@@ -1,9 +1,11 @@
-"""FileParser: text and PDF content extraction.
+"""FileParser: text, PDF, image, and metadata extraction.
 
 Registered for source_type='files'. Handles:
 - text/* MIME types: reads text directly from the event
 - application/pdf: extracts text via pymupdf
-- Unsupported formats: returns empty list
+- image/*: routes to vision pipeline
+- iWork (.pages, .key): extracts text via osascript
+- All other formats: emits metadata-only ParsedDocument (name, path, ext, size)
 """
 
 from __future__ import annotations
@@ -16,6 +18,8 @@ from typing import Any
 
 import pymupdf
 
+from worker.metrics import METADATA_ONLY_FILES
+
 from .base import BaseParser, ParsedDocument
 from .iwork import IWORK_MIME_TYPES, IWorkParser
 from .registry import register
@@ -26,6 +30,42 @@ _DEFAULT_MAX_PDF_BYTES = 100 * 1024 * 1024  # 100 MiB
 _DEFAULT_MAX_PDF_PAGES = 2000
 _DEFAULT_MAX_TEXT_BYTES = 10 * 1024 * 1024  # 10 MiB
 _DEFAULT_MAX_IMAGE_BYTES = 50 * 1024 * 1024  # 50 MiB
+
+# Well-known binary extension → human-readable description
+_EXTENSION_DESCRIPTIONS: dict[str, str] = {
+    ".3mf": "3D model",
+    ".stl": "3D model",
+    ".obj": "3D model",
+    ".zip": "archive",
+    ".tar.gz": "archive",
+    ".rar": "archive",
+    ".7z": "archive",
+    ".dmg": "disk image",
+    ".iso": "disk image",
+    ".mp4": "video",
+    ".mov": "video",
+    ".avi": "video",
+    ".mkv": "video",
+    ".mp3": "audio",
+    ".wav": "audio",
+    ".flac": "audio",
+    ".aac": "audio",
+    ".psd": "design file",
+    ".ai": "design file",
+    ".sketch": "design file",
+    ".fig": "design file",
+    ".xls": "spreadsheet",
+    ".xlsx": "spreadsheet",
+    ".doc": "document",
+    ".docx": "document",
+    ".ppt": "presentation",
+    ".pptx": "presentation",
+    ".db": "database",
+    ".sqlite": "database",
+    ".exe": "executable",
+    ".app": "executable",
+    ".msi": "executable",
+}
 
 
 @register
@@ -57,7 +97,7 @@ class FileParser(BaseParser):
         elif mime in IWORK_MIME_TYPES:
             return self._iwork_parser.parse(event)
         else:
-            return []
+            return self._parse_metadata(event, mime, source_id, operation)
 
     def _node_props(self, source_id: str, event: dict[str, Any]) -> dict[str, Any]:
         meta = event.get("meta", {})
@@ -204,6 +244,54 @@ class FileParser(BaseParser):
                 operation=operation,
                 text=text,
                 mime_type="application/pdf",
+                node_label="File",
+                node_props=props,
+            )
+        ]
+
+    @staticmethod
+    def _describe_extension(ext: str) -> str:
+        """Return a human-readable description for a file extension."""
+        return _EXTENSION_DESCRIPTIONS.get(ext.lower(), ext.lstrip(".")) if ext else ""
+
+    def _parse_metadata(
+        self,
+        event: dict[str, Any],
+        mime: str,
+        source_id: str,
+        operation: str,
+    ) -> list[ParsedDocument]:
+        """Emit a metadata-only ParsedDocument for unparseable files."""
+        props = self._node_props(source_id, event)
+
+        meta = event.get("meta", {})
+        if size := meta.get("size_bytes"):
+            props["size_bytes"] = size
+        if "source_modified_at" in event:
+            props["source_modified_at"] = event["source_modified_at"]
+
+        name = props["name"]
+        ext = props["ext"]
+        desc = self._describe_extension(ext)
+        directory = os.path.dirname(source_id)
+
+        if desc and desc != ext.lstrip("."):
+            text = f"File: {name} ({desc})"
+        else:
+            text = f"File: {name}"
+        if directory:
+            text += f" in {directory}/"
+
+        METADATA_ONLY_FILES.labels(source_type="files").inc()
+        log.debug("Metadata-only index for %s (%s)", source_id, mime)
+
+        return [
+            ParsedDocument(
+                source_type="files",
+                source_id=source_id,
+                operation=operation,
+                text=text,
+                mime_type=mime or "application/octet-stream",
                 node_label="File",
                 node_props=props,
             )

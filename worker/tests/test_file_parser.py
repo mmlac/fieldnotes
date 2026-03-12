@@ -5,7 +5,7 @@ import hashlib
 
 import pytest
 
-from worker.parsers.files import FileParser
+from worker.parsers.files import FileParser, _EXTENSION_DESCRIPTIONS
 
 
 @pytest.fixture()
@@ -88,15 +88,24 @@ class TestFileParserText:
 
 
 class TestFileParserUnsupported:
-    def test_returns_empty_for_unsupported_mime(self, parser: FileParser) -> None:
+    def test_returns_metadata_for_unsupported_mime(self, parser: FileParser) -> None:
         event = {"mime_type": "application/octet-stream", "source_id": "data.bin"}
         docs = parser.parse(event)
-        assert docs == []
+        assert len(docs) == 1
+        doc = docs[0]
+        assert doc.source_type == "files"
+        assert doc.source_id == "data.bin"
+        assert doc.mime_type == "application/octet-stream"
+        assert doc.node_label == "File"
+        assert "File: data.bin" in doc.text
+        assert doc.image_bytes is None
 
-    def test_returns_empty_for_empty_mime(self, parser: FileParser) -> None:
-        event = {"source_id": "unknown"}
+    def test_returns_metadata_for_empty_mime(self, parser: FileParser) -> None:
+        event = {"source_id": "/tmp/unknown"}
         docs = parser.parse(event)
-        assert docs == []
+        assert len(docs) == 1
+        assert docs[0].mime_type == "application/octet-stream"
+        assert "File: unknown" in docs[0].text
 
 
 class TestFileParserImage:
@@ -296,6 +305,91 @@ class TestFileParserPdf:
         assert "Page 0" in docs[0].text
         assert "Page 1" in docs[0].text
         assert "Page 2" not in docs[0].text
+
+
+class TestFileParserMetadataOnly:
+    """Tests for metadata-only indexing of unparseable files."""
+
+    def test_unknown_binary_gets_metadata_doc(self, parser: FileParser) -> None:
+        event = {
+            "mime_type": "application/octet-stream",
+            "source_id": "/projects/furniture/drawer.3mf",
+            "operation": "created",
+            "meta": {"size_bytes": 1024},
+        }
+        docs = parser.parse(event)
+        assert len(docs) == 1
+        doc = docs[0]
+        assert doc.source_type == "files"
+        assert doc.source_id == "/projects/furniture/drawer.3mf"
+        assert doc.operation == "created"
+        assert doc.text == "File: drawer.3mf (3D model) in /projects/furniture/"
+        assert doc.mime_type == "application/octet-stream"
+        assert doc.node_label == "File"
+        assert doc.image_bytes is None
+        props = doc.node_props
+        assert props["name"] == "drawer.3mf"
+        assert props["ext"] == ".3mf"
+        assert props["path"] == "/projects/furniture/drawer.3mf"
+        assert props["size_bytes"] == 1024
+
+    def test_known_extension_descriptions(self, parser: FileParser) -> None:
+        """Spot-check the extension description map."""
+        assert _EXTENSION_DESCRIPTIONS[".mp4"] == "video"
+        assert _EXTENSION_DESCRIPTIONS[".zip"] == "archive"
+        assert _EXTENSION_DESCRIPTIONS[".psd"] == "design file"
+        assert _EXTENSION_DESCRIPTIONS[".xlsx"] == "spreadsheet"
+        assert _EXTENSION_DESCRIPTIONS[".docx"] == "document"
+        assert _EXTENSION_DESCRIPTIONS[".db"] == "database"
+        assert _EXTENSION_DESCRIPTIONS[".exe"] == "executable"
+        assert _EXTENSION_DESCRIPTIONS[".dmg"] == "disk image"
+
+    def test_unknown_extension_falls_back_to_extension(self, parser: FileParser) -> None:
+        event = {
+            "mime_type": "application/octet-stream",
+            "source_id": "/data/file.xyz",
+            "operation": "modified",
+        }
+        docs = parser.parse(event)
+        assert len(docs) == 1
+        assert docs[0].text == "File: file.xyz in /data/"
+
+    def test_delete_event_for_unparseable_file(self, parser: FileParser) -> None:
+        event = {
+            "mime_type": "application/octet-stream",
+            "source_id": "/projects/model.stl",
+            "operation": "deleted",
+        }
+        docs = parser.parse(event)
+        assert len(docs) == 1
+        assert docs[0].operation == "deleted"
+        assert docs[0].source_id == "/projects/model.stl"
+
+    def test_metadata_node_props_include_directory(self, parser: FileParser) -> None:
+        event = {
+            "mime_type": "application/octet-stream",
+            "source_id": "/home/user/docs/archive.7z",
+            "operation": "created",
+            "source_modified_at": "2026-01-15T10:00:00Z",
+            "meta": {"size_bytes": 5000},
+        }
+        docs = parser.parse(event)
+        props = docs[0].node_props
+        assert props["path"] == "/home/user/docs/archive.7z"
+        assert props["name"] == "archive.7z"
+        assert props["ext"] == ".7z"
+        assert props["size_bytes"] == 5000
+        assert props["source_modified_at"] == "2026-01-15T10:00:00Z"
+
+    def test_file_without_directory(self, parser: FileParser) -> None:
+        event = {
+            "mime_type": "application/octet-stream",
+            "source_id": "loose.bin",
+            "operation": "created",
+        }
+        docs = parser.parse(event)
+        # No trailing " in /" when there's no directory
+        assert docs[0].text == "File: loose.bin"
 
 
 class TestFileParserRegistration:
