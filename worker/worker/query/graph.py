@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -143,16 +144,39 @@ def _lc_role(msg: BaseMessage) -> str:
     return "user"
 
 
+def _normalize_cypher_for_validation(cypher: str) -> str:
+    """Normalize Cypher text to defeat bypass techniques.
+
+    1. Replace all Unicode whitespace characters (NBSP, em-space, etc.)
+       with plain ASCII spaces so regex word boundaries work correctly.
+    2. Strip Cypher line comments (// ...) and block comments (/* ... */).
+    """
+    # Normalize Unicode whitespace to ASCII space
+    normalized = "".join(
+        " " if unicodedata.category(ch) in ("Zs", "Zl", "Zp") else ch
+        for ch in cypher
+    )
+    # Strip block comments (/* ... */), including nested
+    normalized = re.sub(r"/\*.*?\*/", " ", normalized, flags=re.DOTALL)
+    # Strip line comments (// ...)
+    normalized = re.sub(r"//[^\n]*", " ", normalized)
+    return normalized
+
+
 def _validate_cypher_readonly(cypher: str) -> None:
     """Raise if the Cypher contains write operations.
 
     Defense-in-depth: this regex blocklist catches common mutation patterns,
     but the real safety boundary is the read-only transaction in GraphQuerier.
+
+    Normalizes Unicode whitespace and strips comments before checking to
+    prevent bypass via NBSP word-boundary evasion or comment embedding.
     """
+    normalized = _normalize_cypher_for_validation(cypher)
     if (
-        _WRITE_KEYWORDS.search(cypher)
-        or _CALL_PATTERN.search(cypher)
-        or _WRITE_APOC.search(cypher)
+        _WRITE_KEYWORDS.search(normalized)
+        or _CALL_PATTERN.search(normalized)
+        or _WRITE_APOC.search(normalized)
     ):
         raise ReadOnlyCypherViolation(cypher)
 

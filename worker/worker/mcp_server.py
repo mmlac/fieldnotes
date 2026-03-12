@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import signal
 from pathlib import Path
 
@@ -505,6 +506,8 @@ class FieldnotesServer:
                     "File", "Email", "Commit", "Entity",
                     "Topic", "Chunk", "Image", "Repository",
                 ):
+                    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", label):
+                        raise ValueError(f"Unsafe Neo4j label: {label!r}")
                     row = session.run(
                         f"MATCH (n:`{label}`) "
                         "RETURN count(n) AS cnt, "

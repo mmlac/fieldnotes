@@ -15,6 +15,7 @@ from worker.query.graph import (
     GraphQuerier,
     GraphQueryResult,
     ReadOnlyCypherViolation,
+    _normalize_cypher_for_validation,
     _validate_cypher_readonly,
     _ensure_limit,
     _RegistryLLM,
@@ -74,6 +75,57 @@ class TestCypherReadOnlyValidation:
     def test_blocks_write_queries(self, cypher: str) -> None:
         with pytest.raises(ReadOnlyCypherViolation):
             _validate_cypher_readonly(cypher)
+
+    @pytest.mark.parametrize(
+        "cypher",
+        [
+            # Unicode NBSP (\u00a0) between word boundary to bypass \b
+            "MATCH (n)\u00a0DELETE\u00a0n",
+            "MATCH (n)\u00a0CREATE (m:X)",
+            "\u00a0MERGE\u00a0(n:File {id: 'x'})",
+            # Em space (\u2003)
+            "MATCH (n)\u2003SET\u2003n.x = 1",
+            # Cypher line comment to split keyword
+            "MATCH (n) // safe\nDELETE n",
+            # Cypher block comment to split keyword
+            "MATCH (n) /* comment */ DELETE n",
+            # Comment hiding a write after innocent-looking read
+            "MATCH (n) RETURN n // \nCREATE (m:Evil)",
+        ],
+    )
+    def test_blocks_unicode_and_comment_bypass(self, cypher: str) -> None:
+        """Bypass attempts using Unicode whitespace or Cypher comments."""
+        with pytest.raises(ReadOnlyCypherViolation):
+            _validate_cypher_readonly(cypher)
+
+
+class TestCypherNormalization:
+    """Tests for the normalization step that defeats bypass techniques."""
+
+    def test_replaces_nbsp_with_space(self) -> None:
+        result = _normalize_cypher_for_validation("MATCH\u00a0(n)")
+        assert "\u00a0" not in result
+        assert "MATCH (n)" == result
+
+    def test_replaces_em_space(self) -> None:
+        result = _normalize_cypher_for_validation("A\u2003B")
+        assert result == "A B"
+
+    def test_strips_line_comments(self) -> None:
+        result = _normalize_cypher_for_validation("MATCH (n) // comment\nRETURN n")
+        assert "//" not in result
+        assert "RETURN n" in result
+
+    def test_strips_block_comments(self) -> None:
+        result = _normalize_cypher_for_validation("MATCH /* evil */ (n)")
+        assert "/*" not in result
+        assert "MATCH" in result
+        assert "(n)" in result
+
+    def test_strips_multiline_block_comment(self) -> None:
+        result = _normalize_cypher_for_validation("A /*\nhide\n*/ B")
+        assert "hide" not in result
+        assert "A" in result and "B" in result
 
 
 # ------------------------------------------------------------------

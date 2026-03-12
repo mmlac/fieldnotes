@@ -935,6 +935,10 @@ def _merge_entity_edge(tx: Any, triple: dict[str, str]) -> None:
             triple["object"],
         )
         predicate = "RELATED_TO"
+    # Defense in depth: assert predicate is safe immediately before interpolation.
+    # This guard prevents injection if the validation logic above is ever refactored.
+    assert predicate in ALLOWED_PREDICATES, f"predicate {predicate!r} not in ALLOWED_PREDICATES"
+    _validate_cypher_identifier(predicate, "triple predicate (pre-interpolation)")
     tx.run(
         f"""
         MERGE (s:Entity {{name: $subject}})
