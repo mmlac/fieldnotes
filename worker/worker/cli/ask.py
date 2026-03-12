@@ -13,6 +13,7 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from worker.cli.reformulator import reformulate
 from worker.config import Config, load_config
 from worker.models.base import CompletionRequest
 from worker.models.resolver import ModelRegistry
@@ -54,22 +55,37 @@ def _synthesize(
     session: _Session | None = None,
 ) -> str:
     """Run hybrid retrieval + LLM synthesis. Returns formatted answer text."""
+    # --- 0. Reformulate follow-up questions ---
+    search_query = question
+    if session and session.history:
+        try:
+            extraction_model = registry.for_role("extraction")
+        except KeyError:
+            extraction_model = None
+        if extraction_model is not None:
+            history_pairs = [
+                (t.question, t.answer) for t in session.history
+            ]
+            search_query = reformulate(question, history_pairs, extraction_model)
+            if search_query != question:
+                logger.info("Reformulated: %r -> %r", question, search_query)
+
     # --- 1. Retrieve context ---
     graph_result: GraphQueryResult
     try:
-        graph_result = graph_querier.query(question)
+        graph_result = graph_querier.query(search_query)
     except Exception as exc:
         logger.debug("Graph query failed: %s", exc)
-        graph_result = GraphQueryResult(question=question, cypher="", error=str(exc))
+        graph_result = GraphQueryResult(question=search_query, cypher="", error=str(exc))
 
     vector_result: VectorQueryResult
     try:
-        vector_result = vector_querier.query(question, top_k=20)
+        vector_result = vector_querier.query(search_query, top_k=20)
     except Exception as exc:
         logger.debug("Vector query failed: %s", exc)
-        vector_result = VectorQueryResult(question=question, error=str(exc))
+        vector_result = VectorQueryResult(question=search_query, error=str(exc))
 
-    hybrid = merge(question, graph_result, vector_result)
+    hybrid = merge(search_query, graph_result, vector_result)
 
     # --- 2. Build RAG prompt ---
     context_text = hybrid.context
