@@ -34,6 +34,30 @@ def _cfg(**overrides) -> Config:
     return cfg
 
 
+# Patch targets use the actual module paths because _run_daemon uses
+# local imports (inside the function body).
+_P_PARSER = "worker.parsers.registry.get"
+_P_PIPELINE = "worker.pipeline.Pipeline"
+_P_WRITER = "worker.pipeline.writer.Writer"
+_P_REGISTRY = "worker.models.resolver.ModelRegistry"
+_P_BUILD = "worker.serve_daemon._build_sources"
+_P_SERVER = "worker.mcp_server.FieldnotesServer"
+_P_CLUSTER = "worker.clustering.scheduler.clustering_loop"
+
+
+def _mock_mcp_server():
+    """Return a mock FieldnotesServer with an async run method."""
+    mock_server_cls = MagicMock()
+    mock_server = MagicMock()
+
+    async def fake_run():
+        await asyncio.sleep(999)
+
+    mock_server.run = fake_run
+    mock_server_cls.return_value = mock_server
+    return mock_server_cls
+
+
 # ------------------------------------------------------------------
 # _run_daemon — async core
 # ------------------------------------------------------------------
@@ -41,12 +65,12 @@ def _cfg(**overrides) -> Config:
 
 class TestRunDaemon:
     @pytest.mark.asyncio
-    @patch("worker.serve_daemon.get_parser")
-    @patch("worker.serve_daemon.Pipeline")
-    @patch("worker.serve_daemon.Writer")
-    @patch("worker.serve_daemon.ModelRegistry")
-    @patch("worker.serve_daemon._build_sources")
-    @patch("worker.serve_daemon.FieldnotesServer")
+    @patch(_P_PARSER)
+    @patch(_P_PIPELINE)
+    @patch(_P_WRITER)
+    @patch(_P_REGISTRY)
+    @patch(_P_BUILD)
+    @patch(_P_SERVER)
     async def test_no_sources_runs_mcp_only(
         self,
         mock_server_cls,
@@ -76,12 +100,12 @@ class TestRunDaemon:
         pipeline_inst.close.assert_called_once()
 
     @pytest.mark.asyncio
-    @patch("worker.serve_daemon.get_parser")
-    @patch("worker.serve_daemon.Pipeline")
-    @patch("worker.serve_daemon.Writer")
-    @patch("worker.serve_daemon.ModelRegistry")
-    @patch("worker.serve_daemon._build_sources")
-    @patch("worker.serve_daemon.FieldnotesServer")
+    @patch(_P_PARSER)
+    @patch(_P_PIPELINE)
+    @patch(_P_WRITER)
+    @patch(_P_REGISTRY)
+    @patch(_P_BUILD)
+    @patch(_P_SERVER)
     async def test_processes_events_through_pipeline(
         self,
         mock_server_cls,
@@ -130,12 +154,12 @@ class TestRunDaemon:
         pipeline_inst.process.assert_called_once()
 
     @pytest.mark.asyncio
-    @patch("worker.serve_daemon.get_parser")
-    @patch("worker.serve_daemon.Pipeline")
-    @patch("worker.serve_daemon.Writer")
-    @patch("worker.serve_daemon.ModelRegistry")
-    @patch("worker.serve_daemon._build_sources")
-    @patch("worker.serve_daemon.FieldnotesServer")
+    @patch(_P_PARSER)
+    @patch(_P_PIPELINE)
+    @patch(_P_WRITER)
+    @patch(_P_REGISTRY)
+    @patch(_P_BUILD)
+    @patch(_P_SERVER)
     async def test_shutdown_cancels_all_tasks(
         self,
         mock_server_cls,
@@ -173,13 +197,13 @@ class TestRunDaemon:
         pipeline_inst.close.assert_called_once()
 
     @pytest.mark.asyncio
-    @patch("worker.serve_daemon.clustering_loop")
-    @patch("worker.serve_daemon.get_parser")
-    @patch("worker.serve_daemon.Pipeline")
-    @patch("worker.serve_daemon.Writer")
-    @patch("worker.serve_daemon.ModelRegistry")
-    @patch("worker.serve_daemon._build_sources")
-    @patch("worker.serve_daemon.FieldnotesServer")
+    @patch(_P_CLUSTER)
+    @patch(_P_PARSER)
+    @patch(_P_PIPELINE)
+    @patch(_P_WRITER)
+    @patch(_P_REGISTRY)
+    @patch(_P_BUILD)
+    @patch(_P_SERVER)
     async def test_clustering_enabled_starts_task(
         self,
         mock_server_cls,
@@ -215,12 +239,12 @@ class TestRunDaemon:
         mock_cluster.assert_called_once()
 
     @pytest.mark.asyncio
-    @patch("worker.serve_daemon.get_parser")
-    @patch("worker.serve_daemon.Pipeline")
-    @patch("worker.serve_daemon.Writer")
-    @patch("worker.serve_daemon.ModelRegistry")
-    @patch("worker.serve_daemon._build_sources")
-    @patch("worker.serve_daemon.FieldnotesServer")
+    @patch(_P_PARSER)
+    @patch(_P_PIPELINE)
+    @patch(_P_WRITER)
+    @patch(_P_REGISTRY)
+    @patch(_P_BUILD)
+    @patch(_P_SERVER)
     async def test_parser_error_does_not_crash(
         self,
         mock_server_cls,

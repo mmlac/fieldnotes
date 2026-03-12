@@ -154,7 +154,7 @@ class TestCallLabelingModel:
 
         label, desc = _call_labeling_model(model, ["chunk"])
 
-        assert label == "Unknown Topic"
+        assert label == "Unknown Topic (cluster_0)"
         assert "could not be parsed" in desc
 
     def test_fallback_on_missing_keys(self) -> None:
@@ -165,7 +165,7 @@ class TestCallLabelingModel:
 
         label, desc = _call_labeling_model(model, ["chunk"])
 
-        assert label == "Unknown Topic"
+        assert label == "Unknown Topic (cluster_0)"
 
     def test_uses_temperature_zero(self) -> None:
         model = _mock_model()
@@ -272,7 +272,7 @@ class TestLabelClusters:
             results = label_clusters(clusters, registry)
 
         assert len(results) == 1
-        assert results[0].label == "Unknown Topic"
+        assert results[0].label == "Unknown Topic (cluster_0)"
         assert "No chunk texts" in results[0].description
 
 

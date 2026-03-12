@@ -57,20 +57,25 @@ def _cfg(**overrides) -> Config:
 
 class TestSetupLogging:
     def test_sets_level_from_string(self):
-        with patch("logging.basicConfig") as mock_bc:
+        with patch("logging.getLogger") as mock_get:
+            root = MagicMock()
+            mock_get.return_value = root
             _setup_logging("debug")
-            mock_bc.assert_called_once()
-            assert mock_bc.call_args[1]["level"] == logging.DEBUG
+            root.setLevel.assert_called_once_with(logging.DEBUG)
 
     def test_defaults_to_info_on_invalid(self):
-        with patch("logging.basicConfig") as mock_bc:
+        with patch("logging.getLogger") as mock_get:
+            root = MagicMock()
+            mock_get.return_value = root
             _setup_logging("not_a_level")
-            assert mock_bc.call_args[1]["level"] == logging.INFO
+            root.setLevel.assert_called_once_with(logging.INFO)
 
     def test_case_insensitive(self):
-        with patch("logging.basicConfig") as mock_bc:
+        with patch("logging.getLogger") as mock_get:
+            root = MagicMock()
+            mock_get.return_value = root
             _setup_logging("WARNING")
-            assert mock_bc.call_args[1]["level"] == logging.WARNING
+            root.setLevel.assert_called_once_with(logging.WARNING)
 
 
 # ------------------------------------------------------------------

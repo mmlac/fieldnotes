@@ -44,7 +44,8 @@ class TestOllamaProviderConfigure:
         assert p._completion_timeout == 60.0
         assert p._embed_timeout == 15.0
 
-    def test_strips_trailing_slash(self) -> None:
+    @patch("worker.models.providers.ollama._validate_ollama_url", side_effect=lambda url: url)
+    def test_strips_trailing_slash(self, _mock_validate) -> None:
         p = OllamaProvider()
         p.configure({"base_url": "http://localhost:11434/"})
         assert not p._base_url.endswith("/")
