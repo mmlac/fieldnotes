@@ -647,13 +647,16 @@ class Writer:
 
     @staticmethod
     def _write_neo4j_tx(tx: Any, unit: WriteUnit) -> None:
-        """Execute all Neo4j writes within a single transaction."""
-        doc = unit.doc
+        """Execute all Neo4j writes within a single transaction.
 
-        # 0. Clean stale MENTIONS edges on source modification so only
-        #    edges for the current content are present after re-write.
-        if doc.operation == "modified":
-            _clean_source_edges(tx, doc.source_id, "MENTIONS")
+        Two-phase approach: write all new state first, then clean up stale
+        data.  This ensures that if any write fails, stale edges are still
+        intact and orphan cleanup won't incorrectly delete entity nodes.
+        """
+        doc = unit.doc
+        is_modified = doc.operation == "modified"
+
+        # ── Phase 1: Write new state ──────────────────────────────
 
         # 1. Upsert source node
         _upsert_source_node(tx, doc)
@@ -667,21 +670,19 @@ class Writer:
         for triple in unit.triples:
             _merge_entity_edge(tx, triple)
 
-        # 4. Delete stale Chunk nodes on modification (before writing new ones)
-        if doc.operation == "modified":
-            tx.run(
-                "MATCH (s {source_id: $sid})-[:HAS_CHUNK]->(c:Chunk) "
-                "DETACH DELETE c",
-                sid=doc.source_id,
-            )
-
-        # 5. Create Chunk nodes linked via HAS_CHUNK
+        # 4. Create Chunk nodes linked via HAS_CHUNK (MERGE is idempotent)
+        new_chunk_ids: list[str] = []
         for chunk in unit.chunks:
             chunk_id = _chunk_node_id(doc.source_id, chunk.index)
+            new_chunk_ids.append(chunk_id)
             _upsert_chunk(tx, chunk_id, doc.source_id, chunk)
 
-        # 6. Clean stale hint edges on modification, then write new hints
-        if doc.operation == "modified":
+        # 5. Write graph hints
+        #    Stale hint edges are removed before writing because hint MERGE
+        #    patterns vary per-hint and we cannot selectively identify stale
+        #    ones after the fact.  Hint edges don't point to Entity nodes so
+        #    this doesn't affect orphan cleanup.
+        if is_modified:
             tx.run(
                 "MATCH ({source_id: $uri})-[r {hint: true}]->() DELETE r",
                 uri=doc.source_id,
@@ -689,20 +690,50 @@ class Writer:
         for hint in doc.graph_hints:
             _write_graph_hint(tx, hint)
 
-        # 7. Upsert DEPICTS edges (vision-extracted entities)
+        # 6. Upsert DEPICTS edges (vision-extracted entities)
         for entity in unit.depicts_entities:
             _upsert_entity(tx, entity)
             _merge_depicts_edge(tx, doc.source_id, entity["name"])
 
-        # 8. Create ATTACHED_TO edge (Image→File for embedded images)
+        # 7. Create ATTACHED_TO edge (Image→File for embedded images)
         parent_source_id = doc.node_props.get("parent_source_id")
         if doc.node_label == "Image" and parent_source_id:
             _merge_attached_to_edge(tx, doc.source_id, parent_source_id)
 
-        # 9. Clean up orphaned Entity nodes after source modification.
-        #    After deleting stale MENTIONS edges and re-writing current ones,
-        #    some Entity nodes may have zero remaining incoming edges.
-        if doc.operation == "modified":
+        # ── Phase 2: Clean up stale data (modified only) ──────────
+
+        if is_modified:
+            # 8. Remove MENTIONS edges not pointing to current entities
+            current_entity_names = [
+                _truncate_entity_name(e["name"]) for e in unit.entities
+            ]
+            _clean_stale_edges(tx, doc.source_id, "MENTIONS", current_entity_names)
+
+            # 9. Remove DEPICTS edges not pointing to current depicts entities
+            current_depicts_names = [
+                _truncate_entity_name(e["name"])
+                for e in unit.depicts_entities
+            ]
+            _clean_stale_edges(tx, doc.source_id, "DEPICTS", current_depicts_names)
+
+            # 10. Remove Chunk nodes not in the current chunk set
+            if new_chunk_ids:
+                tx.run(
+                    "MATCH (s {source_id: $sid})-[:HAS_CHUNK]->(c:Chunk) "
+                    "WHERE NOT c.id IN $keep "
+                    "DETACH DELETE c",
+                    sid=doc.source_id,
+                    keep=new_chunk_ids,
+                )
+            else:
+                tx.run(
+                    "MATCH (s {source_id: $sid})-[:HAS_CHUNK]->(c:Chunk) "
+                    "DETACH DELETE c",
+                    sid=doc.source_id,
+                )
+
+            # 11. Clean up orphaned Entity nodes.  Now safe because new
+            #     edges were written before stale ones were removed.
             _cleanup_orphan_entities(tx)
 
     # ------------------------------------------------------------------
@@ -951,6 +982,35 @@ def _clean_source_edges(tx: Any, source_id: str, edge_type: str) -> None:
         f"MATCH (s {{source_id: $sid}})-[r:{edge_type}]->() DELETE r",
         sid=source_id,
     )
+
+
+def _clean_stale_edges(
+    tx: Any,
+    source_id: str,
+    edge_type: str,
+    keep_names: list[str],
+) -> None:
+    """Delete edges of a given type that point to entities NOT in *keep_names*.
+
+    Unlike :func:`_clean_source_edges` which blanket-deletes all edges first,
+    this function is safe to call *after* new edges have been written — it only
+    removes edges that are no longer current.  When *keep_names* is empty every
+    edge of the given type is removed (the source no longer mentions anything).
+    """
+    edge_type = _validate_cypher_identifier(edge_type, "edge_type")
+    if keep_names:
+        tx.run(
+            f"MATCH (s {{source_id: $sid}})-[r:{edge_type}]->(e:Entity) "
+            f"WHERE NOT e.name IN $keep "
+            f"DELETE r",
+            sid=source_id,
+            keep=keep_names,
+        )
+    else:
+        tx.run(
+            f"MATCH (s {{source_id: $sid}})-[r:{edge_type}]->() DELETE r",
+            sid=source_id,
+        )
 
 
 def _cleanup_orphan_entities(tx: Any) -> int:

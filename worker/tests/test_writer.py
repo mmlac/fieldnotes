@@ -19,6 +19,7 @@ from worker.pipeline.writer import (
     Writer,
     _chunk_node_id,
     _clean_source_edges,
+    _clean_stale_edges,
     _cleanup_orphan_entities,
     _merge_attached_to_edge,
     _merge_depicts_edge,
@@ -273,22 +274,27 @@ class TestCleanSourceEdges:
             _clean_source_edges(tx, "notes/test.md", "BAD; DROP")
         tx.run.assert_not_called()
 
-    def test_modified_operation_cleans_mentions(self):
-        """Modified sources should have MENTIONS edges deleted before re-write."""
+    def test_modified_operation_cleans_mentions_after_write(self):
+        """Modified sources should have stale MENTIONS edges deleted AFTER new edges are written."""
         doc = _doc(operation="modified")
         unit = _unit(
             doc=doc,
             entities=[{"name": "NewEntity", "type": "Concept"}],
         )
         tx = MagicMock()
+        record = MagicMock()
+        record.__getitem__ = lambda self, key: 0 if key == "removed" else None
+        tx.run.return_value.single.return_value = record
         Writer._write_neo4j_tx(tx, unit)
 
-        # First tx.run after source upsert setup should be the cleanup
         queries = [c[0][0] for c in tx.run.call_args_list]
-        # The cleanup DELETE query should appear before any MENTIONS MERGE
-        delete_idx = next(i for i, q in enumerate(queries) if "DELETE r" in q)
+        # The MENTIONS MERGE should appear before the stale edge DELETE
         mentions_idx = next(i for i, q in enumerate(queries) if "MENTIONS" in q and "MERGE" in q)
-        assert delete_idx < mentions_idx
+        delete_idx = next(
+            i for i, q in enumerate(queries)
+            if "DELETE r" in q and "MENTIONS" in q
+        )
+        assert mentions_idx < delete_idx
 
     def test_created_operation_no_cleanup(self):
         """Created sources should NOT have MENTIONS edges deleted."""
@@ -303,6 +309,38 @@ class TestCleanSourceEdges:
         queries = [c[0][0] for c in tx.run.call_args_list]
         delete_queries = [q for q in queries if "DELETE r" in q]
         assert len(delete_queries) == 0
+
+
+# ------------------------------------------------------------------
+# _clean_stale_edges
+# ------------------------------------------------------------------
+
+
+class TestCleanStaleEdges:
+    def test_deletes_edges_not_in_keep_list(self):
+        tx = MagicMock()
+        _clean_stale_edges(tx, "notes/test.md", "MENTIONS", ["Alice"])
+        tx.run.assert_called_once()
+        args, kwargs = tx.run.call_args
+        assert "MENTIONS" in args[0]
+        assert "NOT e.name IN $keep" in args[0]
+        assert kwargs["keep"] == ["Alice"]
+        assert kwargs["sid"] == "notes/test.md"
+
+    def test_deletes_all_when_keep_empty(self):
+        tx = MagicMock()
+        _clean_stale_edges(tx, "notes/test.md", "MENTIONS", [])
+        tx.run.assert_called_once()
+        args, kwargs = tx.run.call_args
+        assert "MENTIONS" in args[0]
+        assert "DELETE r" in args[0]
+        assert "keep" not in kwargs
+
+    def test_rejects_unsafe_edge_type(self):
+        tx = MagicMock()
+        with pytest.raises(ValueError, match="edge_type"):
+            _clean_stale_edges(tx, "notes/test.md", "BAD; DROP", ["Alice"])
+        tx.run.assert_not_called()
 
 
 # ------------------------------------------------------------------
