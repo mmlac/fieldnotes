@@ -67,7 +67,7 @@ def _load_cursor(path: Path) -> str | None:
         return None
     except (ValueError, TypeError):
         logger.warning(
-            "Corrupted cursor in %s (non-integer value %r), resetting", path, hid
+            "Corrupted cursor in %s (non-integer value %r), resetting", redact_home_path(str(path)), hid
         )
         return None
 
