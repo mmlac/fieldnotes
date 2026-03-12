@@ -54,9 +54,19 @@ def _load_cursor(path: Path) -> str | None:
         return None
     try:
         data = json.loads(path.read_text())
-        return data.get("history_id")
+        hid = data.get("history_id")
+        if hid is None:
+            return None
+        # Validate cursor is a valid integer string before returning
+        int(hid)
+        return hid
     except (json.JSONDecodeError, OSError):
         logger.warning("Failed to read cursor file %s, starting fresh", path)
+        return None
+    except (ValueError, TypeError):
+        logger.warning(
+            "Corrupted cursor in %s (non-integer value %r), resetting", path, hid
+        )
         return None
 
 
@@ -176,6 +186,9 @@ class GmailSource(PythonSource):
         service = build("gmail", "v1", credentials=creds)
         messages_api = service.users().messages()
 
+        # Validate that the configured label exists
+        await self._validate_label(service)
+
         cursor = _load_cursor(self._cursor_path)
 
         WATCHER_ACTIVE.labels(source_type="gmail").set(1)
@@ -203,6 +216,37 @@ class GmailSource(PythonSource):
             WATCHER_ACTIVE.labels(source_type="gmail").set(0)
             raise
 
+    async def _validate_label(self, service: Any) -> None:
+        """Verify the configured label_filter exists in the user's Gmail account."""
+        loop = asyncio.get_running_loop()
+        try:
+            result = await asyncio.wait_for(
+                loop.run_in_executor(
+                    None,
+                    lambda: service.users().labels().list(userId="me").execute(),
+                ),
+                timeout=API_CALL_TIMEOUT,
+            )
+            label_names = {lb.get("name", "") for lb in result.get("labels", [])}
+            label_ids = {lb.get("id", "") for lb in result.get("labels", [])}
+            if (
+                self._label_filter not in label_names
+                and self._label_filter not in label_ids
+            ):
+                logger.warning(
+                    "Configured label_filter %r not found in Gmail account. "
+                    "Available labels: %s. Queries using this label may return "
+                    "empty results.",
+                    self._label_filter,
+                    ", ".join(sorted(label_names)),
+                )
+        except Exception:
+            logger.warning(
+                "Failed to validate label %r — continuing anyway",
+                self._label_filter,
+                exc_info=True,
+            )
+
     async def _backfill(
         self,
         messages_api: Any,
@@ -218,6 +262,7 @@ class GmailSource(PythonSource):
         fetched = 0
         page_token: str | None = None
         latest_history_id: str | None = None
+        seen_ids: set[str] = set()  # Dedup across interruption/restart
 
         while fetched < self._max_initial_threads:
             batch_size = min(100, self._max_initial_threads - fetched)
@@ -239,6 +284,9 @@ class GmailSource(PythonSource):
             for stub in msg_stubs:
                 if fetched >= self._max_initial_threads:
                     break
+                if stub["id"] in seen_ids:
+                    continue
+                seen_ids.add(stub["id"])
                 msg = await self._api_call_with_retry(
                     loop,
                     lambda mid=stub["id"]: messages_api.get(
@@ -258,11 +306,18 @@ class GmailSource(PythonSource):
 
                 # Track the highest historyId seen
                 hid = msg.get("historyId")
-                if hid and (
-                    latest_history_id is None
-                    or int(hid) > int(latest_history_id)
-                ):
-                    latest_history_id = hid
+                if hid:
+                    try:
+                        if latest_history_id is None or int(hid) > int(
+                            latest_history_id
+                        ):
+                            latest_history_id = hid
+                    except (ValueError, TypeError):
+                        logger.warning(
+                            "Malformed historyId %r in message %s, skipping",
+                            hid,
+                            stub["id"],
+                        )
 
             page_token = result.get("nextPageToken")
             if not page_token:
