@@ -175,6 +175,11 @@ func TestExpandHome(t *testing.T) {
 	if got := expandHome("/tmp/foo"); got != "/tmp/foo" {
 		t.Errorf("expandHome(/tmp/foo) = %q, want /tmp/foo", got)
 	}
+
+	// ~user syntax is not supported and should be returned unchanged.
+	if got := expandHome("~alice/docs"); got != "~alice/docs" {
+		t.Errorf("expandHome(~alice/docs) = %q, want ~alice/docs", got)
+	}
 }
 
 func TestRegistration(t *testing.T) {

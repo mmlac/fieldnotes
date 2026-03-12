@@ -7,6 +7,7 @@ package repositories
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -20,6 +21,9 @@ import (
 
 	"github.com/mmlac/fieldnotes/daemon/internal/sources"
 )
+
+// errStopIteration is a sentinel used to break out of go-git's ForEach iterators.
+var errStopIteration = errors.New("stop iteration")
 
 func init() {
 	sources.Register("repositories", func() sources.Source { return &RepoSource{} })
@@ -55,6 +59,11 @@ var defaultExcludePatterns = []string{
 }
 
 // RepoSource scans local git repositories for documentation files and commits.
+//
+// Thread safety: RepoSource is designed to be used from a single goroutine.
+// The Start method runs a poll loop on the calling goroutine; Healthcheck only
+// reads repoRoots (set once during Configure). Do not call poll/scanRepo
+// concurrently — the cursors map is not protected by a mutex.
 type RepoSource struct {
 	repoRoots       []string
 	pollInterval    time.Duration
@@ -62,7 +71,7 @@ type RepoSource struct {
 	excludePatterns []string
 	maxFileSize     int64
 	maxCommits      int
-	cursors         map[string]string // repo_path → HEAD sha
+	cursors         map[string]string // repo_path → HEAD sha (single-goroutine access only)
 }
 
 func (s *RepoSource) Name() string { return "repositories" }
@@ -326,14 +335,14 @@ func (s *RepoSource) scanCommits(ctx context.Context, repo *git.Repository, repo
 			return ctx.Err()
 		}
 		if count >= s.maxCommits {
-			return fmt.Errorf("stop") // break iteration
+			return errStopIteration
 		}
 		// Stop when we reach the previously seen commit.
 		if prevSHA != "" && c.Hash == stopHash {
-			return fmt.Errorf("stop") // already seen this commit and everything before it
+			return errStopIteration
 		}
 
-		changedFiles := commitChangedFiles(c)
+		changedFiles := commitChangedFiles(ctx, c)
 		authorDate := c.Author.When.UTC()
 
 		events <- sources.IngestEvent{
@@ -365,14 +374,39 @@ func (s *RepoSource) scanCommits(ctx context.Context, repo *git.Repository, repo
 }
 
 // commitChangedFiles returns the list of file paths changed in a commit.
-func commitChangedFiles(c *object.Commit) []string {
-	stats, err := c.Stats()
+// It uses tree-to-tree diff via PatchContext instead of Stats() to support
+// context cancellation and avoid the O(tree-size) cost of Stats() on root
+// commits or large repositories.
+func commitChangedFiles(ctx context.Context, c *object.Commit) []string {
+	currentTree, err := c.Tree()
 	if err != nil {
 		return nil
 	}
-	paths := make([]string, 0, len(stats))
-	for _, s := range stats {
-		paths = append(paths, s.Name)
+
+	var parentTree *object.Tree
+	if c.NumParents() > 0 {
+		parent, err := c.Parent(0)
+		if err != nil {
+			return nil
+		}
+		parentTree, err = parent.Tree()
+		if err != nil {
+			return nil
+		}
+	}
+
+	changes, err := object.DiffTreeWithOptions(ctx, parentTree, currentTree, &object.DiffTreeOptions{DetectRenames: false})
+	if err != nil {
+		return nil
+	}
+
+	paths := make([]string, 0, len(changes))
+	for _, ch := range changes {
+		name := ch.To.Name
+		if name == "" {
+			name = ch.From.Name // deleted file
+		}
+		paths = append(paths, name)
 	}
 	return paths
 }
@@ -442,9 +476,15 @@ func isTextMIME(mime string) bool {
 	return len(mime) >= 5 && mime[:5] == "text/"
 }
 
-// expandHome replaces a leading ~ with the user's home directory.
+// expandHome replaces a leading "~" or "~/" with the current user's home
+// directory. It does NOT support the "~user" syntax (e.g. "~alice/docs");
+// such paths are returned unchanged.
 func expandHome(path string) string {
 	if len(path) == 0 || path[0] != '~' {
+		return path
+	}
+	// Only expand bare "~" or "~/..." — not "~user/...".
+	if len(path) > 1 && path[1] != '/' && path[1] != filepath.Separator {
 		return path
 	}
 	home, err := os.UserHomeDir()
