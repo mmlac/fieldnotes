@@ -299,17 +299,17 @@ CURSOR_CHECKPOINT_WRITES = Counter(
     registry=REGISTRY,
 )
 
-GMAIL_POLL_DURATION = Histogram(
-    "fieldnotes_gmail_poll_duration_seconds",
-    "Duration of Gmail poll cycles",
+IWORK_EXTRACTION_DURATION_SECONDS = Histogram(
+    "fieldnotes_iwork_extraction_duration_seconds",
+    "Duration of iWork file text extraction via osascript",
+    ["app"],
     buckets=DURATION_BUCKETS,
     registry=REGISTRY,
 )
 
-IWORK_EXTRACTION_DURATION_SECONDS = Histogram(
-    "fieldnotes_iwork_extraction_duration_seconds",
-    "Duration of iWork text extraction via osascript",
-    ["app"],
+GMAIL_POLL_DURATION = Histogram(
+    "fieldnotes_gmail_poll_duration_seconds",
+    "Duration of Gmail poll cycles",
     buckets=DURATION_BUCKETS,
     registry=REGISTRY,
 )

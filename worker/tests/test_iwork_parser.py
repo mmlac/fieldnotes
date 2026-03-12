@@ -83,7 +83,7 @@ class TestIWorkParserLinux:
 
 
 class TestIWorkParserDarwin:
-    """Tests for macOS text extraction via osascript."""
+    """Tests for macOS Pages text extraction via osascript."""
 
     @pytest.fixture()
     def parser(self) -> IWorkParser:
@@ -128,30 +128,6 @@ class TestIWorkParserDarwin:
         assert doc.node_props["title"] == "report"
         assert doc.node_props["name"] == "report.pages"
         assert doc.node_props["ext"] == ".pages"
-
-    def test_happy_path_keynote(self, parser: IWorkParser) -> None:
-        event = {
-            "mime_type": "application/x-iwork-keynote",
-            "source_id": "/slides/deck.key",
-            "operation": "modified",
-        }
-        p_sys, p_inst = self._darwin_and_installed()
-        with (
-            p_sys,
-            p_inst,
-            patch("worker.parsers.iwork.os.path.isfile", return_value=True),
-            patch("worker.parsers.iwork.tempfile.mkstemp", return_value=(99, "/tmp/out.txt")),
-            patch("worker.parsers.iwork.os.close"),
-            patch("worker.parsers.iwork.subprocess.run") as mock_run,
-            patch("builtins.open", mock_open(read_data="Slide content")),
-            patch("worker.parsers.iwork.os.unlink"),
-        ):
-            docs = parser.parse(event)
-
-        assert len(docs) == 1
-        # Verify osascript was called with Keynote app
-        script_arg = mock_run.call_args[0][0][2]  # osascript -e <script>
-        assert 'tell application "Keynote"' in script_arg
 
     def test_app_not_installed(self, parser: IWorkParser, pages_event: dict) -> None:
         with (
@@ -288,3 +264,158 @@ class TestIWorkParserDarwin:
             parser.parse(pages_event)
 
         mock_unlink.assert_called_once_with("/tmp/out.txt")
+
+
+class TestKeynoteExtraction:
+    """Tests for Keynote text extraction via osascript."""
+
+    @pytest.fixture()
+    def parser(self) -> IWorkParser:
+        return IWorkParser()
+
+    @pytest.fixture()
+    def keynote_event(self) -> dict:
+        return {
+            "mime_type": "application/x-iwork-keynote",
+            "source_id": "/slides/deck.key",
+            "operation": "created",
+        }
+
+    def _darwin_patches(
+        self,
+        *,
+        installed: bool = True,
+        exists: bool = True,
+        stdout: str = "",
+        stderr: str = "",
+        returncode: int = 0,
+        side_effect: Exception | None = None,
+    ):
+        """Return a combined context manager with all standard macOS mocks."""
+        mock_result = MagicMock()
+        mock_result.stdout = stdout
+        mock_result.stderr = stderr
+        mock_result.returncode = returncode
+
+        class _Ctx:
+            def __enter__(self_inner):
+                self_inner._p1 = patch("worker.parsers.iwork.platform.system", return_value="Darwin")
+                self_inner._p2 = patch("worker.parsers.iwork._keynote_installed", return_value=installed)
+                self_inner._p3 = patch("worker.parsers.iwork.os.path.isfile", return_value=exists)
+                if side_effect:
+                    self_inner._p4 = patch("worker.parsers.iwork.subprocess.run", side_effect=side_effect)
+                else:
+                    self_inner._p4 = patch("worker.parsers.iwork.subprocess.run", return_value=mock_result)
+                self_inner._p5 = patch("worker.parsers.iwork.IWORK_EXTRACTION_DURATION_SECONDS")
+                self_inner._p1.start()
+                self_inner._p2.start()
+                self_inner._p3.start()
+                self_inner._p4.start()
+                self_inner._p5.start()
+                return self_inner
+
+            def __exit__(self_inner, *args):
+                self_inner._p5.stop()
+                self_inner._p4.stop()
+                self_inner._p3.stop()
+                self_inner._p2.stop()
+                self_inner._p1.stop()
+
+        return _Ctx()
+
+    def test_happy_path_extracts_text(self, parser: IWorkParser, keynote_event: dict) -> None:
+        slide_text = "Slide 1 Title\nBullet point\n\nSlide 2 Title\nMore content"
+        with self._darwin_patches(stdout=slide_text):
+            docs = parser.parse(keynote_event)
+
+        assert len(docs) == 1
+        doc = docs[0]
+        assert doc.source_type == "files"
+        assert doc.source_id == "/slides/deck.key"
+        assert doc.operation == "created"
+        assert doc.mime_type == "application/x-iwork-keynote"
+        assert doc.text == slide_text
+        assert doc.node_props["name"] == "deck.key"
+        assert doc.node_props["ext"] == ".key"
+        assert doc.node_props["path"] == "/slides/deck.key"
+
+    def test_app_not_installed_returns_empty(self, parser: IWorkParser, keynote_event: dict) -> None:
+        with (
+            patch("worker.parsers.iwork.platform.system", return_value="Darwin"),
+            patch("worker.parsers.iwork._keynote_installed", return_value=False),
+            patch("worker.parsers.iwork.log") as mock_log,
+        ):
+            docs = parser.parse(keynote_event)
+
+        assert docs == []
+        mock_log.warning.assert_called_once()
+        assert "Keynote.app not installed" in mock_log.warning.call_args[0][0]
+
+    def test_file_not_found_returns_empty(self, parser: IWorkParser, keynote_event: dict) -> None:
+        with (
+            patch("worker.parsers.iwork.platform.system", return_value="Darwin"),
+            patch("worker.parsers.iwork._keynote_installed", return_value=True),
+            patch("worker.parsers.iwork.os.path.isfile", return_value=False),
+            patch("worker.parsers.iwork.log") as mock_log,
+        ):
+            docs = parser.parse(keynote_event)
+
+        assert docs == []
+        mock_log.error.assert_called_once()
+        assert "not found" in mock_log.error.call_args[0][0]
+
+    def test_timeout_returns_empty(self, parser: IWorkParser, keynote_event: dict) -> None:
+        with (
+            self._darwin_patches(
+                side_effect=subprocess.TimeoutExpired(cmd="osascript", timeout=120),
+            ),
+            patch("worker.parsers.iwork.log") as mock_log,
+        ):
+            docs = parser.parse(keynote_event)
+
+        assert docs == []
+        mock_log.error.assert_called_once()
+        assert "timed out" in mock_log.error.call_args[0][0]
+
+    def test_osascript_error_returns_empty(self, parser: IWorkParser, keynote_event: dict) -> None:
+        with (
+            self._darwin_patches(returncode=1, stderr="execution error: password protected"),
+            patch("worker.parsers.iwork.log") as mock_log,
+        ):
+            docs = parser.parse(keynote_event)
+
+        assert docs == []
+        mock_log.error.assert_called_once()
+        assert "failed" in mock_log.error.call_args[0][0].lower()
+
+    def test_empty_presentation_returns_empty(self, parser: IWorkParser, keynote_event: dict) -> None:
+        with (
+            self._darwin_patches(stdout=""),
+            patch("worker.parsers.iwork.log") as mock_log,
+        ):
+            docs = parser.parse(keynote_event)
+
+        assert docs == []
+        mock_log.debug.assert_called()
+
+    def test_collapses_excessive_newlines(self, parser: IWorkParser, keynote_event: dict) -> None:
+        raw_text = "Slide 1\n\n\n\nSlide 2\n\n\n\n\nSlide 3"
+        with self._darwin_patches(stdout=raw_text):
+            docs = parser.parse(keynote_event)
+
+        assert len(docs) == 1
+        assert docs[0].text == "Slide 1\n\nSlide 2\n\nSlide 3"
+
+    def test_metadata_propagation(self, parser: IWorkParser) -> None:
+        event = {
+            "mime_type": "application/x-iwork-keynote",
+            "source_id": "/slides/deck.key",
+            "operation": "modified",
+            "source_modified_at": "2026-01-15T10:00:00Z",
+        }
+        with self._darwin_patches(stdout="Some content"):
+            docs = parser.parse(event)
+
+        assert len(docs) == 1
+        assert docs[0].node_props["modified_at"] == "2026-01-15T10:00:00Z"
+        assert docs[0].operation == "modified"
