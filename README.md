@@ -381,9 +381,9 @@ All development commands use a virtualenv managed by `make`. The `.venv` is crea
 ```bash
 # Clone and set up
 git clone https://github.com/mmlac/fieldnotes.git
-cd fieldnotes/worker
+cd fieldnotes
 
-# Install in editable mode with dev dependencies (creates .venv)
+# Install in editable mode with dev dependencies (creates worker/.venv)
 make install-dev
 
 # Start infrastructure (Neo4j, Qdrant, Prometheus, Grafana)
@@ -395,15 +395,15 @@ make docker-up
 
 | Target | Description |
 |---|---|
-| `make install` | Install fieldnotes into `.venv` |
+| `make install` | Install fieldnotes worker into `worker/.venv` |
 | `make install-dev` | Editable install with dev deps (pytest, ruff) |
-| `make lint` | Run ruff linter |
-| `make fmt` | Auto-format with ruff |
-| `make test` | Run test suite |
+| `make lint` | Run ruff linter on worker |
+| `make fmt` | Auto-format worker code with ruff |
+| `make test` | Run worker test suite |
 | `make test-ci` | Lint + tests (CI mode) |
-| `make build` | Build sdist and wheel into `dist/` |
-| `make publish-test` | Upload to TestPyPI |
-| `make publish` | Upload to PyPI |
+| `make build` | Build worker sdist and wheel into `worker/dist/` |
+| `make publish-test` | Upload worker to TestPyPI |
+| `make publish` | Upload worker to PyPI |
 | `make docker-up` | Start Docker services |
 | `make docker-down` | Stop Docker services |
 | `make version` | Print current version |
@@ -414,11 +414,11 @@ If you need to run `fieldnotes` or other commands inside the venv:
 
 ```bash
 # Option 1: activate the venv
-source .venv/bin/activate
+source worker/.venv/bin/activate
 fieldnotes search "test query"
 
 # Option 2: run directly via venv path
-.venv/bin/fieldnotes search "test query"
+worker/.venv/bin/fieldnotes search "test query"
 ```
 
 ### Publishing to PyPI
