@@ -142,6 +142,7 @@ class HealthConfig:
 class McpConfig:
     enabled: bool = True
     port: int = 3456
+    auth_token: str | None = None
 
 
 @dataclass
@@ -440,9 +441,12 @@ def _parse(raw: dict[str, Any]) -> Config:
             _check_type("mcp", "enabled", m["enabled"], bool)
         if "port" in m:
             _check_type("mcp", "port", m["port"], int)
+        if "auth_token" in m:
+            _check_type("mcp", "auth_token", m["auth_token"], str)
         cfg.mcp = McpConfig(
             enabled=m.get("enabled", cfg.mcp.enabled),
             port=m.get("port", cfg.mcp.port),
+            auth_token=m.get("auth_token", cfg.mcp.auth_token),
         )
 
     # [rate_limits]

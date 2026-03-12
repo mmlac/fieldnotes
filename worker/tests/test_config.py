@@ -365,6 +365,18 @@ class TestTypeValidation:
         with pytest.raises(TypeError, match=r"\[mcp\] enabled: expected bool"):
             _parse({"mcp": {"enabled": "true"}})
 
+    def test_mcp_auth_token_parsed(self) -> None:
+        cfg = _parse({"mcp": {"auth_token": "secret-abc"}})
+        assert cfg.mcp.auth_token == "secret-abc"
+
+    def test_mcp_auth_token_default_none(self) -> None:
+        cfg = _parse({"mcp": {}})
+        assert cfg.mcp.auth_token is None
+
+    def test_mcp_auth_token_wrong_type(self) -> None:
+        with pytest.raises(TypeError, match=r"\[mcp\] auth_token: expected str"):
+            _parse({"mcp": {"auth_token": 12345}})
+
     def test_valid_types_still_accepted(self) -> None:
         """Ensure valid configs still parse without errors."""
         cfg = _parse({

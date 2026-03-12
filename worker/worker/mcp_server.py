@@ -13,15 +13,18 @@ Usage::
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import logging
 import re
 import signal
 from pathlib import Path
 
+import anyio
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
-from mcp.types import TextContent, Tool
+from mcp.shared.session import SessionMessage
+from mcp.types import JSONRPCMessage, TextContent, Tool
 
 from worker.circuit_breaker import all_breakers
 from worker.config import Config, load_config
@@ -178,6 +181,74 @@ TOOLS: list[Tool] = [
         inputSchema={"type": "object", "properties": {}},
     ),
 ]
+
+
+# ---------------------------------------------------------------------------
+# Auth helpers
+# ---------------------------------------------------------------------------
+
+
+def _extract_auth_token(message: SessionMessage) -> str | None:
+    """Extract ``auth_token`` from the ``_meta`` of an ``initialize`` request.
+
+    Returns *None* when the message is not an initialize request or when the
+    client did not supply a token.
+    """
+    try:
+        root = message.message.root
+        if root.method != "initialize":  # type: ignore[union-attr]
+            return None
+        meta = root.params.get("_meta") or {}  # type: ignore[union-attr]
+        token = meta.get("auth_token")
+        return str(token) if token is not None else None
+    except Exception:
+        return None
+
+
+def _make_error_response(request_id: int | str | None) -> SessionMessage:
+    """Build a JSON-RPC error response for an auth failure."""
+    payload = {
+        "jsonrpc": "2.0",
+        "id": request_id if request_id is not None else 0,
+        "error": {"code": -32001, "message": "Unauthorized: invalid auth token"},
+    }
+    return SessionMessage(JSONRPCMessage.model_validate(payload))
+
+
+class _PrefixedReceiveStream:
+    """A thin wrapper that yields *prefix* once, then delegates to *inner*.
+
+    Implements the subset of the anyio ``ObjectReceiveStream`` protocol
+    that the MCP ``Server.run`` loop uses (``receive``, ``aclose``, and
+    the async-iterator protocol).
+    """
+
+    def __init__(
+        self,
+        prefix: SessionMessage | Exception,
+        inner: anyio.abc.ObjectReceiveStream[SessionMessage | Exception],
+    ) -> None:
+        self._prefix: SessionMessage | Exception | None = prefix
+        self._inner = inner
+
+    async def receive(self) -> SessionMessage | Exception:
+        if self._prefix is not None:
+            msg = self._prefix
+            self._prefix = None
+            return msg
+        return await self._inner.receive()
+
+    async def aclose(self) -> None:
+        await self._inner.aclose()
+
+    def __aiter__(self):  # type: ignore[no-untyped-def]
+        return self
+
+    async def __anext__(self) -> SessionMessage | Exception:
+        try:
+            return await self.receive()
+        except anyio.EndOfStream:
+            raise StopAsyncIteration
 
 
 # ---------------------------------------------------------------------------
@@ -642,8 +713,14 @@ class FieldnotesServer:
         for sig in (signal.SIGTERM, signal.SIGINT):
             loop.add_signal_handler(sig, _shutdown_handler)
 
+        auth_token = self._cfg.mcp.auth_token
+
         try:
             async with stdio_server() as (read_stream, write_stream):
+                if auth_token:
+                    read_stream = await self._auth_gate(
+                        read_stream, write_stream, auth_token,
+                    )
                 await self._app.run(
                     read_stream,
                     write_stream,
@@ -651,6 +728,44 @@ class FieldnotesServer:
                 )
         finally:
             self._disconnect()
+
+    @staticmethod
+    async def _auth_gate(
+        read_stream: anyio.abc.ObjectReceiveStream[SessionMessage | Exception],
+        write_stream: anyio.abc.ObjectSendStream[SessionMessage],
+        expected_token: str,
+    ) -> anyio.abc.ObjectReceiveStream[SessionMessage | Exception]:
+        """Validate the auth token on the first ``initialize`` message.
+
+        Consumes the first message from *read_stream*.  If its
+        ``_meta.auth_token`` matches *expected_token*, returns a new
+        receive-stream that replays the validated message first and then
+        relays all subsequent messages.
+
+        On failure an error response is sent and :class:`PermissionError`
+        is raised.
+        """
+        first = await read_stream.receive()
+
+        if isinstance(first, Exception):
+            raise first
+
+        client_token = _extract_auth_token(first)
+
+        if client_token is None or not hmac.compare_digest(
+            client_token.encode(), expected_token.encode()
+        ):
+            try:
+                req_id = first.message.root.id  # type: ignore[union-attr]
+            except Exception:
+                req_id = None
+            await write_stream.send(_make_error_response(req_id))
+            raise PermissionError("MCP auth: invalid or missing token")
+
+        logger.info("MCP auth: client authenticated successfully")
+
+        # Wrap original stream to replay *first*, then forward everything.
+        return _PrefixedReceiveStream(first, read_stream)
 
 
 def run_server(config_path: Path | None = None) -> None:

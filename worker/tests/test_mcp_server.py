@@ -2,12 +2,21 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import anyio
 import pytest
+from mcp.shared.session import SessionMessage
+from mcp.types import JSONRPCMessage
 
-from worker.config import Config, Neo4jConfig, QdrantConfig
-from worker.mcp_server import FieldnotesServer, TOOLS
+from worker.config import Config, McpConfig, Neo4jConfig, QdrantConfig
+from worker.mcp_server import (
+    FieldnotesServer,
+    TOOLS,
+    _PrefixedReceiveStream,
+    _extract_auth_token,
+    _make_error_response,
+)
 
 
 # ------------------------------------------------------------------
@@ -145,3 +154,155 @@ class TestCallToolErrors:
         result = await server._call_tool("nonexistent", {})
         assert len(result) == 1
         assert "error" in result[0].text
+
+
+# ------------------------------------------------------------------
+# Auth helpers
+# ------------------------------------------------------------------
+
+
+def _make_init_message(auth_token: str | None = None) -> SessionMessage:
+    """Build a minimal MCP ``initialize`` JSON-RPC request."""
+    meta: dict = {}
+    if auth_token is not None:
+        meta["auth_token"] = auth_token
+    params: dict = {
+        "protocolVersion": "2025-03-26",
+        "capabilities": {},
+        "clientInfo": {"name": "test", "version": "0.1"},
+    }
+    if meta:
+        params["_meta"] = meta
+    payload = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": params,
+    }
+    return SessionMessage(JSONRPCMessage.model_validate(payload))
+
+
+def _make_ping_message() -> SessionMessage:
+    """Build a JSON-RPC ``ping`` request (not initialize)."""
+    payload = {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "ping",
+    }
+    return SessionMessage(JSONRPCMessage.model_validate(payload))
+
+
+class TestExtractAuthToken:
+    def test_extracts_token_from_initialize(self) -> None:
+        msg = _make_init_message(auth_token="secret-123")
+        assert _extract_auth_token(msg) == "secret-123"
+
+    def test_returns_none_when_no_meta(self) -> None:
+        msg = _make_init_message(auth_token=None)
+        assert _extract_auth_token(msg) is None
+
+    def test_returns_none_for_non_initialize(self) -> None:
+        msg = _make_ping_message()
+        assert _extract_auth_token(msg) is None
+
+
+class TestMakeErrorResponse:
+    def test_error_response_structure(self) -> None:
+        resp = _make_error_response(42)
+        root = resp.message.root
+        assert root.id == 42
+        assert root.error.code == -32001
+        assert "Unauthorized" in root.error.message
+
+    def test_error_response_with_string_id(self) -> None:
+        resp = _make_error_response("req-abc")
+        assert resp.message.root.id == "req-abc"
+
+
+class TestPrefixedReceiveStream:
+    @pytest.mark.asyncio
+    async def test_yields_prefix_then_inner(self) -> None:
+        prefix = _make_init_message("tok")
+        second = _make_ping_message()
+
+        send, recv = anyio.create_memory_object_stream[SessionMessage | Exception](8)
+        await send.send(second)
+        await send.aclose()
+
+        stream = _PrefixedReceiveStream(prefix, recv)
+        first_out = await stream.receive()
+        assert first_out is prefix
+        second_out = await stream.receive()
+        assert second_out is second
+
+    @pytest.mark.asyncio
+    async def test_aclose_delegates(self) -> None:
+        prefix = _make_init_message("tok")
+        send, recv = anyio.create_memory_object_stream[SessionMessage | Exception](1)
+        stream = _PrefixedReceiveStream(prefix, recv)
+        await stream.aclose()
+        # Inner stream should be closed — sending should fail.
+        with pytest.raises((anyio.ClosedResourceError, anyio.BrokenResourceError)):
+            await send.send(prefix)
+
+
+class TestAuthGate:
+    @pytest.mark.asyncio
+    async def test_valid_token_returns_stream(self) -> None:
+        msg = _make_init_message(auth_token="good-token")
+        send_r, recv_r = anyio.create_memory_object_stream[SessionMessage | Exception](8)
+        send_w, recv_w = anyio.create_memory_object_stream[SessionMessage](8)
+
+        await send_r.send(msg)
+        await send_r.aclose()
+
+        result = await FieldnotesServer._auth_gate(recv_r, send_w, "good-token")
+        # First message from the returned stream should be the original init.
+        first = await result.receive()
+        assert first is msg
+
+    @pytest.mark.asyncio
+    async def test_wrong_token_raises_and_sends_error(self) -> None:
+        msg = _make_init_message(auth_token="wrong")
+        send_r, recv_r = anyio.create_memory_object_stream[SessionMessage | Exception](8)
+        send_w, recv_w = anyio.create_memory_object_stream[SessionMessage](8)
+
+        await send_r.send(msg)
+
+        with pytest.raises(PermissionError, match="invalid or missing token"):
+            await FieldnotesServer._auth_gate(recv_r, send_w, "correct-token")
+
+        # An error response should have been sent to the write stream.
+        err = await recv_w.receive()
+        assert err.message.root.error.code == -32001
+
+    @pytest.mark.asyncio
+    async def test_missing_token_raises(self) -> None:
+        msg = _make_init_message(auth_token=None)
+        send_r, recv_r = anyio.create_memory_object_stream[SessionMessage | Exception](8)
+        send_w, recv_w = anyio.create_memory_object_stream[SessionMessage](8)
+
+        await send_r.send(msg)
+
+        with pytest.raises(PermissionError):
+            await FieldnotesServer._auth_gate(recv_r, send_w, "expected")
+
+    @pytest.mark.asyncio
+    async def test_exception_on_stream_propagates(self) -> None:
+        send_r, recv_r = anyio.create_memory_object_stream[SessionMessage | Exception](8)
+        send_w, recv_w = anyio.create_memory_object_stream[SessionMessage](8)
+
+        await send_r.send(RuntimeError("connection lost"))
+
+        with pytest.raises(RuntimeError, match="connection lost"):
+            await FieldnotesServer._auth_gate(recv_r, send_w, "token")
+
+
+class TestConfigAuthToken:
+    def test_mcp_config_default_none(self) -> None:
+        cfg = McpConfig()
+        assert cfg.auth_token is None
+
+    def test_mcp_config_with_token(self) -> None:
+        cfg = McpConfig(auth_token="my-secret")
+        assert cfg.auth_token == "my-secret"
