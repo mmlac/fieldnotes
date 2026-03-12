@@ -168,9 +168,21 @@ def describe_apps(
         batch = need_llm[i : i + BATCH_SIZE]
         batch_results = _describe_batch(batch, registry)
         for app in batch:
-            desc = batch_results.get(app.bundle_id, "Unknown application")
-            results[app.bundle_id] = desc
-            cache.put(app.bundle_id, app.display_name, app.version, desc)
+            desc = batch_results.get(app.bundle_id)
+            if desc:
+                # LLM returned a real description (including "Unknown application")
+                results[app.bundle_id] = desc
+                cache.put(app.bundle_id, app.display_name, app.version, desc)
+            else:
+                # LLM failed entirely for this app — don't cache a false
+                # "Unknown application" that would overwrite valid descriptions
+                # on retry.  Leave the app out of results so callers know it
+                # wasn't described.
+                logger.warning(
+                    "No LLM description returned for %s (%s) — skipping",
+                    app.bundle_id,
+                    app.display_name,
+                )
 
     cache.save()
     logger.info(

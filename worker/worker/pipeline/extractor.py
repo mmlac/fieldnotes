@@ -92,10 +92,17 @@ EXTRACTION_TOOL = {
 
 @dataclass
 class ExtractionResult:
-    """Extraction output for a single chunk."""
+    """Extraction output for a single chunk.
+
+    When ``failed`` is True the result is a sentinel indicating that extraction
+    could not be performed (both primary and fallback models failed).  The
+    pipeline should treat this chunk as an extraction failure rather than as a
+    document that simply contained no entities.
+    """
 
     entities: list[dict[str, Any]] = field(default_factory=list)
     triples: list[dict[str, str]] = field(default_factory=list)
+    failed: bool = False
 
 
 def extract_chunk(
@@ -130,20 +137,20 @@ def extract_chunk(
 
     try:
         return _call_and_parse(model, req)
-    except (json.JSONDecodeError, ValidationError) as exc:
+    except (json.JSONDecodeError, ValidationError, ExtractionError) as exc:
         logger.warning(
             "Primary extraction failed for chunk %d: %s", chunk.index, exc
         )
         if fallback_model is not None:
             try:
                 return _call_and_parse(fallback_model, req)
-            except (json.JSONDecodeError, ValidationError) as exc2:
+            except (json.JSONDecodeError, ValidationError, ExtractionError) as exc2:
                 logger.error(
                     "Fallback extraction also failed for chunk %d: %s",
                     chunk.index,
                     exc2,
                 )
-        return ExtractionResult()
+        return ExtractionResult(failed=True)
 
 
 def extract_chunks(
@@ -208,7 +215,7 @@ def _call_and_parse(
         data = json.loads(resp.text)
         return _validate_and_build(data)
 
-    return ExtractionResult()
+    raise ExtractionError("LLM returned empty response (no tool_calls and no text)")
 
 
 def _validate_and_build(data: dict[str, Any]) -> ExtractionResult:
@@ -299,3 +306,7 @@ def _validate_and_build(data: dict[str, Any]) -> ExtractionResult:
 
 class ValidationError(Exception):
     """Raised when extraction output fails structural validation."""
+
+
+class ExtractionError(Exception):
+    """Raised when extraction fails entirely (empty LLM response, all retries exhausted)."""

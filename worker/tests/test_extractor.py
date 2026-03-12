@@ -17,6 +17,7 @@ from worker.pipeline.chunker import Chunk
 from worker.pipeline.extractor import (
     EXTRACT_ROLE,
     EXTRACTION_TOOL,
+    ExtractionError,
     ExtractionResult,
     FALLBACK_ROLE,
     SYSTEM_PROMPT,
@@ -169,15 +170,14 @@ class TestCallAndParse:
         result = _call_and_parse(model, req)
         assert len(result.entities) == 1
 
-    def test_empty_response_returns_empty(self) -> None:
+    def test_empty_response_raises_extraction_error(self) -> None:
         resp = CompletionResponse(text="", tool_calls=None)
         model = _mock_model(resp)
         from worker.models.base import CompletionRequest
 
         req = CompletionRequest(system="", messages=[{"role": "user", "content": "test"}])
-        result = _call_and_parse(model, req)
-        assert result.entities == []
-        assert result.triples == []
+        with pytest.raises(ExtractionError, match="empty response"):
+            _call_and_parse(model, req)
 
     def test_malformed_json_raises(self) -> None:
         resp = CompletionResponse(text="not json {{{", tool_calls=None)
@@ -253,17 +253,19 @@ class TestExtractChunk:
         result = extract_chunk(_chunk(), bad_model, fallback_model=fallback)
         assert len(result.entities) == 1
 
-    def test_returns_empty_when_both_fail(self) -> None:
+    def test_returns_failed_when_both_fail(self) -> None:
         bad = _mock_model(CompletionResponse(text="{bad", tool_calls=None))
         also_bad = _mock_model(CompletionResponse(text="{bad", tool_calls=None))
 
         result = extract_chunk(_chunk(), bad, fallback_model=also_bad)
+        assert result.failed is True
         assert result.entities == []
         assert result.triples == []
 
-    def test_returns_empty_when_no_fallback(self) -> None:
+    def test_returns_failed_when_no_fallback(self) -> None:
         bad = _mock_model(CompletionResponse(text="{bad", tool_calls=None))
         result = extract_chunk(_chunk(), bad)
+        assert result.failed is True
         assert result.entities == []
         assert result.triples == []
 

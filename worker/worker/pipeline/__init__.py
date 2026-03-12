@@ -31,7 +31,7 @@ from worker.models.resolver import ModelRegistry
 from worker.parsers.base import ParsedDocument
 from worker.pipeline.chunker import Chunk, chunk_text
 from worker.pipeline.embedder import embed_chunks
-from worker.pipeline.extractor import extract_chunks
+from worker.pipeline.extractor import ExtractionResult, extract_chunks
 from worker.pipeline.resolver import (
     ResolutionResult,
     resolve_entities_from_registry,
@@ -280,12 +280,32 @@ class Pipeline:
         with observe_duration(PIPELINE_DURATION, stage="extract"):
             extraction_results = extract_chunks(chunks, self._registry)
 
-        # Flatten all entities and triples across chunks
+        # Check for extraction failures
+        failed_count = sum(1 for r in extraction_results if r.failed)
+        if failed_count:
+            logger.warning(
+                "Extraction failed for %d/%d chunks in %s %s",
+                failed_count,
+                len(extraction_results),
+                doc.source_type,
+                doc.source_id,
+            )
+            if failed_count == len(extraction_results):
+                DOCUMENTS_FAILED.labels(
+                    source_type=doc.source_type, stage="extract"
+                ).inc()
+                raise RuntimeError(
+                    f"All {failed_count} extraction chunks failed for "
+                    f"{doc.source_type} {doc.source_id}"
+                )
+
+        # Flatten all entities and triples across chunks (skip failed)
         all_entities: list[dict[str, Any]] = []
         all_triples: list[dict[str, str]] = []
         for result in extraction_results:
-            all_entities.extend(result.entities)
-            all_triples.extend(result.triples)
+            if not result.failed:
+                all_entities.extend(result.entities)
+                all_triples.extend(result.triples)
 
         ENTITIES_EXTRACTED.inc(len(all_entities))
 

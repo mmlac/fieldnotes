@@ -263,7 +263,7 @@ class TestDescribeApps:
         assert result["com.cached.App"] == "Already cached."
         assert result["com.new.App"] == "New app description."
 
-    def test_llm_failure_returns_unknown(self, tmp_path: Path):
+    def test_llm_failure_skips_app(self, tmp_path: Path):
         cache = AppDescriptionCache(tmp_path / "cache.json")
         registry = MagicMock()
         model = MagicMock()
@@ -273,7 +273,9 @@ class TestDescribeApps:
         apps = [AppInfo("com.docker.Docker", "Docker", "", "4.0")]
         result = describe_apps(apps, registry, cache)
 
-        assert result["com.docker.Docker"] == "Unknown application"
+        # LLM failure should NOT produce a result or cache "Unknown application"
+        assert "com.docker.Docker" not in result
+        assert cache.get("com.docker.Docker", "Docker", "4.0") is None
 
     def test_no_model_configured(self, tmp_path: Path):
         cache = AppDescriptionCache(tmp_path / "cache.json")
@@ -283,7 +285,8 @@ class TestDescribeApps:
         apps = [AppInfo("com.docker.Docker", "Docker", "", "4.0")]
         result = describe_apps(apps, registry, cache)
 
-        assert result["com.docker.Docker"] == "Unknown application"
+        # No model means no descriptions — app should be absent from results
+        assert "com.docker.Docker" not in result
 
     def test_batching(self, tmp_path: Path):
         cache = AppDescriptionCache(tmp_path / "cache.json")
