@@ -314,88 +314,6 @@ def _resolve_by_embedding(
             ))
 
 
-def _normalize_email(email: str) -> str:
-    """Normalize an email address for matching: lowercase and strip whitespace."""
-    return email.strip().lower()
-
-
-def _prefer_longer_name(existing: str, incoming: str) -> str:
-    """Return the longer (more complete) of two name variants."""
-    if not existing:
-        return incoming
-    if not incoming:
-        return existing
-    return incoming if len(incoming) > len(existing) else existing
-
-
-@dataclass
-class PersonResolutionResult:
-    """Output of cross-source Person deduplication."""
-
-    merged_persons: dict[str, dict[str, str]] = field(default_factory=dict)
-    """email → {name, email, source_types} for each canonical Person."""
-    same_as_edges: list[tuple[str, str]] = field(default_factory=list)
-    """(email_a, email_b) pairs that were determined to be the same person."""
-
-
-def resolve_persons(
-    person_nodes: list[dict[str, Any]],
-) -> PersonResolutionResult:
-    """Deduplicate Person nodes across source types using email as the canonical key.
-
-    Parameters
-    ----------
-    person_nodes:
-        Person dicts with at least 'email' key, and optionally 'name' and
-        'source_type' keys. Typically gathered from GraphHints across all
-        sources (git commits, Gmail, etc.).
-
-    Returns
-    -------
-    PersonResolutionResult
-        Merged persons keyed by normalized email, with preferred names and
-        SAME_AS edges for any duplicates that were merged.
-    """
-    result = PersonResolutionResult()
-
-    # Group by normalized email
-    by_email: dict[str, list[dict[str, Any]]] = {}
-    for node in person_nodes:
-        email = node.get("email", "")
-        if not email:
-            continue
-        key = _normalize_email(email)
-        by_email.setdefault(key, []).append(node)
-
-    for email_key, nodes in by_email.items():
-        # Pick the best name across all occurrences
-        best_name = ""
-        source_types: set[str] = set()
-        for node in nodes:
-            best_name = _prefer_longer_name(best_name, node.get("name", ""))
-            st = node.get("source_type", "")
-            if st:
-                source_types.add(st)
-
-        result.merged_persons[email_key] = {
-            "name": best_name,
-            "email": email_key,
-            "source_types": ",".join(sorted(source_types)),
-        }
-
-        # If this person appeared from multiple sources, emit SAME_AS edges
-        # between the different source_id representations
-        source_ids = [
-            n.get("source_id", "") for n in nodes if n.get("source_id")
-        ]
-        if len(source_ids) > 1:
-            canonical = source_ids[0]
-            for other in source_ids[1:]:
-                result.same_as_edges.append((canonical, other))
-
-    return result
-
-
 def _batch_cosine_similarity(
     a: list[list[float]], b: list[list[float]]
 ) -> np.ndarray:
@@ -412,14 +330,3 @@ def _batch_cosine_similarity(
     norms_a = np.where(norms_a == 0, 1.0, norms_a)
     norms_b = np.where(norms_b == 0, 1.0, norms_b)
     return (mat_a / norms_a) @ (mat_b / norms_b).T
-
-
-def _cosine_similarity(a: list[float], b: list[float]) -> float:
-    """Compute cosine similarity between two vectors."""
-    vec_a = np.asarray(a, dtype=np.float64)
-    vec_b = np.asarray(b, dtype=np.float64)
-    norm_a = np.linalg.norm(vec_a)
-    norm_b = np.linalg.norm(vec_b)
-    if norm_a == 0.0 or norm_b == 0.0:
-        return 0.0
-    return float(vec_a @ vec_b / (norm_a * norm_b))

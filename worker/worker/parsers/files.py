@@ -33,10 +33,6 @@ class FileParser(BaseParser):
         self._max_pdf_bytes: int = _DEFAULT_MAX_PDF_BYTES
         self._max_pdf_pages: int = _DEFAULT_MAX_PDF_PAGES
 
-    def configure(self, cfg: dict[str, Any]) -> None:
-        self._max_pdf_bytes = int(cfg.get("max_pdf_bytes", _DEFAULT_MAX_PDF_BYTES))
-        self._max_pdf_pages = int(cfg.get("max_pdf_pages", _DEFAULT_MAX_PDF_PAGES))
-
     @property
     def source_type(self) -> str:
         return "files"

@@ -20,7 +20,6 @@ from worker.pipeline.resolver import (
     FUZZY_THRESHOLD_SHORT,
     ResolutionResult,
     ResolvedEntity,
-    _cosine_similarity,
     _fuzzy_match,
     _fuzzy_threshold_for_length,
     resolve_entities,
@@ -54,25 +53,6 @@ def _mock_embed_model(vectors_map: dict[str, list[float]]) -> ResolvedModel:
 
     model.embed.side_effect = embed_side_effect
     return model
-
-
-# ------------------------------------------------------------------
-# _cosine_similarity
-# ------------------------------------------------------------------
-
-
-class TestCosineSimilarity:
-    def test_identical_vectors(self) -> None:
-        assert _cosine_similarity([1, 0, 0], [1, 0, 0]) == pytest.approx(1.0)
-
-    def test_orthogonal_vectors(self) -> None:
-        assert _cosine_similarity([1, 0, 0], [0, 1, 0]) == pytest.approx(0.0)
-
-    def test_opposite_vectors(self) -> None:
-        assert _cosine_similarity([1, 0], [-1, 0]) == pytest.approx(-1.0)
-
-    def test_zero_vector(self) -> None:
-        assert _cosine_similarity([0, 0], [1, 1]) == 0.0
 
 
 # ------------------------------------------------------------------

@@ -20,15 +20,10 @@ class TestFileParserSourceType:
         assert parser.source_type == "files"
 
 
-class TestFileParserConfigure:
+class TestFileParserDefaults:
     def test_default_limits(self, parser: FileParser) -> None:
         assert parser._max_pdf_bytes == 100 * 1024 * 1024
         assert parser._max_pdf_pages == 2000
-
-    def test_custom_limits(self, parser: FileParser) -> None:
-        parser.configure({"max_pdf_bytes": 1024, "max_pdf_pages": 10})
-        assert parser._max_pdf_bytes == 1024
-        assert parser._max_pdf_pages == 10
 
 
 class TestFileParserText:
@@ -160,7 +155,7 @@ class TestFileParserPdf:
         assert docs == []
 
     def test_oversized_pdf_bytes_skipped(self, parser: FileParser) -> None:
-        parser.configure({"max_pdf_bytes": 10})
+        parser._max_pdf_bytes = 10
         event = {
             "mime_type": "application/pdf",
             "source_id": "big.pdf",
@@ -170,7 +165,7 @@ class TestFileParserPdf:
         assert docs == []
 
     def test_oversized_base64_pdf_skipped(self, parser: FileParser) -> None:
-        parser.configure({"max_pdf_bytes": 10})
+        parser._max_pdf_bytes = 10
         encoded = base64.b64encode(b"x" * 100).decode()
         event = {
             "mime_type": "application/pdf",
@@ -199,7 +194,7 @@ class TestFileParserPdf:
         pdf_bytes = doc.tobytes()
         doc.close()
 
-        parser.configure({"max_pdf_pages": 2})
+        parser._max_pdf_pages = 2
         event = {
             "mime_type": "application/pdf",
             "source_id": "multi.pdf",
