@@ -9,17 +9,30 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import time
+import uuid
+from datetime import datetime, timezone
+from fnmatch import fnmatch
 from pathlib import Path
 from typing import Any
 
 from watchdog.observers import Observer
 
-from worker.metrics import OBSIDIAN_VAULTS_DISCOVERED, WATCHER_ACTIVE
+from worker.metrics import (
+    INITIAL_SCAN_DURATION_SECONDS,
+    INITIAL_SCAN_FILES_TOTAL,
+    OBSIDIAN_VAULTS_DISCOVERED,
+    WATCHER_ACTIVE,
+)
 
-from ._handler import DEFAULT_MAX_FILE_SIZE, BaseHandler
+from ._handler import DEFAULT_MAX_FILE_SIZE, BaseHandler, _read_file_atomic, _sha256_of, guess_mime
 from .base import PythonSource
+from .cursor import CursorDiff, FileEntry, diff_cursor, load_cursor, save_cursor
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_CURSOR_PATH = Path.home() / ".fieldnotes" / "data" / "obsidian_cursor.json"
 
 
 def discover_vaults(search_paths: list[Path]) -> list[Path]:
@@ -53,6 +66,146 @@ def discover_vaults(search_paths: list[Path]) -> list[Path]:
             if child.is_dir() and (child / ".obsidian").is_dir():
                 vaults.append(child)
     return vaults
+
+
+def _should_skip_scan(
+    path: Path,
+    vault_path: Path,
+    include_extensions: set[str] | None,
+    exclude_patterns: list[str],
+) -> bool:
+    """Apply the same filtering as _VaultHandler._should_skip for scan files."""
+    # Skip .obsidian/ config directory
+    try:
+        path.relative_to(vault_path / ".obsidian")
+        return True
+    except ValueError:
+        pass
+
+    if include_extensions and path.suffix.lower() not in include_extensions:
+        return True
+
+    path_str = str(path)
+    for pattern in exclude_patterns:
+        if fnmatch(path_str, pattern) or fnmatch(path.name, pattern):
+            return True
+
+    return False
+
+
+def _scan_vault(
+    vault_path: Path,
+    include_extensions: set[str] | None,
+    exclude_patterns: list[str],
+    max_file_size: int,
+) -> dict[str, FileEntry]:
+    """Walk a vault directory and build a cursor of file entries."""
+    entries: dict[str, FileEntry] = {}
+    for root, dirs, files in os.walk(vault_path):
+        root_path = Path(root)
+        # Prune .obsidian directory from walk
+        if ".obsidian" in dirs:
+            dirs.remove(".obsidian")
+        for fname in files:
+            fpath = root_path / fname
+            if fpath.is_symlink():
+                continue
+            if _should_skip_scan(fpath, vault_path, include_extensions, exclude_patterns):
+                continue
+            try:
+                result = _read_file_atomic(fpath, max_file_size)
+                if result is None:
+                    logger.debug("Skipping %s — exceeds max_file_size", fpath)
+                    continue
+                data, mtime_ns = result
+                sha256 = _sha256_of(data)
+                entries[str(fpath)] = FileEntry(
+                    sha256=sha256, mtime_ns=mtime_ns, size=len(data)
+                )
+            except OSError:
+                logger.debug("Failed to read %s during scan, skipping", fpath)
+    return entries
+
+
+def _emit_scan_events(
+    diff: CursorDiff,
+    current: dict[str, FileEntry],
+    vault_path: Path,
+    vault_name: str,
+    queue: asyncio.Queue[dict[str, Any]],
+    loop: asyncio.AbstractEventLoop,
+) -> None:
+    """Emit IngestEvent dicts for scan diff results."""
+    now = datetime.now(timezone.utc).isoformat()
+
+    for file_path in diff.new:
+        entry = current[file_path]
+        _enqueue_scan_event(
+            file_path, "created", entry, vault_path, vault_name, now, queue, loop
+        )
+
+    for file_path in diff.modified:
+        entry = current[file_path]
+        _enqueue_scan_event(
+            file_path, "modified", entry, vault_path, vault_name, now, queue, loop
+        )
+
+    for file_path in diff.deleted:
+        _enqueue_scan_event(
+            file_path, "deleted", None, vault_path, vault_name, now, queue, loop
+        )
+
+
+def _enqueue_scan_event(
+    file_path: str,
+    operation: str,
+    entry: FileEntry | None,
+    vault_path: Path,
+    vault_name: str,
+    now: str,
+    queue: asyncio.Queue[dict[str, Any]],
+    loop: asyncio.AbstractEventLoop,
+) -> None:
+    """Build and enqueue a single scan event."""
+    try:
+        relative_path = str(Path(file_path).relative_to(vault_path))
+    except ValueError:
+        relative_path = file_path
+
+    meta: dict[str, Any] = {
+        "vault_path": str(vault_path),
+        "vault_name": vault_name,
+        "relative_path": relative_path,
+    }
+
+    ingest: dict[str, Any] = {
+        "id": str(uuid.uuid4()),
+        "source_type": "obsidian",
+        "source_id": file_path,
+        "operation": operation,
+        "mime_type": guess_mime(file_path),
+        "meta": meta,
+        "enqueued_at": now,
+    }
+
+    if operation != "deleted" and entry is not None:
+        ingest["source_modified_at"] = datetime.fromtimestamp(
+            entry.mtime_ns / 1e9, tz=timezone.utc
+        ).isoformat()
+        meta["sha256"] = entry.sha256
+        meta["size_bytes"] = entry.size
+
+        # Read text content for text MIME types
+        p = Path(file_path)
+        if ingest["mime_type"].startswith("text/") and p.is_file():
+            try:
+                ingest["text"] = p.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                pass
+    else:
+        ingest["source_modified_at"] = now
+
+    asyncio.run_coroutine_threadsafe(queue.put(ingest), loop)
 
 
 class _VaultHandler(BaseHandler):
@@ -108,6 +261,7 @@ class ObsidianSource(PythonSource):
         include_extensions: list[str] — e.g. [".md", ".canvas"] (optional, default: all)
         exclude_patterns: list[str]  — glob patterns to skip (optional)
         recursive: bool              — watch subdirectories (default: true)
+        cursor_path: str             — cursor persistence file (optional)
     """
 
     def __init__(self) -> None:
@@ -116,6 +270,7 @@ class ObsidianSource(PythonSource):
         self._exclude_patterns: list[str] = []
         self._recursive: bool = True
         self._max_file_size: int = DEFAULT_MAX_FILE_SIZE
+        self._cursor_path: Path = DEFAULT_CURSOR_PATH
 
     def name(self) -> str:
         return "obsidian"
@@ -144,6 +299,10 @@ class ObsidianSource(PythonSource):
         self._recursive = cfg.get("recursive", True)
         self._max_file_size = cfg.get("max_file_size", DEFAULT_MAX_FILE_SIZE)
 
+        cursor = cfg.get("cursor_path")
+        if cursor:
+            self._cursor_path = Path(cursor).expanduser().resolve()
+
     async def start(self, queue: asyncio.Queue[dict[str, Any]]) -> None:
         loop = asyncio.get_running_loop()
         vaults = discover_vaults(self._vault_paths)
@@ -157,6 +316,101 @@ class ObsidianSource(PythonSource):
             except asyncio.CancelledError:
                 raise
 
+        # -- Initial scan: walk all vaults before starting watchdog --
+        scan_start = time.monotonic()
+        stored_cursor = load_cursor(self._cursor_path)
+        current_cursor: dict[str, FileEntry] = {}
+        handled_stored_paths: set[str] = set()
+        total_new = 0
+        total_modified = 0
+        total_deleted = 0
+
+        for vault in vaults:
+            vault_name = vault.name
+            vault_entries = _scan_vault(
+                vault, self._include_extensions, self._exclude_patterns, self._max_file_size
+            )
+            current_cursor.update(vault_entries)
+
+            # Filter stored cursor to entries belonging to this vault
+            vault_prefix = str(vault) + os.sep
+            vault_stored = {
+                k: v for k, v in stored_cursor.items() if k.startswith(vault_prefix)
+            }
+            handled_stored_paths.update(vault_stored)
+
+            diff = diff_cursor(vault_entries, vault_stored)
+            _emit_scan_events(diff, vault_entries, vault, vault_name, queue, loop)
+
+            n_new = len(diff.new)
+            n_mod = len(diff.modified)
+            n_del = len(diff.deleted)
+            total_new += n_new
+            total_modified += n_mod
+            total_deleted += n_del
+
+            if n_new or n_mod or n_del:
+                logger.info(
+                    "Initial scan of vault %s: %d new, %d modified, %d deleted",
+                    vault_name,
+                    n_new,
+                    n_mod,
+                    n_del,
+                )
+
+        # Emit deleted events for files from vaults that no longer exist
+        for stored_path in stored_cursor:
+            if stored_path in handled_stored_paths:
+                continue
+            # This path wasn't under any current vault — vault was removed
+            parent = Path(stored_path).parent
+            vault_path_str = str(parent)
+            vault_name = parent.name
+
+            now = datetime.now(timezone.utc).isoformat()
+            try:
+                relative_path = str(Path(stored_path).relative_to(vault_path_str))
+            except ValueError:
+                relative_path = stored_path
+
+            ingest: dict[str, Any] = {
+                "id": str(uuid.uuid4()),
+                "source_type": "obsidian",
+                "source_id": stored_path,
+                "operation": "deleted",
+                "mime_type": guess_mime(stored_path),
+                "meta": {
+                    "vault_path": vault_path_str,
+                    "vault_name": vault_name,
+                    "relative_path": relative_path,
+                },
+                "enqueued_at": now,
+                "source_modified_at": now,
+            }
+            asyncio.run_coroutine_threadsafe(queue.put(ingest), loop)
+            total_deleted += 1
+
+        # Save updated cursor
+        save_cursor(self._cursor_path, current_cursor)
+
+        scan_duration = time.monotonic() - scan_start
+        total_files = len(current_cursor)
+        total_unchanged = total_files - total_new - total_modified
+        INITIAL_SCAN_DURATION_SECONDS.labels(source_type="obsidian").set(scan_duration)
+        INITIAL_SCAN_FILES_TOTAL.labels(source_type="obsidian", result="new").inc(total_new)
+        INITIAL_SCAN_FILES_TOTAL.labels(source_type="obsidian", result="modified").inc(total_modified)
+        INITIAL_SCAN_FILES_TOTAL.labels(source_type="obsidian", result="deleted").inc(total_deleted)
+        INITIAL_SCAN_FILES_TOTAL.labels(source_type="obsidian", result="unchanged").inc(total_unchanged)
+        logger.info(
+            "Initial scan complete: %d files in %.2fs (%d new, %d modified, %d deleted)",
+            total_files,
+            scan_duration,
+            total_new,
+            total_modified,
+            total_deleted,
+        )
+
+        # -- Start watchdog observer --
         observer = Observer()
         for vault in vaults:
             vault_name = vault.name
