@@ -45,6 +45,7 @@ DEFAULT_MAX_INITIAL_THREADS = 500
 BACKFILL_PAGE_DELAY = 0.5  # seconds between backfill page fetches
 BACKFILL_MAX_RETRIES = 3
 BACKFILL_INITIAL_BACKOFF = 1.0  # seconds
+API_CALL_TIMEOUT = 60  # seconds — max wait for a single Gmail API call
 
 
 def _load_cursor(path: Path) -> str | None:
@@ -278,12 +279,31 @@ class GmailSource(PythonSource):
         call: Any,
         max_retries: int = BACKFILL_MAX_RETRIES,
         initial_backoff: float = BACKFILL_INITIAL_BACKOFF,
+        timeout: float = API_CALL_TIMEOUT,
     ) -> Any:
-        """Execute a Gmail API call in an executor with retry and exponential backoff."""
+        """Execute a Gmail API call in an executor with retry, backoff, and timeout."""
         backoff = initial_backoff
         for attempt in range(max_retries + 1):
             try:
-                return await loop.run_in_executor(None, call)
+                return await asyncio.wait_for(
+                    loop.run_in_executor(None, call),
+                    timeout=timeout,
+                )
+            except asyncio.TimeoutError:
+                if attempt == max_retries:
+                    raise TimeoutError(
+                        f"Gmail API call timed out after {timeout}s "
+                        f"(attempt {attempt + 1}/{max_retries + 1})"
+                    )
+                logger.warning(
+                    "Gmail API call timed out (attempt %d/%d), retrying in %.1fs",
+                    attempt + 1,
+                    max_retries + 1,
+                    backoff,
+                )
+                await asyncio.sleep(backoff)
+                backoff *= 2
+                continue
             except HttpError as exc:
                 if exc.resp.status not in GmailSource._RETRYABLE_STATUS_CODES:
                     raise
@@ -315,15 +335,25 @@ class GmailSource(PythonSource):
         history_api = service.users().history()
 
         try:
-            result = await loop.run_in_executor(
-                None,
-                lambda: history_api.list(
-                    userId="me",
-                    startHistoryId=cursor,
-                    labelId=self._label_filter,
-                    historyTypes=["messageAdded"],
-                ).execute(),
+            result = await asyncio.wait_for(
+                loop.run_in_executor(
+                    None,
+                    lambda: history_api.list(
+                        userId="me",
+                        startHistoryId=cursor,
+                        labelId=self._label_filter,
+                        historyTypes=["messageAdded"],
+                    ).execute(),
+                ),
+                timeout=API_CALL_TIMEOUT,
             )
+        except asyncio.TimeoutError:
+            logger.error(
+                "Gmail history API call timed out after %ds (cursor=%s)",
+                API_CALL_TIMEOUT,
+                cursor,
+            )
+            return cursor
         except Exception:
             logger.exception("Failed to fetch Gmail history (cursor=%s)", cursor)
             return cursor
@@ -340,14 +370,17 @@ class GmailSource(PythonSource):
                     continue
                 seen.add(mid)
                 try:
-                    msg = await loop.run_in_executor(
-                        None,
-                        lambda m=mid: messages_api.get(
-                            userId="me", id=m, format="metadata",
-                            metadataHeaders=[
-                                "From", "To", "Cc", "Subject", "Date",
-                            ],
-                        ).execute(),
+                    msg = await asyncio.wait_for(
+                        loop.run_in_executor(
+                            None,
+                            lambda m=mid: messages_api.get(
+                                userId="me", id=m, format="metadata",
+                                metadataHeaders=[
+                                    "From", "To", "Cc", "Subject", "Date",
+                                ],
+                            ).execute(),
+                        ),
+                        timeout=API_CALL_TIMEOUT,
                     )
                     event = _build_ingest_event(msg)
                     await queue.put(event)

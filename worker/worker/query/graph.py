@@ -59,8 +59,12 @@ _WRITE_APOC = re.compile(
 # Default LIMIT appended to LLM-generated queries that lack one.
 _DEFAULT_QUERY_LIMIT = 1000
 
-# Timeout (in seconds) for read-only query transactions.
+# Timeout (in seconds) for read-only query transactions (server-side advisory).
 _QUERY_TIMEOUT_S = 30
+
+# Client-side timeouts for the Neo4j driver (seconds).
+_CONNECTION_TIMEOUT_S = 10
+_MAX_TRANSACTION_RETRY_TIME_S = 30
 
 _LIMIT_PATTERN = re.compile(r"\bLIMIT\s+\d+", re.IGNORECASE)
 
@@ -223,6 +227,8 @@ class GraphQuerier:
         self._driver = GraphDatabase.driver(
             neo4j_cfg.uri,
             auth=(neo4j_cfg.user, neo4j_cfg.password),
+            connection_timeout=_CONNECTION_TIMEOUT_S,
+            max_transaction_retry_time=_MAX_TRANSACTION_RETRY_TIME_S,
         )
         self._database = getattr(self._graph, "_database", None) or "neo4j"
 
@@ -294,6 +300,13 @@ class GraphQuerier:
         timeout so that runaway queries cannot exhaust server resources.
         Uses session.execute_read() so that Neo4j rejects any write
         operations at the protocol level, regardless of the query content.
+
+        Two timeout layers:
+        - ``tx.run(timeout=...)`` — server-side advisory timeout (Neo4j may
+          ignore this under load).
+        - ``session(fetch_size=...)`` + driver-level
+          ``max_transaction_retry_time`` — caps client-side wait so a hung
+          server cannot block the worker forever.
         """
         cypher = _ensure_limit(cypher)
 
@@ -301,7 +314,10 @@ class GraphQuerier:
             result = tx.run(cypher, timeout=_QUERY_TIMEOUT_S)
             return [record.data() for record in result]
 
-        with self._driver.session(database=self._database) as session:
+        with self._driver.session(
+            database=self._database,
+            fetch_size=1000,
+        ) as session:
             return session.execute_read(_work)
 
     def refresh_schema(self) -> None:

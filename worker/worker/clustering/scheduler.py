@@ -28,10 +28,17 @@ from worker.models.resolver import ModelRegistry
 
 logger = logging.getLogger(__name__)
 
+# Client-side timeout for Qdrant operations (seconds).
+_QDRANT_TIMEOUT_S = 30
+
 
 def _corpus_size(qdrant_cfg: QdrantConfig) -> int:
     """Return the number of points in the Qdrant collection."""
-    client = QdrantClient(host=qdrant_cfg.host, port=qdrant_cfg.port)
+    client = QdrantClient(
+        host=qdrant_cfg.host,
+        port=qdrant_cfg.port,
+        timeout=_QDRANT_TIMEOUT_S,
+    )
     try:
         info = client.get_collection(qdrant_cfg.collection)
         return info.points_count or 0
@@ -129,16 +136,22 @@ async def clustering_loop(
         await asyncio.sleep(delay)
 
         try:
-            # Run synchronous pipeline in executor to avoid blocking the event loop
+            # Run synchronous pipeline in executor to avoid blocking the event loop.
+            # Cap total pipeline time so a hung Qdrant/Neo4j doesn't block forever.
             loop = asyncio.get_running_loop()
-            await loop.run_in_executor(
-                None,
-                run_clustering_pipeline,
-                registry,
-                clustering_cfg,
-                qdrant_cfg,
-                neo4j_cfg,
+            await asyncio.wait_for(
+                loop.run_in_executor(
+                    None,
+                    run_clustering_pipeline,
+                    registry,
+                    clustering_cfg,
+                    qdrant_cfg,
+                    neo4j_cfg,
+                ),
+                timeout=600,  # 10 minutes — generous but bounded
             )
+        except asyncio.TimeoutError:
+            logger.error("Clustering pipeline timed out after 600s, will retry at next cron tick")
         except asyncio.CancelledError:
             raise
         except Exception:

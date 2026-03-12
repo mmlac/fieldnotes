@@ -49,6 +49,8 @@ logger = logging.getLogger(__name__)
 DEFAULT_POLL_INTERVAL = 300  # seconds
 DEFAULT_MAX_FILE_SIZE = 100 * 1024 * 1024  # 100 MiB
 DEFAULT_MAX_COMMITS = 200
+DEFAULT_MAX_TREE_ITEMS = 50_000  # cap tree traversal to prevent OOM on huge repos
+GIT_OPERATION_TIMEOUT = 120  # seconds — max wait for a single git operation
 DEFAULT_CURSOR_PATH = Path.home() / ".fieldnotes" / "data" / "repo_cursor.json"
 
 DEFAULT_INCLUDE_PATTERNS: list[str] = [
@@ -385,9 +387,32 @@ class RepositorySource(PythonSource):
         """Index all tracked files matching include/exclude patterns."""
         count = 0
         loop = asyncio.get_running_loop()
-        tracked = await loop.run_in_executor(
-            None, lambda: [item.path for item in repo.head.commit.tree.traverse()]
-        )
+
+        def _bounded_traverse() -> list[str]:
+            paths: list[str] = []
+            for item in repo.head.commit.tree.traverse():
+                paths.append(item.path)
+                if len(paths) >= DEFAULT_MAX_TREE_ITEMS:
+                    logger.warning(
+                        "Tree traversal for %s hit %d-item limit, truncating",
+                        repo_path,
+                        DEFAULT_MAX_TREE_ITEMS,
+                    )
+                    break
+            return paths
+
+        try:
+            tracked = await asyncio.wait_for(
+                loop.run_in_executor(None, _bounded_traverse),
+                timeout=GIT_OPERATION_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            logger.error(
+                "Tree traversal for %s timed out after %ds, skipping",
+                repo_path,
+                GIT_OPERATION_TIMEOUT,
+            )
+            return
 
         for rel_path in tracked:
             if not self._matches_include(rel_path):
@@ -432,10 +457,20 @@ class RepositorySource(PythonSource):
         loop = asyncio.get_running_loop()
 
         try:
-            diffs = await loop.run_in_executor(
-                None,
-                lambda: repo.commit(prev_sha).diff(head_sha),
+            diffs = await asyncio.wait_for(
+                loop.run_in_executor(
+                    None,
+                    lambda: repo.commit(prev_sha).diff(head_sha),
+                ),
+                timeout=GIT_OPERATION_TIMEOUT,
             )
+        except asyncio.TimeoutError:
+            logger.error(
+                "Git diff for %s timed out after %ds, skipping",
+                repo_name,
+                GIT_OPERATION_TIMEOUT,
+            )
+            return
         except (git.BadName, ValueError):
             # Previous cursor commit no longer exists (force-push, etc.)
             # Fall back to full scan
@@ -504,12 +539,22 @@ class RepositorySource(PythonSource):
                 # Initial scan: last N commits
                 rev = "HEAD"
 
-            commits = await loop.run_in_executor(
-                None,
-                lambda: list(
-                    repo.iter_commits(rev, max_count=self._max_commits)
+            commits = await asyncio.wait_for(
+                loop.run_in_executor(
+                    None,
+                    lambda: list(
+                        repo.iter_commits(rev, max_count=self._max_commits)
+                    ),
                 ),
+                timeout=GIT_OPERATION_TIMEOUT,
             )
+        except asyncio.TimeoutError:
+            logger.error(
+                "Commit enumeration for %s timed out after %ds, skipping",
+                repo_name,
+                GIT_OPERATION_TIMEOUT,
+            )
+            return
         except (git.GitCommandError, ValueError) as exc:
             logger.warning(
                 "Failed to enumerate commits in %s: %s", repo_name, exc
