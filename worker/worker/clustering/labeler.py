@@ -30,6 +30,9 @@ CLUSTER_LABEL_ROLE = "cluster_label"
 DEFAULT_TOP_K = 20
 LLM_TIMEOUT = 120.0  # seconds
 
+MAX_LABEL_LEN = 100
+MAX_DESCRIPTION_LEN = 500
+
 SYSTEM_PROMPT = """\
 You are a topic labeling system. Given a set of text chunks that belong to the \
 same cluster, produce a short topic label and a one-sentence description.
@@ -112,11 +115,11 @@ def _label_single_cluster(
         )
         return LabeledCluster(
             cluster_id=cluster.cluster_id,
-            label="Unknown Topic",
+            label=f"Unknown Topic (cluster_{cluster.cluster_id})",
             description="No chunk texts available for labeling.",
         )
 
-    label, description = _call_labeling_model(model, texts)
+    label, description = _call_labeling_model(model, texts, cluster.cluster_id)
 
     return LabeledCluster(
         cluster_id=cluster.cluster_id,
@@ -168,6 +171,7 @@ def _get_central_chunk_texts(
 def _call_labeling_model(
     model: ResolvedModel,
     texts: list[str],
+    cluster_id: int = 0,
 ) -> tuple[str, str]:
     """Send chunk texts to the LLM and parse the label response.
 
@@ -188,6 +192,20 @@ def _call_labeling_model(
         label = str(data["label"]).strip()
         description = str(data["description"]).strip()
 
+        # Enforce length limits — truncate, don't reject
+        if len(label) > MAX_LABEL_LEN:
+            logger.warning(
+                "Truncating label from %d to %d chars", len(label), MAX_LABEL_LEN
+            )
+            label = label[:MAX_LABEL_LEN].rstrip()
+        if len(description) > MAX_DESCRIPTION_LEN:
+            logger.warning(
+                "Truncating description from %d to %d chars",
+                len(description),
+                MAX_DESCRIPTION_LEN,
+            )
+            description = description[:MAX_DESCRIPTION_LEN].rstrip()
+
         # Validate label is 2-4 words
         word_count = len(label.split())
         if word_count < 2 or word_count > 4:
@@ -200,7 +218,7 @@ def _call_labeling_model(
         return label, description
     except (json.JSONDecodeError, KeyError, TypeError) as exc:
         logger.error("Failed to parse labeling response: %s", exc)
-        return "Unknown Topic", "LLM response could not be parsed."
+        return f"Unknown Topic (cluster_{cluster_id})", "LLM response could not be parsed."
 
 
 def _deduplicate_labels(results: list[LabeledCluster]) -> None:

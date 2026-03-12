@@ -24,6 +24,9 @@ VISION_ROLE = "vision"
 
 ENTITY_CONFIDENCE = 0.80
 LLM_TIMEOUT = 120.0  # seconds
+MAX_ENTITY_NAME_LEN = 512
+MAX_DESCRIPTION_LEN = 5000
+MAX_VISIBLE_TEXT_LEN = 10000
 
 SYSTEM_PROMPT = """\
 You are a vision analysis system. Given an image, extract:
@@ -194,8 +197,17 @@ def _parse_response(resp: CompletionResponse) -> VisionResult:
     if not isinstance(data, dict):
         raise ValueError(f"Expected dict, got {type(data).__name__}")
 
-    description = str(data.get("description", ""))
-    visible_text = str(data.get("visible_text", ""))
+    raw_desc = data.get("description", "")
+    description = raw_desc if isinstance(raw_desc, str) else ""
+    if not isinstance(raw_desc, str):
+        logger.warning("Vision description is %s, expected str — discarding", type(raw_desc).__name__)
+    description = description[:MAX_DESCRIPTION_LEN]
+
+    raw_vt = data.get("visible_text", "")
+    visible_text = raw_vt if isinstance(raw_vt, str) else ""
+    if not isinstance(raw_vt, str):
+        logger.warning("Vision visible_text is %s, expected str — discarding", type(raw_vt).__name__)
+    visible_text = visible_text[:MAX_VISIBLE_TEXT_LEN]
 
     entities_raw = data.get("entities", [])
     if not isinstance(entities_raw, list):
@@ -203,11 +215,22 @@ def _parse_response(resp: CompletionResponse) -> VisionResult:
 
     entities: list[dict[str, Any]] = []
     for ent in entities_raw:
-        if isinstance(ent, dict) and "name" in ent:
-            entities.append({
-                "name": ent["name"],
-                "type": ent.get("type", "Concept"),
-            })
+        if not isinstance(ent, dict) or "name" not in ent:
+            continue
+        name = ent["name"]
+        if not isinstance(name, str) or not name.strip():
+            logger.warning("Vision entity name is not a valid string, skipping")
+            continue
+        if len(name) > MAX_ENTITY_NAME_LEN:
+            logger.warning(
+                "Vision entity name too long (%d chars, limit %d), skipping",
+                len(name), MAX_ENTITY_NAME_LEN,
+            )
+            continue
+        entities.append({
+            "name": name,
+            "type": ent.get("type", "Concept") if isinstance(ent.get("type"), str) else "Concept",
+        })
 
     return VisionResult(
         description=description,

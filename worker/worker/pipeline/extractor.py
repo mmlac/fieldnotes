@@ -261,23 +261,38 @@ def _validate_and_build(data: dict[str, Any]) -> ExtractionResult:
     for tri in triples_raw:
         if not isinstance(tri, dict):
             continue
-        if all(k in tri for k in ("subject", "predicate", "object")):
-            subj = str(tri["subject"])
-            obj = str(tri["object"])
-            if len(subj) > MAX_ENTITY_NAME_LEN or len(obj) > MAX_ENTITY_NAME_LEN:
-                logger.warning(
-                    "Rejecting triple with oversized subject/object name "
-                    "(subject=%d chars, object=%d chars, limit %d)",
-                    len(subj),
-                    len(obj),
-                    MAX_ENTITY_NAME_LEN,
-                )
-                continue
-            triples.append({
-                "subject": subj,
-                "predicate": str(tri["predicate"]),
-                "object": obj,
-            })
+        if not all(k in tri for k in ("subject", "predicate", "object")):
+            continue
+        subj = tri["subject"]
+        pred = tri["predicate"]
+        obj = tri["object"]
+        # Reject non-string values instead of coercing (dicts/lists become garbage repr)
+        if not isinstance(subj, str) or not isinstance(pred, str) or not isinstance(obj, str):
+            logger.warning(
+                "Rejecting triple with non-string field(s): subject=%s, predicate=%s, object=%s",
+                type(subj).__name__, type(pred).__name__, type(obj).__name__,
+            )
+            continue
+        if len(subj) > MAX_ENTITY_NAME_LEN or len(obj) > MAX_ENTITY_NAME_LEN:
+            logger.warning(
+                "Rejecting triple with oversized subject/object name "
+                "(subject=%d chars, object=%d chars, limit %d)",
+                len(subj),
+                len(obj),
+                MAX_ENTITY_NAME_LEN,
+            )
+            continue
+        if len(pred) > MAX_ENTITY_NAME_LEN:
+            logger.warning(
+                "Rejecting triple with oversized predicate (%d chars, limit %d)",
+                len(pred), MAX_ENTITY_NAME_LEN,
+            )
+            continue
+        triples.append({
+            "subject": subj,
+            "predicate": pred,
+            "object": obj,
+        })
 
     return ExtractionResult(entities=entities, triples=triples)
 
