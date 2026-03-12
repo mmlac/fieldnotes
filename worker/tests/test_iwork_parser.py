@@ -1,8 +1,9 @@
-"""Tests for iWork MIME type registration and parser routing."""
+"""Tests for iWork MIME type registration, parser routing, and text extraction."""
 
 from __future__ import annotations
 
-from unittest.mock import patch
+import subprocess
+from unittest.mock import MagicMock, mock_open, patch
 
 import pytest
 
@@ -80,14 +81,210 @@ class TestIWorkParserLinux:
         assert "Linux" in mock_log.debug.call_args[0][1]
         assert "/slides/deck.key" in mock_log.debug.call_args[0][2]
 
-    def test_returns_empty_on_darwin_stub(self) -> None:
-        """Even on Darwin, the stub returns empty (extraction in later beads)."""
-        parser = IWorkParser()
-        event = {
+
+class TestIWorkParserDarwin:
+    """Tests for macOS text extraction via osascript."""
+
+    @pytest.fixture()
+    def parser(self) -> IWorkParser:
+        return IWorkParser(timeout=30)
+
+    @pytest.fixture()
+    def pages_event(self) -> dict:
+        return {
             "mime_type": "application/x-iwork-pages",
             "source_id": "/docs/report.pages",
             "operation": "created",
         }
-        with patch("worker.parsers.iwork.platform.system", return_value="Darwin"):
+
+    def _darwin_and_installed(self):
+        """Context manager patches: Darwin platform + Pages installed."""
+        return (
+            patch("worker.parsers.iwork.platform.system", return_value="Darwin"),
+            patch("worker.parsers.iwork._pages_installed", return_value=True),
+        )
+
+    def test_happy_path_pages(self, parser: IWorkParser, pages_event: dict) -> None:
+        p_sys, p_inst = self._darwin_and_installed()
+        with (
+            p_sys,
+            p_inst,
+            patch("worker.parsers.iwork.os.path.isfile", return_value=True),
+            patch("worker.parsers.iwork.tempfile.mkstemp", return_value=(99, "/tmp/out.txt")),
+            patch("worker.parsers.iwork.os.close"),
+            patch("worker.parsers.iwork.subprocess.run"),
+            patch("builtins.open", mock_open(read_data="Hello from Pages")),
+            patch("worker.parsers.iwork.os.unlink"),
+        ):
+            docs = parser.parse(pages_event)
+
+        assert len(docs) == 1
+        doc = docs[0]
+        assert doc.source_type == "files"
+        assert doc.source_id == "/docs/report.pages"
+        assert doc.text == "Hello from Pages"
+        assert doc.operation == "created"
+        assert doc.mime_type == "application/x-iwork-pages"
+        assert doc.node_props["title"] == "report"
+        assert doc.node_props["name"] == "report.pages"
+        assert doc.node_props["ext"] == ".pages"
+
+    def test_happy_path_keynote(self, parser: IWorkParser) -> None:
+        event = {
+            "mime_type": "application/x-iwork-keynote",
+            "source_id": "/slides/deck.key",
+            "operation": "modified",
+        }
+        p_sys, p_inst = self._darwin_and_installed()
+        with (
+            p_sys,
+            p_inst,
+            patch("worker.parsers.iwork.os.path.isfile", return_value=True),
+            patch("worker.parsers.iwork.tempfile.mkstemp", return_value=(99, "/tmp/out.txt")),
+            patch("worker.parsers.iwork.os.close"),
+            patch("worker.parsers.iwork.subprocess.run") as mock_run,
+            patch("builtins.open", mock_open(read_data="Slide content")),
+            patch("worker.parsers.iwork.os.unlink"),
+        ):
             docs = parser.parse(event)
+
+        assert len(docs) == 1
+        # Verify osascript was called with Keynote app
+        script_arg = mock_run.call_args[0][0][2]  # osascript -e <script>
+        assert 'tell application "Keynote"' in script_arg
+
+    def test_app_not_installed(self, parser: IWorkParser, pages_event: dict) -> None:
+        with (
+            patch("worker.parsers.iwork.platform.system", return_value="Darwin"),
+            patch("worker.parsers.iwork._pages_installed", return_value=False),
+            patch("worker.parsers.iwork.log") as mock_log,
+        ):
+            docs = parser.parse(pages_event)
+
         assert docs == []
+        mock_log.warning.assert_called_once()
+        assert "Pages.app not installed" in mock_log.warning.call_args[0][0]
+
+    def test_file_not_found(self, parser: IWorkParser, pages_event: dict) -> None:
+        p_sys, p_inst = self._darwin_and_installed()
+        with (
+            p_sys,
+            p_inst,
+            patch("worker.parsers.iwork.os.path.isfile", return_value=False),
+            patch("worker.parsers.iwork.tempfile.mkstemp", return_value=(99, "/tmp/out.txt")),
+            patch("worker.parsers.iwork.os.close"),
+            patch("worker.parsers.iwork.os.unlink"),
+            patch("worker.parsers.iwork.log") as mock_log,
+        ):
+            docs = parser.parse(pages_event)
+
+        assert docs == []
+        mock_log.error.assert_called_once()
+        assert "File not found" in mock_log.error.call_args[0][0]
+
+    def test_timeout(self, parser: IWorkParser, pages_event: dict) -> None:
+        p_sys, p_inst = self._darwin_and_installed()
+        with (
+            p_sys,
+            p_inst,
+            patch("worker.parsers.iwork.os.path.isfile", return_value=True),
+            patch("worker.parsers.iwork.tempfile.mkstemp", return_value=(99, "/tmp/out.txt")),
+            patch("worker.parsers.iwork.os.close"),
+            patch(
+                "worker.parsers.iwork.subprocess.run",
+                side_effect=subprocess.TimeoutExpired(cmd="osascript", timeout=30),
+            ),
+            patch("worker.parsers.iwork.os.unlink"),
+            patch("worker.parsers.iwork.log") as mock_log,
+        ):
+            docs = parser.parse(pages_event)
+
+        assert docs == []
+        mock_log.error.assert_called_once()
+        assert "timed out" in mock_log.error.call_args[0][0]
+
+    def test_password_protected(self, parser: IWorkParser, pages_event: dict) -> None:
+        p_sys, p_inst = self._darwin_and_installed()
+        exc = subprocess.CalledProcessError(1, "osascript", stderr="The document is password protected")
+        with (
+            p_sys,
+            p_inst,
+            patch("worker.parsers.iwork.os.path.isfile", return_value=True),
+            patch("worker.parsers.iwork.tempfile.mkstemp", return_value=(99, "/tmp/out.txt")),
+            patch("worker.parsers.iwork.os.close"),
+            patch("worker.parsers.iwork.subprocess.run", side_effect=exc),
+            patch("worker.parsers.iwork.os.unlink"),
+            patch("worker.parsers.iwork.log") as mock_log,
+        ):
+            docs = parser.parse(pages_event)
+
+        assert docs == []
+        mock_log.warning.assert_called_once()
+        assert "Password-protected" in mock_log.warning.call_args[0][0]
+
+    def test_osascript_generic_error(self, parser: IWorkParser, pages_event: dict) -> None:
+        p_sys, p_inst = self._darwin_and_installed()
+        exc = subprocess.CalledProcessError(1, "osascript", stderr="Some unknown error")
+        with (
+            p_sys,
+            p_inst,
+            patch("worker.parsers.iwork.os.path.isfile", return_value=True),
+            patch("worker.parsers.iwork.tempfile.mkstemp", return_value=(99, "/tmp/out.txt")),
+            patch("worker.parsers.iwork.os.close"),
+            patch("worker.parsers.iwork.subprocess.run", side_effect=exc),
+            patch("worker.parsers.iwork.os.unlink"),
+            patch("worker.parsers.iwork.log") as mock_log,
+        ):
+            docs = parser.parse(pages_event)
+
+        assert docs == []
+        mock_log.error.assert_called_once()
+
+    def test_empty_text_returns_empty(self, parser: IWorkParser, pages_event: dict) -> None:
+        p_sys, p_inst = self._darwin_and_installed()
+        with (
+            p_sys,
+            p_inst,
+            patch("worker.parsers.iwork.os.path.isfile", return_value=True),
+            patch("worker.parsers.iwork.tempfile.mkstemp", return_value=(99, "/tmp/out.txt")),
+            patch("worker.parsers.iwork.os.close"),
+            patch("worker.parsers.iwork.subprocess.run"),
+            patch("builtins.open", mock_open(read_data="   \n  ")),
+            patch("worker.parsers.iwork.os.unlink"),
+        ):
+            docs = parser.parse(pages_event)
+
+        assert docs == []
+
+    def test_temp_file_cleanup_on_success(self, parser: IWorkParser, pages_event: dict) -> None:
+        p_sys, p_inst = self._darwin_and_installed()
+        with (
+            p_sys,
+            p_inst,
+            patch("worker.parsers.iwork.os.path.isfile", return_value=True),
+            patch("worker.parsers.iwork.tempfile.mkstemp", return_value=(99, "/tmp/out.txt")),
+            patch("worker.parsers.iwork.os.close") as mock_close,
+            patch("worker.parsers.iwork.subprocess.run"),
+            patch("builtins.open", mock_open(read_data="content")),
+            patch("worker.parsers.iwork.os.unlink") as mock_unlink,
+        ):
+            parser.parse(pages_event)
+
+        mock_close.assert_called_once_with(99)
+        mock_unlink.assert_called_once_with("/tmp/out.txt")
+
+    def test_temp_file_cleanup_on_error(self, parser: IWorkParser, pages_event: dict) -> None:
+        p_sys, p_inst = self._darwin_and_installed()
+        exc = subprocess.CalledProcessError(1, "osascript", stderr="error")
+        with (
+            p_sys,
+            p_inst,
+            patch("worker.parsers.iwork.os.path.isfile", return_value=True),
+            patch("worker.parsers.iwork.tempfile.mkstemp", return_value=(99, "/tmp/out.txt")),
+            patch("worker.parsers.iwork.os.close"),
+            patch("worker.parsers.iwork.subprocess.run", side_effect=exc),
+            patch("worker.parsers.iwork.os.unlink") as mock_unlink,
+        ):
+            parser.parse(pages_event)
+
+        mock_unlink.assert_called_once_with("/tmp/out.txt")

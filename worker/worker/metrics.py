@@ -306,6 +306,14 @@ GMAIL_POLL_DURATION = Histogram(
     registry=REGISTRY,
 )
 
+IWORK_EXTRACTION_DURATION_SECONDS = Histogram(
+    "fieldnotes_iwork_extraction_duration_seconds",
+    "Duration of iWork text extraction via osascript",
+    ["app"],
+    buckets=DURATION_BUCKETS,
+    registry=REGISTRY,
+)
+
 CIRCUIT_BREAKER_STATE = Gauge(
     "circuit_breaker_state",
     "Circuit breaker state (0=closed, 1=open, 2=half_open)",
