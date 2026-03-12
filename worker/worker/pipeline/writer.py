@@ -50,6 +50,11 @@ from tenacity import (
 )
 
 from worker.config import Neo4jConfig, QdrantConfig
+from worker.metrics import (
+    NEO4J_WRITE_DURATION,
+    QDRANT_WRITE_DURATION,
+    observe_duration,
+)
 from worker.parsers.base import GraphHint, ParsedDocument
 from worker.pipeline.chunker import Chunk
 from worker.pipeline.resolver import (
@@ -575,8 +580,9 @@ class Writer:
     @_neo4j_retry
     def _write_neo4j(self, unit: WriteUnit) -> None:
         """Write to Neo4j with retry on transient errors."""
-        with self._neo4j_driver.session() as session:
-            session.execute_write(self._write_neo4j_tx, unit)
+        with observe_duration(NEO4J_WRITE_DURATION):
+            with self._neo4j_driver.session() as session:
+                session.execute_write(self._write_neo4j_tx, unit)
 
     @staticmethod
     def _write_neo4j_tx(tx: Any, unit: WriteUnit) -> None:
@@ -656,35 +662,36 @@ class Writer:
         if not unit.vectors:
             return
 
-        points = []
-        for chunk, vector in zip(unit.chunks, unit.vectors):
-            point_id = str(uuid.uuid5(
-                uuid.NAMESPACE_URL,
-                f"{doc.source_id}:{chunk.index}",
-            ))
-            payload = {
-                "source_type": doc.source_type,
-                "source_id": doc.source_id,
-                "chunk_index": chunk.index,
-                "text": chunk.text,
-                "date": doc.source_metadata.get("date", ""),
-            }
-            points.append(PointStruct(
-                id=point_id,
-                vector=vector,
-                payload=payload,
-            ))
+        with observe_duration(QDRANT_WRITE_DURATION):
+            points = []
+            for chunk, vector in zip(unit.chunks, unit.vectors):
+                point_id = str(uuid.uuid5(
+                    uuid.NAMESPACE_URL,
+                    f"{doc.source_id}:{chunk.index}",
+                ))
+                payload = {
+                    "source_type": doc.source_type,
+                    "source_id": doc.source_id,
+                    "chunk_index": chunk.index,
+                    "text": chunk.text,
+                    "date": doc.source_metadata.get("date", ""),
+                }
+                points.append(PointStruct(
+                    id=point_id,
+                    vector=vector,
+                    payload=payload,
+                ))
 
-        if points:
-            self._qdrant.upsert(
-                collection_name=self._collection,
-                points=points,
-            )
+            if points:
+                self._qdrant.upsert(
+                    collection_name=self._collection,
+                    points=points,
+                )
 
-        # Clean up stale chunks from previous versions that had more
-        # chunks than the current version. This runs AFTER upsert so
-        # a crash here leaves extra (not missing) vectors — safe.
-        self._delete_stale_qdrant_chunks(doc.source_id, len(unit.chunks))
+            # Clean up stale chunks from previous versions that had more
+            # chunks than the current version. This runs AFTER upsert so
+            # a crash here leaves extra (not missing) vectors — safe.
+            self._delete_stale_qdrant_chunks(doc.source_id, len(unit.chunks))
 
     def _delete_stale_qdrant_chunks(
         self, source_id: str, current_chunk_count: int

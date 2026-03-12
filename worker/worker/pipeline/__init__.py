@@ -19,6 +19,16 @@ from typing import Any
 from neo4j import Driver
 
 from worker.config import VisionConfig
+from worker.metrics import (
+    CHUNKS_EMBEDDED,
+    DOCUMENTS_FAILED,
+    DOCUMENTS_PROCESSED,
+    ENTITIES_EXTRACTED,
+    ENTITIES_RESOLVED,
+    PIPELINE_DURATION,
+    PIPELINE_TOTAL_DURATION,
+    observe_duration,
+)
 from worker.models.resolver import ModelRegistry
 from worker.parsers.base import ParsedDocument
 from worker.pipeline.chunker import Chunk, chunk_text
@@ -73,9 +83,18 @@ class Pipeline:
         parsed_doc:
             A normalised document from any adapter parser.
         """
+        with observe_duration(PIPELINE_TOTAL_DURATION):
+            self._process_inner(parsed_doc)
+
+    def _process_inner(self, parsed_doc: ParsedDocument) -> None:
+        """Inner process logic, wrapped by total duration timing."""
         # Deletions: remove from both stores and return early
         if parsed_doc.operation == "deleted":
-            self._writer.write(WriteUnit(doc=parsed_doc))
+            with observe_duration(PIPELINE_DURATION, stage="write"):
+                self._writer.write(WriteUnit(doc=parsed_doc))
+            DOCUMENTS_PROCESSED.labels(
+                source_type=parsed_doc.source_type, operation="deleted"
+            ).inc()
             logger.info(
                 "Deleted %s %s", parsed_doc.source_type, parsed_doc.source_id
             )
@@ -97,7 +116,8 @@ class Pipeline:
             self._process_text(parsed_doc)
         else:
             # No text and no image — just write graph hints and source node
-            self._writer.write(WriteUnit(doc=parsed_doc))
+            with observe_duration(PIPELINE_DURATION, stage="write"):
+                self._writer.write(WriteUnit(doc=parsed_doc))
 
     def process_batch(self, docs: list[ParsedDocument]) -> list[ParsedDocument]:
         """Process multiple documents sequentially with error isolation.
@@ -120,6 +140,9 @@ class Pipeline:
                     doc.source_type,
                     doc.source_id,
                 )
+                DOCUMENTS_FAILED.labels(
+                    source_type=doc.source_type, stage="process"
+                ).inc()
                 failed.append(doc)
         if failed:
             logger.warning(
@@ -162,26 +185,35 @@ class Pipeline:
     def _process_text(self, doc: ParsedDocument) -> None:
         """Run the full text pipeline for a document with text content."""
         # 1. Chunk
-        chunks = chunk_text(doc.text)
+        with observe_duration(PIPELINE_DURATION, stage="chunk"):
+            chunks = chunk_text(doc.text)
         if not chunks:
             # No meaningful text to process — write source node + hints only
-            self._writer.write(WriteUnit(doc=doc))
+            with observe_duration(PIPELINE_DURATION, stage="write"):
+                self._writer.write(WriteUnit(doc=doc))
             return
 
         chunk_texts = [c.text for c in chunks]
 
         # 2. Embed
-        embedded = embed_chunks(chunk_texts, self._registry)
+        with observe_duration(PIPELINE_DURATION, stage="embed"):
+            embedded = embed_chunks(chunk_texts, self._registry)
         vectors = [vec for _, vec in embedded]
 
         if len(vectors) != len(chunks):
+            DOCUMENTS_FAILED.labels(
+                source_type=doc.source_type, stage="embed"
+            ).inc()
             raise RuntimeError(
                 f"Embedding returned {len(vectors)} vectors for {len(chunks)} chunks "
                 f"(doc {doc.source_id}) — refusing to proceed with mismatched data"
             )
 
+        CHUNKS_EMBEDDED.inc(len(chunks))
+
         # 3. Extract entities and triples
-        extraction_results = extract_chunks(chunks, self._registry)
+        with observe_duration(PIPELINE_DURATION, stage="extract"):
+            extraction_results = extract_chunks(chunks, self._registry)
 
         # Flatten all entities and triples across chunks
         all_entities: list[dict[str, Any]] = []
@@ -190,16 +222,21 @@ class Pipeline:
             all_entities.extend(result.entities)
             all_triples.extend(result.triples)
 
+        ENTITIES_EXTRACTED.inc(len(all_entities))
+
         # 4. Resolve entities against existing entities in Neo4j
         # Use full-text index pre-filtering to avoid loading all entities
-        entity_names = [e["name"] for e in all_entities]
-        existing = self._writer.fetch_candidate_entities(entity_names)
-        resolved = resolve_entities_from_registry(
-            all_entities, existing, self._registry
-        )
+        with observe_duration(PIPELINE_DURATION, stage="resolve"):
+            entity_names = [e["name"] for e in all_entities]
+            existing = self._writer.fetch_candidate_entities(entity_names)
+            resolved = resolve_entities_from_registry(
+                all_entities, existing, self._registry
+            )
 
         # Build final entity list from resolved results
         write_entities = _resolved_to_entity_dicts(resolved)
+        resolved_count = sum(1 for e in resolved.entities if e.merged_into)
+        ENTITIES_RESOLVED.inc(resolved_count)
 
         # 5. Write everything to Neo4j + Qdrant
         unit = WriteUnit(
@@ -209,7 +246,12 @@ class Pipeline:
             entities=write_entities,
             triples=all_triples,
         )
-        self._writer.write(unit)
+        with observe_duration(PIPELINE_DURATION, stage="write"):
+            self._writer.write(unit)
+
+        DOCUMENTS_PROCESSED.labels(
+            source_type=doc.source_type, operation=doc.operation
+        ).inc()
 
         logger.info(
             "Processed %s %s: %d chunks, %d entities, %d triples",

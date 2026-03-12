@@ -26,6 +26,7 @@ from qdrant_client import QdrantClient
 
 from worker.clustering.scheduler import clustering_loop
 from worker.config import Config, load_config
+from worker.metrics import QUEUE_DEPTH, init_metrics
 from worker.models.resolver import ModelRegistry
 from worker.pipeline import Pipeline
 from worker.pipeline.writer import Writer
@@ -159,11 +160,13 @@ async def _run(cfg: Config) -> None:
     # Main event loop: consume from queue, parse, process
     try:
         while not stop_event.is_set():
+            QUEUE_DEPTH.set(queue.qsize())
             try:
                 event = await asyncio.wait_for(queue.get(), timeout=1.0)
             except asyncio.TimeoutError:
                 continue
 
+            QUEUE_DEPTH.set(queue.qsize())
             source_type = event.get("source_type", "")
             source_id = event.get("source_id", "")
             operation = event.get("operation", "")
@@ -213,6 +216,9 @@ def main() -> None:
     _setup_logging(cfg.core.log_level)
 
     logger.info("fieldnotes worker starting")
+
+    # Initialize metrics push client
+    init_metrics(cfg)
 
     # Health checks with retry (services may still be starting)
     max_retries = 5
