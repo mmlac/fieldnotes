@@ -137,6 +137,16 @@ class Pipeline:
                 exc_info=True,
             )
 
+        # Cross-source entity resolution: link entities mentioned in
+        # different source types (email, git, obsidian) via SAME_AS edges
+        try:
+            self._writer.resolve_cross_source_entities()
+        except Exception:
+            logger.warning(
+                "Cross-source entity resolution failed — will retry on next batch",
+                exc_info=True,
+            )
+
         return failed
 
     def __enter__(self) -> Pipeline:

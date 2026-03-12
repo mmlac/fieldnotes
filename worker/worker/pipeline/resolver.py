@@ -35,6 +35,10 @@ COSINE_THRESHOLD = 0.92
 ANCHOR_CONFIDENCE = 0.95
 EMBED_ROLE = "embed"
 
+# Cross-source resolution defaults
+CROSS_SOURCE_CONFIDENCE_THRESHOLD = 0.8
+CROSS_SOURCE_FUZZY_THRESHOLD = 85  # slightly relaxed for known cross-source pairs
+
 
 @dataclass
 class ResolvedEntity:
@@ -312,6 +316,145 @@ def _resolve_by_embedding(
                 type=entity.get("type", "Concept"),
                 confidence=entity.get("confidence", 0.75),
             ))
+
+
+@dataclass
+class CrossSourceMatch:
+    """A match between entities found across different source types."""
+
+    entity_a: str
+    entity_b: str
+    confidence: float
+    match_type: str  # "exact", "email", "fuzzy"
+
+
+def resolve_cross_source(
+    entities_by_source: dict[str, list[dict[str, Any]]],
+    *,
+    confidence_threshold: float = CROSS_SOURCE_CONFIDENCE_THRESHOLD,
+) -> list[CrossSourceMatch]:
+    """Find matching entities across different source types.
+
+    Parameters
+    ----------
+    entities_by_source:
+        Mapping of source_type → list of entity dicts. Each entity dict has
+        'name', 'type', and optionally 'email' keys.
+    confidence_threshold:
+        Minimum confidence to include a match. Default 0.8.
+
+    Returns
+    -------
+    list[CrossSourceMatch]
+        High-confidence matches between entities from different source types.
+    """
+    if len(entities_by_source) < 2:
+        return []
+
+    matches: list[CrossSourceMatch] = []
+    source_types = list(entities_by_source.keys())
+
+    for i, src_a in enumerate(source_types):
+        for src_b in source_types[i + 1:]:
+            entities_a = entities_by_source[src_a]
+            entities_b = entities_by_source[src_b]
+            matches.extend(
+                _match_entity_lists(entities_a, entities_b, confidence_threshold)
+            )
+
+    return matches
+
+
+def _match_entity_lists(
+    entities_a: list[dict[str, Any]],
+    entities_b: list[dict[str, Any]],
+    confidence_threshold: float,
+) -> list[CrossSourceMatch]:
+    """Match two lists of entities using exact name, email, and fuzzy strategies."""
+    matches: list[CrossSourceMatch] = []
+    matched_b: set[int] = set()
+
+    # Build email index for list B
+    email_index_b: dict[str, int] = {}
+    for idx, ent in enumerate(entities_b):
+        email = ent.get("email", "")
+        if email:
+            email_index_b[email.lower().strip()] = idx
+
+    # Build lowercased name index for list B
+    name_index_b: dict[str, int] = {}
+    for idx, ent in enumerate(entities_b):
+        name_index_b[ent["name"].lower()] = idx
+
+    for ent_a in entities_a:
+        name_a = ent_a["name"]
+        name_a_lower = name_a.lower()
+
+        # Strategy 1: Exact name match (case-insensitive)
+        if name_a_lower in name_index_b:
+            idx_b = name_index_b[name_a_lower]
+            if idx_b not in matched_b:
+                matches.append(CrossSourceMatch(
+                    entity_a=name_a,
+                    entity_b=entities_b[idx_b]["name"],
+                    confidence=1.0,
+                    match_type="exact",
+                ))
+                matched_b.add(idx_b)
+                continue
+
+        # Strategy 2: Email-based matching (Person entities)
+        email_a = ent_a.get("email", "")
+        if email_a:
+            norm_email = email_a.lower().strip()
+            if norm_email in email_index_b:
+                idx_b = email_index_b[norm_email]
+                if idx_b not in matched_b:
+                    matches.append(CrossSourceMatch(
+                        entity_a=name_a,
+                        entity_b=entities_b[idx_b]["name"],
+                        confidence=0.95,
+                        match_type="email",
+                    ))
+                    matched_b.add(idx_b)
+                    continue
+
+        # Strategy 3: Fuzzy name match (length-aware)
+        threshold = _fuzzy_threshold_for_length(name_a)
+        # Use a slightly relaxed threshold for cross-source (known different contexts)
+        threshold = min(threshold, CROSS_SOURCE_FUZZY_THRESHOLD)
+        # But never go below the length-based floor
+        threshold = max(threshold, _fuzzy_threshold_for_length(name_a))
+
+        remaining_names = [
+            (idx, entities_b[idx]["name"].lower())
+            for idx in range(len(entities_b))
+            if idx not in matched_b
+        ]
+        if not remaining_names:
+            continue
+
+        indices, names_lower = zip(*remaining_names)
+        result = process.extractOne(
+            name_a_lower,
+            list(names_lower),
+            scorer=fuzz.token_sort_ratio,
+            score_cutoff=threshold,
+        )
+        if result is not None:
+            _, score, match_idx = result
+            actual_idx = indices[match_idx]
+            confidence = score / 100.0
+            if confidence >= confidence_threshold:
+                matches.append(CrossSourceMatch(
+                    entity_a=name_a,
+                    entity_b=entities_b[actual_idx]["name"],
+                    confidence=confidence,
+                    match_type="fuzzy",
+                ))
+                matched_b.add(actual_idx)
+
+    return matches
 
 
 def _batch_cosine_similarity(

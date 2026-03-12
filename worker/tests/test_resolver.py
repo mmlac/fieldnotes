@@ -15,6 +15,8 @@ from worker.models.resolver import ResolvedModel
 from worker.pipeline.resolver import (
     ANCHOR_CONFIDENCE,
     COSINE_THRESHOLD,
+    CROSS_SOURCE_CONFIDENCE_THRESHOLD,
+    CrossSourceMatch,
     FUZZY_THRESHOLD,
     FUZZY_THRESHOLD_MEDIUM,
     FUZZY_THRESHOLD_SHORT,
@@ -22,6 +24,7 @@ from worker.pipeline.resolver import (
     ResolvedEntity,
     _fuzzy_match,
     _fuzzy_threshold_for_length,
+    resolve_cross_source,
     resolve_entities,
 )
 
@@ -345,3 +348,125 @@ class TestDataclasses:
         r = ResolutionResult()
         assert r.entities == []
         assert r.same_as_edges == []
+
+
+# ------------------------------------------------------------------
+# Cross-source entity resolution
+# ------------------------------------------------------------------
+
+
+class TestCrossSourceResolution:
+    def test_exact_name_match_across_sources(self) -> None:
+        """Same entity name in email and git sources should match."""
+        entities_by_source = {
+            "gmail": [_entity("Python", "Technology")],
+            "repositories": [_entity("Python", "Technology")],
+        }
+        matches = resolve_cross_source(entities_by_source)
+        assert len(matches) == 1
+        assert matches[0].match_type == "exact"
+        assert matches[0].confidence == 1.0
+
+    def test_case_insensitive_cross_source(self) -> None:
+        """Case differences across sources should still match."""
+        entities_by_source = {
+            "gmail": [_entity("PYTHON", "Technology")],
+            "obsidian": [_entity("Python", "Technology")],
+        }
+        matches = resolve_cross_source(entities_by_source)
+        assert len(matches) == 1
+        assert matches[0].match_type == "exact"
+
+    def test_email_match_across_sources(self) -> None:
+        """Person entities with same email across sources should match."""
+        entities_by_source = {
+            "gmail": [{"name": "Alex Smith", "type": "Person", "confidence": 0.9, "email": "alex@example.com"}],
+            "repositories": [{"name": "A. Smith", "type": "Person", "confidence": 0.9, "email": "alex@example.com"}],
+        }
+        matches = resolve_cross_source(entities_by_source)
+        assert len(matches) == 1
+        assert matches[0].match_type == "email"
+        assert matches[0].confidence == 0.95
+
+    def test_fuzzy_match_across_sources(self) -> None:
+        """Fuzzy-similar names across sources should match."""
+        entities_by_source = {
+            "gmail": [_entity("TensorFlow", "Technology")],
+            "obsidian": [_entity("Tensorflow", "Technology")],
+        }
+        matches = resolve_cross_source(entities_by_source)
+        assert len(matches) == 1
+        assert matches[0].match_type in ("exact", "fuzzy")
+        assert matches[0].confidence >= CROSS_SOURCE_CONFIDENCE_THRESHOLD
+
+    def test_no_false_positive_short_names(self) -> None:
+        """Short names that are different should not match across sources."""
+        entities_by_source = {
+            "gmail": [_entity("AWS", "Organization")],
+            "repositories": [_entity("AMS", "Organization")],
+        }
+        matches = resolve_cross_source(entities_by_source)
+        assert len(matches) == 0
+
+    def test_single_source_no_matches(self) -> None:
+        """Only one source type produces no matches."""
+        entities_by_source = {
+            "gmail": [_entity("Python", "Technology")],
+        }
+        matches = resolve_cross_source(entities_by_source)
+        assert len(matches) == 0
+
+    def test_three_source_types(self) -> None:
+        """Entity present in all three source types should produce pairwise matches."""
+        entities_by_source = {
+            "gmail": [_entity("Python", "Technology")],
+            "repositories": [_entity("python", "Technology")],
+            "obsidian": [_entity("Python", "Technology")],
+        }
+        matches = resolve_cross_source(entities_by_source)
+        # gmail-repos, gmail-obsidian, repos-obsidian = 3 pairs
+        assert len(matches) == 3
+
+    def test_no_match_different_entities(self) -> None:
+        """Completely different entities across sources should not match."""
+        entities_by_source = {
+            "gmail": [_entity("Kubernetes", "Technology")],
+            "repositories": [_entity("Django", "Technology")],
+        }
+        matches = resolve_cross_source(entities_by_source)
+        assert len(matches) == 0
+
+    def test_multiple_entities_mixed_matches(self) -> None:
+        """Some entities match across sources, others don't."""
+        entities_by_source = {
+            "gmail": [
+                _entity("Python", "Technology"),
+                _entity("Docker", "Technology"),
+            ],
+            "repositories": [
+                _entity("Python", "Technology"),
+                _entity("Rust", "Technology"),
+            ],
+        }
+        matches = resolve_cross_source(entities_by_source)
+        assert len(matches) == 1
+        assert matches[0].entity_a == "Python"
+
+    def test_empty_sources(self) -> None:
+        """Empty entity lists produce no matches."""
+        entities_by_source = {
+            "gmail": [],
+            "repositories": [],
+        }
+        matches = resolve_cross_source(entities_by_source)
+        assert len(matches) == 0
+
+    def test_email_match_case_insensitive(self) -> None:
+        """Email matching should be case-insensitive."""
+        entities_by_source = {
+            "gmail": [{"name": "Bob", "type": "Person", "confidence": 0.9, "email": "Bob@Example.COM"}],
+            "repositories": [{"name": "bob", "type": "Person", "confidence": 0.9, "email": "bob@example.com"}],
+        }
+        matches = resolve_cross_source(entities_by_source)
+        # Should match on either exact name or email
+        assert len(matches) == 1

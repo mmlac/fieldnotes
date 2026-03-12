@@ -52,6 +52,10 @@ from tenacity import (
 from worker.config import Neo4jConfig, QdrantConfig
 from worker.parsers.base import GraphHint, ParsedDocument
 from worker.pipeline.chunker import Chunk
+from worker.pipeline.resolver import (
+    CrossSourceMatch,
+    resolve_cross_source,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -399,6 +403,123 @@ class Writer:
             if updated > 0:
                 logger.info("Reconciled %d Person nodes by email", updated)
             return updated
+
+    def resolve_cross_source_entities(self) -> int:
+        """Find and link Entity nodes mentioned across different source types.
+
+        Queries Neo4j for Entity nodes grouped by source type (via MENTIONS edges),
+        then runs cross-source fuzzy matching to create SAME_AS edges between
+        high-confidence matches.
+
+        Returns the number of SAME_AS edges created.
+        """
+        return self._resolve_cross_source_neo4j()
+
+    @_neo4j_retry
+    def _resolve_cross_source_neo4j(self) -> int:
+        """Query entities by source type and create SAME_AS edges for matches."""
+        with self._neo4j_driver.session() as session:
+            # Collect entities grouped by source type. For Person nodes,
+            # also include the email property for email-based matching.
+            result = session.run(
+                """
+                MATCH (s)-[:MENTIONS]->(e:Entity)
+                WHERE s.source_type IS NOT NULL
+                WITH s.source_type AS src_type, e
+                WITH src_type, collect(DISTINCT {
+                    name: e.name,
+                    type: e.type,
+                    confidence: e.confidence
+                }) AS entities
+                RETURN src_type, entities
+                """
+            )
+            entities_by_source: dict[str, list[dict]] = {}
+            for record in result:
+                entities_by_source[record["src_type"]] = [
+                    {
+                        "name": e["name"],
+                        "type": e["type"] or "Concept",
+                        "confidence": e["confidence"] or 0.75,
+                    }
+                    for e in record["entities"]
+                ]
+
+            # Also gather Person nodes with emails for email-based matching
+            person_result = session.run(
+                """
+                MATCH (p:Person)
+                WHERE p.email IS NOT NULL AND p.name IS NOT NULL
+                OPTIONAL MATCH (s)-[:MENTIONS]->(e:Entity)
+                WHERE toLower(e.name) = toLower(p.name)
+                WITH p, s.source_type AS src_type
+                WHERE src_type IS NOT NULL
+                RETURN src_type, collect(DISTINCT {
+                    name: p.name,
+                    type: 'Person',
+                    confidence: 1.0,
+                    email: p.email
+                }) AS person_entities
+                """
+            )
+            for record in person_result:
+                src_type = record["src_type"]
+                person_ents = [
+                    {
+                        "name": e["name"],
+                        "type": "Person",
+                        "confidence": e["confidence"],
+                        "email": e["email"],
+                    }
+                    for e in record["person_entities"]
+                ]
+                if src_type in entities_by_source:
+                    # Merge person entities (avoid duplicates by name)
+                    existing_names = {
+                        e["name"].lower() for e in entities_by_source[src_type]
+                    }
+                    for pe in person_ents:
+                        if pe["name"].lower() not in existing_names:
+                            entities_by_source[src_type].append(pe)
+                else:
+                    entities_by_source[src_type] = person_ents
+
+            if len(entities_by_source) < 2:
+                return 0
+
+            # Run cross-source matching
+            matches = resolve_cross_source(entities_by_source)
+
+            # Create SAME_AS edges for matches
+            created = 0
+            for match in matches:
+                result = session.run(
+                    """
+                    MATCH (a:Entity {name: $name_a})
+                    MATCH (b:Entity {name: $name_b})
+                    WHERE NOT (a)-[:SAME_AS]-(b)
+                      AND id(a) <> id(b)
+                    MERGE (a)-[r:SAME_AS]->(b)
+                    SET r.confidence = $confidence,
+                        r.match_type = $match_type,
+                        r.cross_source = true
+                    RETURN count(r) AS cnt
+                    """,
+                    name_a=match.entity_a,
+                    name_b=match.entity_b,
+                    confidence=match.confidence,
+                    match_type=match.match_type,
+                )
+                cnt = result.single()["cnt"]
+                created += cnt
+
+            if created > 0:
+                logger.info(
+                    "Cross-source resolution: created %d SAME_AS edges from %d matches",
+                    created,
+                    len(matches),
+                )
+            return created
 
     def write(self, unit: WriteUnit) -> None:
         """Write a single processed document to both stores.
