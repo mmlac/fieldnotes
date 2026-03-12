@@ -511,6 +511,12 @@ class Writer:
         if doc.node_label == "Image" and parent_source_id:
             _merge_attached_to_edge(tx, doc.source_id, parent_source_id)
 
+        # 9. Clean up orphaned Entity nodes after source modification.
+        #    After deleting stale MENTIONS edges and re-writing current ones,
+        #    some Entity nodes may have zero remaining incoming edges.
+        if doc.operation == "modified":
+            _cleanup_orphan_entities(tx)
+
     # ------------------------------------------------------------------
     # Qdrant writes
     # ------------------------------------------------------------------
@@ -713,6 +719,27 @@ def _clean_source_edges(tx: Any, source_id: str, edge_type: str) -> None:
         f"MATCH (s {{source_id: $sid}})-[r:{edge_type}]->() DELETE r",
         sid=source_id,
     )
+
+
+def _cleanup_orphan_entities(tx: Any) -> int:
+    """Delete Entity nodes with no incoming edges from any source.
+
+    After stale MENTIONS edges are removed and new ones written, some Entity
+    nodes may become orphaned — no MENTIONS, LINKS_TO, DEPICTS, or any other
+    incoming relationship.  These pollute query results and topic clustering.
+
+    Returns the number of orphaned Entity nodes deleted.
+    """
+    result = tx.run(
+        "MATCH (e:Entity) "
+        "WHERE NOT ()-[]->(e) "
+        "DETACH DELETE e "
+        "RETURN count(e) AS removed"
+    )
+    removed = result.single()["removed"]
+    if removed:
+        logger.info("Cleaned up %d orphaned Entity nodes", removed)
+    return removed
 
 
 def _merge_attached_to_edge(tx: Any, image_source_id: str, parent_source_id: str) -> None:

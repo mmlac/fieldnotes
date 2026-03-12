@@ -20,6 +20,7 @@ from worker.pipeline.writer import (
     Writer,
     _chunk_node_id,
     _clean_source_edges,
+    _cleanup_orphan_entities,
     _merge_attached_to_edge,
     _merge_depicts_edge,
     _merge_entity_edge,
@@ -303,6 +304,65 @@ class TestCleanSourceEdges:
         queries = [c[0][0] for c in tx.run.call_args_list]
         delete_queries = [q for q in queries if "DELETE r" in q]
         assert len(delete_queries) == 0
+
+
+# ------------------------------------------------------------------
+# _cleanup_orphan_entities
+# ------------------------------------------------------------------
+
+
+class TestCleanupOrphanEntities:
+    def test_deletes_orphan_entities(self):
+        """Should run DETACH DELETE on entities with no incoming edges."""
+        tx = MagicMock()
+        record = MagicMock()
+        record.__getitem__ = lambda self, key: 3 if key == "removed" else None
+        tx.run.return_value.single.return_value = record
+        removed = _cleanup_orphan_entities(tx)
+        assert removed == 3
+        args, _ = tx.run.call_args
+        assert "Entity" in args[0]
+        assert "DETACH DELETE" in args[0]
+        assert "NOT ()-[]->(e)" in args[0]
+
+    def test_returns_zero_when_no_orphans(self):
+        tx = MagicMock()
+        record = MagicMock()
+        record.__getitem__ = lambda self, key: 0 if key == "removed" else None
+        tx.run.return_value.single.return_value = record
+        removed = _cleanup_orphan_entities(tx)
+        assert removed == 0
+
+    def test_modified_operation_triggers_orphan_cleanup(self):
+        """Modified sources should run orphan entity cleanup after writes."""
+        doc = _doc(operation="modified")
+        unit = _unit(
+            doc=doc,
+            entities=[{"name": "NewEntity", "type": "Concept"}],
+        )
+        tx = MagicMock()
+        record = MagicMock()
+        record.__getitem__ = lambda self, key: 0 if key == "removed" else None
+        tx.run.return_value.single.return_value = record
+        Writer._write_neo4j_tx(tx, unit)
+
+        queries = [c[0][0] for c in tx.run.call_args_list]
+        orphan_queries = [q for q in queries if "NOT ()-[]->(e)" in q]
+        assert len(orphan_queries) == 1
+
+    def test_created_operation_no_orphan_cleanup(self):
+        """Created sources should NOT run orphan entity cleanup."""
+        doc = _doc(operation="created")
+        unit = _unit(
+            doc=doc,
+            entities=[{"name": "Entity", "type": "Concept"}],
+        )
+        tx = MagicMock()
+        Writer._write_neo4j_tx(tx, unit)
+
+        queries = [c[0][0] for c in tx.run.call_args_list]
+        orphan_queries = [q for q in queries if "NOT ()-[]->(e)" in q]
+        assert len(orphan_queries) == 0
 
 
 # ------------------------------------------------------------------
