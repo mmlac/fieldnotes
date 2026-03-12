@@ -6,9 +6,17 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+
+@pytest.fixture(autouse=True)
+def _non_empty_corpus():
+    """Default: corpus is non-empty so queries proceed normally."""
+    with patch("worker.mcp_server.is_corpus_empty", return_value=False):
+        yield
+
 from worker.config import Config, Neo4jConfig, QdrantConfig
 from worker.mcp_server import FieldnotesServer
 from worker.models.base import CompletionResponse
+from worker.query import EMPTY_CORPUS_MESSAGE
 from worker.query.graph import GraphQueryResult
 from worker.query.vector import VectorQueryResult, VectorResult
 
@@ -319,3 +327,29 @@ class TestAskTool:
         text = result[0].text
         sources_section = text[text.index("[Sources]"):]
         assert sources_section.count("dup1") == 1
+
+    @pytest.mark.asyncio
+    @patch("worker.mcp_server.is_corpus_empty", return_value=True)
+    @patch("worker.mcp_server.VectorQuerier")
+    @patch("worker.mcp_server.GraphQuerier")
+    @patch("worker.mcp_server.ModelRegistry")
+    async def test_ask_empty_corpus(
+        self,
+        mock_registry_cls: MagicMock,
+        mock_gq_cls: MagicMock,
+        mock_vq_cls: MagicMock,
+        mock_empty: MagicMock,
+    ) -> None:
+        """When corpus is empty, return specific guidance message."""
+        server = _make_server()
+        server._connect()
+
+        result = await server._call_tool("ask", {"question": "anything"})
+
+        text = result[0].text
+        assert "[Answer]" in text
+        assert EMPTY_CORPUS_MESSAGE in text
+        assert "corpus is empty" in text
+        # Should NOT have called the actual query methods.
+        server._graph_querier.query.assert_not_called()
+        server._vector_querier.query.assert_not_called()

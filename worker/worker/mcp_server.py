@@ -31,6 +31,7 @@ from worker.models.resolver import ModelRegistry
 # Ensure provider registration side-effects run.
 import worker.models.providers.ollama  # noqa: F401
 
+from worker.query import EMPTY_CORPUS_MESSAGE, is_corpus_empty
 from worker.query.graph import GraphQuerier, GraphQueryResult
 from worker.query.hybrid import merge
 from worker.query.vector import VectorQuerier, VectorQueryResult
@@ -270,7 +271,16 @@ class FieldnotesServer:
         if self._graph_querier is None or self._vector_querier is None:
             raise RuntimeError("Server not initialised — call _connect() first")
 
+        # Check for empty corpus before running expensive queries.
         loop = asyncio.get_running_loop()
+        empty = await loop.run_in_executor(
+            None,
+            is_corpus_empty,
+            self._graph_querier,
+            self._vector_querier,
+        )
+        if empty:
+            return [TextContent(type="text", text=EMPTY_CORPUS_MESSAGE)]
 
         # Run graph and vector queries concurrently in the thread pool.
         graph_future = loop.run_in_executor(
@@ -355,8 +365,25 @@ class FieldnotesServer:
         if self._registry is None:
             raise RuntimeError("Registry not initialised")
 
-        # --- 1. Retrieve context (same as _handle_search) ---
+        # Check for empty corpus before running expensive queries.
         loop = asyncio.get_running_loop()
+        empty = await loop.run_in_executor(
+            None,
+            is_corpus_empty,
+            self._graph_querier,
+            self._vector_querier,
+        )
+        if empty:
+            return [TextContent(
+                type="text",
+                text=(
+                    f"[Answer]\n{EMPTY_CORPUS_MESSAGE}\n\n"
+                    "[Sources]\nNone\n\n"
+                    "[Confidence]\ncorpus is empty"
+                ),
+            )]
+
+        # --- 1. Retrieve context (same as _handle_search) ---
 
         graph_future = loop.run_in_executor(
             None, self._graph_querier.query, question

@@ -22,6 +22,7 @@ from worker.cli.reformulator import reformulate
 from worker.config import load_config
 from worker.models.base import CompletionRequest
 from worker.models.resolver import ModelRegistry
+from worker.query import EMPTY_CORPUS_MESSAGE, is_corpus_empty
 from worker.query.graph import GraphQuerier, GraphQueryResult
 from worker.query.hybrid import merge
 from worker.query.vector import VectorQuerier, VectorQueryResult
@@ -74,6 +75,7 @@ class _PreparedContext:
     sparse: bool
     context_text: str
     empty: bool = False
+    empty_corpus: bool = False
 
 
 def _prepare_context(
@@ -101,6 +103,20 @@ def _prepare_context(
             search_query = reformulate(question, history_pairs, extraction_model)
             if search_query != question:
                 logger.info("Reformulated: %r -> %r", question, search_query)
+
+    # --- 0b. Check for empty corpus ---
+    if is_corpus_empty(graph_querier, vector_querier):
+        return _PreparedContext(
+            system_prompt="",
+            user_prompt="",
+            source_ids=[],
+            errors=[],
+            has_context=False,
+            sparse=False,
+            context_text="",
+            empty=True,
+            empty_corpus=True,
+        )
 
     # --- 1. Retrieve context ---
     graph_result: GraphQueryResult
@@ -283,6 +299,8 @@ def _synthesize(
     )
 
     if ctx.empty:
+        if ctx.empty_corpus:
+            return EMPTY_CORPUS_MESSAGE
         return (
             "I don't have enough information in the knowledge graph "
             "to answer this question."
@@ -346,6 +364,9 @@ def _synthesize_stream(
     )
 
     if ctx.empty:
+        if ctx.empty_corpus:
+            print(EMPTY_CORPUS_MESSAGE)
+            return EMPTY_CORPUS_MESSAGE
         msg = (
             "I don't have enough information in the knowledge graph "
             "to answer this question."
@@ -672,9 +693,13 @@ def _run_json(
     )
 
     if ctx.empty:
+        answer = (
+            EMPTY_CORPUS_MESSAGE if ctx.empty_corpus
+            else "I don't have enough information in the knowledge graph to answer this question."
+        )
         render_json(
             question,
-            "I don't have enough information in the knowledge graph to answer this question.",
+            answer,
             [],
             elapsed=time.monotonic() - start,
         )
