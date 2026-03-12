@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
 
@@ -22,6 +23,15 @@ class CompletionResponse:
     input_tokens:  int = 0
     output_tokens: int = 0
     cached_tokens: int = 0              # prompt cache hits (Anthropic / OpenAI)
+
+
+@dataclass
+class StreamChunk:
+    """A single chunk from a streaming completion."""
+    text: str = ""
+    input_tokens: int = 0
+    output_tokens: int = 0
+    done: bool = False
 
 
 @dataclass
@@ -55,6 +65,20 @@ class ModelProvider(ABC):
     def complete(self, model: str, req: CompletionRequest) -> CompletionResponse:
         """Run a chat completion. model is the raw model string (e.g. 'qwen3.5:27b')."""
         ...
+
+    def stream_complete(self, model: str, req: CompletionRequest) -> Iterator[StreamChunk]:
+        """Stream a chat completion token-by-token.
+
+        Default implementation falls back to non-streaming :meth:`complete`.
+        Providers override this to yield incremental tokens.
+        """
+        resp = self.complete(model, req)
+        yield StreamChunk(
+            text=resp.text,
+            input_tokens=resp.input_tokens,
+            output_tokens=resp.output_tokens,
+            done=True,
+        )
 
     def embed(self, model: str, req: EmbedRequest) -> EmbedResponse:
         """Run a batch embedding call. Not all providers support this."""

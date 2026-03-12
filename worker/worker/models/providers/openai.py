@@ -13,12 +13,15 @@ from tenacity import (
     wait_exponential_jitter,
 )
 
+from collections.abc import Iterator
+
 from ..base import (
     CompletionRequest,
     CompletionResponse,
     EmbedRequest,
     EmbedResponse,
     ModelProvider,
+    StreamChunk,
 )
 from ..registry import register
 
@@ -111,6 +114,37 @@ class OpenAIProvider(ModelProvider):
             and getattr(usage.prompt_tokens_details, "cached_tokens", 0)
             or 0,
         )
+
+    def stream_complete(self, model: str, req: CompletionRequest) -> Iterator[StreamChunk]:
+        client = self._get_client()
+
+        messages: list[dict[str, Any]] = []
+        if req.system:
+            messages.append({"role": "system", "content": req.system})
+        messages.extend(req.messages)
+
+        kwargs: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "max_tokens": req.max_tokens,
+            "temperature": req.temperature,
+            "timeout": req.timeout if req.timeout is not None else self._completion_timeout,
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+
+        stream = client.chat.completions.create(**kwargs)
+        for event in stream:
+            choice = event.choices[0] if event.choices else None
+            if choice and choice.delta and choice.delta.content:
+                yield StreamChunk(text=choice.delta.content)
+            # Final chunk with usage stats
+            if event.usage:
+                yield StreamChunk(
+                    input_tokens=event.usage.prompt_tokens,
+                    output_tokens=event.usage.completion_tokens,
+                    done=True,
+                )
 
     @_openai_retry
     def embed(self, model: str, req: EmbedRequest) -> EmbedResponse:

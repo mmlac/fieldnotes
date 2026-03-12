@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass
 
 from .base import (
@@ -18,6 +19,7 @@ from .base import (
     EmbedRequest,
     EmbedResponse,
     ModelProvider,
+    StreamChunk,
 )
 from .registry import get_provider
 from ..config import Config
@@ -58,6 +60,26 @@ class ResolvedModel:
             LLM_TOKENS.labels(model=self.model, task=task, direction="input").inc(resp.input_tokens)
             LLM_TOKENS.labels(model=self.model, task=task, direction="output").inc(resp.output_tokens)
         return resp
+
+    def stream_complete(self, req: CompletionRequest, *, task: str = "unknown") -> Iterator[StreamChunk]:
+        """Stream a completion with metrics tracking on the final chunk."""
+        start = time.monotonic()
+        try:
+            for chunk in self.provider.stream_complete(self.model, req):
+                if chunk.done:
+                    elapsed = time.monotonic() - start
+                    LLM_REQUEST_DURATION.labels(model=self.model, task=task).observe(elapsed)
+                    if chunk.input_tokens or chunk.output_tokens:
+                        LLM_TOKENS.labels(model=self.model, task=task, direction="input").inc(chunk.input_tokens)
+                        LLM_TOKENS.labels(model=self.model, task=task, direction="output").inc(chunk.output_tokens)
+                yield chunk
+        except Exception as exc:
+            elapsed = time.monotonic() - start
+            LLM_REQUEST_DURATION.labels(model=self.model, task=task).observe(elapsed)
+            LLM_ERRORS.labels(
+                model=self.model, task=task, error_type=type(exc).__name__,
+            ).inc()
+            raise
 
     def embed(self, req: EmbedRequest, *, task: str = "embed") -> EmbedResponse:
         """Run an embedding call with latency, token, and error tracking."""

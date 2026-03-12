@@ -138,6 +138,18 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="show_history",
         help="List past conversations",
     )
+    ask_p.add_argument(
+        "--no-stream",
+        action="store_true",
+        dest="no_stream",
+        help="Disable streaming — collect full response before printing",
+    )
+    ask_p.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="Output structured JSON (question, answer, sources, timing)",
+    )
 
     # ── topics ──────────────────────────────────────────────────────
     topics_p = sub.add_parser("topics", help="Browse and inspect topics")
@@ -333,12 +345,18 @@ def main(argv: list[str] | None = None) -> int:
         from worker.cli.ask import run_ask
 
         question = " ".join(args.question) if args.question else None
+        # Auto-disable streaming when stdout is not a TTY (piped/redirected).
+        stream = not args.no_stream and not args.json_output
+        if stream and not sys.stdout.isatty():
+            stream = False
         try:
             return run_ask(
                 question,
                 config_path=args.config,
                 verbose=args.ask_verbose,
                 resume_id=args.resume,
+                stream=stream,
+                json_output=args.json_output,
             )
         except Exception as exc:
             print(f"error: {exc}", file=sys.stderr)

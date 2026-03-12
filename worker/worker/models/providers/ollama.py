@@ -14,12 +14,15 @@ from tenacity import (
     wait_exponential_jitter,
 )
 
+from collections.abc import Iterator
+
 from ..base import (
     CompletionRequest,
     CompletionResponse,
     EmbedRequest,
     EmbedResponse,
     ModelProvider,
+    StreamChunk,
 )
 from ..registry import register
 
@@ -156,6 +159,44 @@ class OllamaProvider(ModelProvider):
             input_tokens=data.get("prompt_eval_count", 0),
             output_tokens=data.get("eval_count", 0),
         )
+
+    def stream_complete(self, model: str, req: CompletionRequest) -> Iterator[StreamChunk]:
+        messages: list[dict[str, Any]] = []
+        if req.system:
+            messages.append({"role": "system", "content": req.system})
+        messages.extend(req.messages)
+
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "stream": True,
+            "options": {
+                "temperature": req.temperature,
+                "num_predict": req.max_tokens,
+            },
+        }
+
+        timeout = req.timeout if req.timeout is not None else self._completion_timeout
+        with httpx.stream(
+            "POST",
+            f"{self._base_url}/api/chat",
+            json=payload,
+            timeout=timeout,
+        ) as resp:
+            resp.raise_for_status()
+            for line in resp.iter_lines():
+                if not line:
+                    continue
+                import json as _json
+                data = _json.loads(line)
+                message = data.get("message", {})
+                token = message.get("content", "")
+                done = data.get("done", False)
+                chunk = StreamChunk(text=token, done=done)
+                if done:
+                    chunk.input_tokens = data.get("prompt_eval_count", 0)
+                    chunk.output_tokens = data.get("eval_count", 0)
+                yield chunk
 
     @_ollama_retry
     def embed(self, model: str, req: EmbedRequest) -> EmbedResponse:

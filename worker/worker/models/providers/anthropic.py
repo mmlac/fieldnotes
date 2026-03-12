@@ -12,10 +12,13 @@ from tenacity import (
     wait_exponential_jitter,
 )
 
+from collections.abc import Iterator
+
 from ..base import (
     CompletionRequest,
     CompletionResponse,
     ModelProvider,
+    StreamChunk,
 )
 from ..registry import register
 
@@ -127,3 +130,29 @@ class AnthropicProvider(ModelProvider):
             output_tokens=usage.output_tokens,
             cached_tokens=cached_tokens,
         )
+
+    def stream_complete(self, model: str, req: CompletionRequest) -> Iterator[StreamChunk]:
+        client = self._get_client()
+
+        kwargs: dict[str, Any] = {
+            "model": model,
+            "max_tokens": req.max_tokens,
+            "temperature": req.temperature,
+            "messages": req.messages,
+        }
+        if req.system:
+            kwargs["system"] = req.system
+        if req.timeout is not None:
+            kwargs["timeout"] = req.timeout
+
+        with client.messages.stream(**kwargs) as stream:
+            for text in stream.text_stream:
+                yield StreamChunk(text=text)
+
+            message = stream.get_final_message()
+            usage = message.usage
+            yield StreamChunk(
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
+                done=True,
+            )
