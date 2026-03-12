@@ -22,7 +22,7 @@ class TestToolDefinitions:
 
     def test_all_tools_present(self) -> None:
         names = {t.name for t in TOOLS}
-        assert names == {"search", "list_topics", "show_topic", "topic_gaps", "ingest_status"}
+        assert names == {"search", "ask", "list_topics", "show_topic", "topic_gaps", "ingest_status"}
 
     def test_search_schema_requires_query(self) -> None:
         search = next(t for t in TOOLS if t.name == "search")
@@ -136,7 +136,7 @@ class TestListTools:
         server = FieldnotesServer(cfg)
         result = await server._list_tools()
         assert result == TOOLS
-        assert len(result) == 5
+        assert len(result) == 6
 
 
 class TestCallToolErrors:

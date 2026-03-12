@@ -23,6 +23,7 @@ from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
 from worker.config import Config, load_config
+from worker.models.base import CompletionRequest
 from worker.models.resolver import ModelRegistry
 
 # Ensure provider registration side-effects run.
@@ -82,6 +83,31 @@ TOOLS: list[Tool] = [
                 },
             },
             "required": ["query"],
+        },
+    ),
+    Tool(
+        name="ask",
+        description=(
+            "Ask a question about the user's knowledge graph and get a "
+            "synthesized answer. Unlike 'search' which returns raw results, "
+            "'ask' retrieves relevant context then uses an LLM to compose "
+            "a clear, cited answer. Use this when you want a direct answer "
+            "rather than documents to read through."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "question": {
+                    "type": "string",
+                    "description": "Natural language question to answer",
+                },
+                "source_type": {
+                    "type": "string",
+                    "description": "Optional filter to restrict context sources",
+                    "enum": ["file", "email", "obsidian", "repositories"],
+                },
+            },
+            "required": ["question"],
         },
     ),
     Tool(
@@ -201,6 +227,8 @@ class FieldnotesServer:
         try:
             if name == "search":
                 return await self._handle_search(arguments)
+            if name == "ask":
+                return await self._handle_ask(arguments)
             if name == "list_topics":
                 return self._handle_list_topics(arguments)
             if name == "show_topic":
@@ -296,6 +324,147 @@ class FieldnotesServer:
 
         if not parts or (len(parts) == 1 and parts[0].startswith("Warnings")):
             parts.append("No results found.")
+
+        return [TextContent(type="text", text="\n\n".join(parts))]
+
+    async def _handle_ask(self, arguments: dict) -> list[TextContent]:
+        """Retrieve context via hybrid search, then synthesize an LLM answer."""
+        question = arguments["question"]
+        source_type: str | None = arguments.get("source_type")
+
+        if self._graph_querier is None or self._vector_querier is None:
+            raise RuntimeError("Server not initialised — call _connect() first")
+        if self._registry is None:
+            raise RuntimeError("Registry not initialised")
+
+        # --- 1. Retrieve context (same as _handle_search) ---
+        loop = asyncio.get_running_loop()
+
+        graph_future = loop.run_in_executor(
+            None, self._graph_querier.query, question
+        )
+        vector_future = loop.run_in_executor(
+            None,
+            lambda: self._vector_querier.query(
+                question, top_k=20, source_type=source_type
+            ),
+        )
+
+        graph_result, vector_result = await asyncio.gather(
+            graph_future, vector_future, return_exceptions=True
+        )
+
+        if isinstance(graph_result, BaseException):
+            logger.exception("Graph query raised", exc_info=graph_result)
+            graph_result = GraphQueryResult(
+                question=question, cypher="", error=str(graph_result)
+            )
+        if isinstance(vector_result, BaseException):
+            logger.exception("Vector query raised", exc_info=vector_result)
+            vector_result = VectorQueryResult(
+                question=question, error=str(vector_result)
+            )
+
+        hybrid = merge(question, graph_result, vector_result)
+
+        # --- 2. Build RAG prompt and call LLM ---
+        context_text = hybrid.context
+        if not context_text.strip():
+            return [TextContent(
+                type="text",
+                text=(
+                    "[Answer]\n"
+                    "I don't have enough information in the knowledge graph "
+                    "to answer this question.\n\n"
+                    "[Sources]\nNone\n\n"
+                    "[Confidence]\nno relevant context found"
+                ),
+            )]
+
+        # Collect source_ids for citation tracking.
+        source_ids: list[str] = []
+        for row in hybrid.graph_results:
+            for value in row.values():
+                if isinstance(value, dict):
+                    sid = value.get("source_id")
+                    if sid:
+                        source_ids.append(str(sid))
+            sid = row.get("source_id")
+            if sid:
+                source_ids.append(str(sid))
+        for vr in hybrid.vector_results:
+            if vr.source_id:
+                source_ids.append(vr.source_id)
+
+        # Deduplicate while preserving order.
+        seen: set[str] = set()
+        unique_ids: list[str] = []
+        for sid in source_ids:
+            if sid not in seen:
+                seen.add(sid)
+                unique_ids.append(sid)
+
+        system_prompt = (
+            "You are a knowledge assistant answering questions using ONLY "
+            "the context provided below. Cite sources by their source_id "
+            "when referencing specific information. If the context doesn't "
+            "contain enough information to fully answer the question, say so "
+            "clearly — do not fabricate information."
+        )
+
+        user_prompt = (
+            f"Context:\n{context_text}\n\n"
+            f"Question: {question}\n\n"
+            "Provide a clear, concise answer based on the context above. "
+            "Reference source_ids when citing specific facts."
+        )
+
+        # Truncate context if too large (reserve ~1k tokens for answer).
+        # Rough heuristic: 1 token ≈ 4 chars. Most models handle 4k+ easily.
+        max_context_chars = 60_000
+        if len(user_prompt) > max_context_chars:
+            truncated_context = context_text[: max_context_chars - 500]
+            user_prompt = (
+                f"Context:\n{truncated_context}\n[... truncated ...]\n\n"
+                f"Question: {question}\n\n"
+                "Provide a clear, concise answer based on the context above. "
+                "Reference source_ids when citing specific facts."
+            )
+
+        try:
+            model = self._registry.for_role("query")
+        except KeyError:
+            # Fall back to extraction role if query role not configured.
+            model = self._registry.for_role("extraction")
+
+        req = CompletionRequest(
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_prompt}],
+            temperature=0.2,
+            timeout=120.0,
+        )
+
+        resp = await loop.run_in_executor(
+            None, lambda: model.complete(req, task="ask")
+        )
+
+        # --- 3. Format response ---
+        parts: list[str] = []
+
+        if hybrid.errors:
+            parts.append("Warnings: " + "; ".join(hybrid.errors))
+
+        parts.append(f"[Answer]\n{resp.text}")
+
+        if unique_ids:
+            parts.append("[Sources]\n" + "\n".join(unique_ids))
+
+        has_context = bool(hybrid.graph_results or hybrid.vector_results)
+        sparse = (len(hybrid.graph_results) + len(hybrid.vector_results)) < 3
+        if not has_context:
+            parts.append("[Confidence]\nno relevant context found")
+        elif sparse:
+            parts.append("[Confidence]\nlow — limited context available")
 
         return [TextContent(type="text", text="\n\n".join(parts))]
 
