@@ -23,6 +23,7 @@ log = logging.getLogger(__name__)
 
 _DEFAULT_MAX_PDF_BYTES = 100 * 1024 * 1024  # 100 MiB
 _DEFAULT_MAX_PDF_PAGES = 2000
+_DEFAULT_MAX_TEXT_BYTES = 10 * 1024 * 1024  # 10 MiB
 
 
 @register
@@ -32,6 +33,7 @@ class FileParser(BaseParser):
     def __init__(self) -> None:
         self._max_pdf_bytes: int = _DEFAULT_MAX_PDF_BYTES
         self._max_pdf_pages: int = _DEFAULT_MAX_PDF_PAGES
+        self._max_text_bytes: int = _DEFAULT_MAX_TEXT_BYTES
 
     @property
     def source_type(self) -> str:
@@ -73,8 +75,15 @@ class FileParser(BaseParser):
         operation: str,
     ) -> list[ParsedDocument]:
         text = event.get("text", "")
+        text_bytes = text.encode("utf-8")
+        if len(text_bytes) > self._max_text_bytes:
+            log.warning(
+                "Text file %s exceeds max size (%d bytes > %d), skipping",
+                source_id, len(text_bytes), self._max_text_bytes,
+            )
+            return []
         props = self._node_props(source_id, event)
-        props["sha256"] = self._sha256(text.encode("utf-8"))
+        props["sha256"] = self._sha256(text_bytes)
         return [
             ParsedDocument(
                 source_type="files",

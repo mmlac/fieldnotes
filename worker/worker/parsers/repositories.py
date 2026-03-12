@@ -25,6 +25,8 @@ from .registry import register
 
 logger = logging.getLogger(__name__)
 
+_MAX_MANIFEST_SIZE = 1 * 1024 * 1024  # 1 MiB — manifests should never be this large
+
 # Manifest filenames that trigger dependency extraction
 _MANIFEST_FILENAMES: set[str] = {
     "Cargo.toml",
@@ -275,6 +277,12 @@ def _extract_dependencies(
     remote_url: str | None,
 ) -> list[GraphHint]:
     """Dispatch to the right parser based on manifest filename."""
+    if len(text) > _MAX_MANIFEST_SIZE:
+        logger.warning(
+            "Manifest %s in %s too large (%d bytes > %d), skipping dependency extraction",
+            filename, repo_name, len(text), _MAX_MANIFEST_SIZE,
+        )
+        return []
     try:
         if filename == "Cargo.toml":
             return _parse_cargo_toml(text, repo_path, repo_name, remote_url)

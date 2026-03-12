@@ -17,6 +17,8 @@ from .registry import register
 
 logger = logging.getLogger(__name__)
 
+_MAX_HTML_BODY_SIZE = 10 * 1024 * 1024  # 10 MiB
+
 
 def _strip_html(html: str) -> str:
     """Strip HTML tags and return plain text.
@@ -77,6 +79,12 @@ class GmailParser(BaseParser):
         body: str = event.get("text", "")
         mime = event.get("mime_type", "")
         if body and ("html" in mime or body.lstrip().startswith("<")):
+            if len(body) > _MAX_HTML_BODY_SIZE:
+                logger.warning(
+                    "Email %s HTML body too large (%d bytes > %d), skipping HTML parse",
+                    source_id, len(body), _MAX_HTML_BODY_SIZE,
+                )
+                body = body[:_MAX_HTML_BODY_SIZE]
             body = _strip_html(body)
 
         # --- Node properties ---------------------------------------------------
