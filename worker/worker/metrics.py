@@ -265,6 +265,20 @@ WATCHER_LAST_EVENT_TIMESTAMP = Gauge(
     registry=REGISTRY,
 )
 
+INITIAL_SCAN_FILES_TOTAL = Counter(
+    "fieldnotes_initial_scan_files_total",
+    "Total files processed during initial directory scan",
+    ["source_type", "result"],
+    registry=REGISTRY,
+)
+
+INITIAL_SCAN_DURATION_SECONDS = Gauge(
+    "fieldnotes_initial_scan_duration_seconds",
+    "Duration of initial directory scan in seconds",
+    ["source_type"],
+    registry=REGISTRY,
+)
+
 OBSIDIAN_VAULTS_DISCOVERED = Gauge(
     "fieldnotes_obsidian_vaults_discovered",
     "Number of Obsidian vaults discovered and being watched",
