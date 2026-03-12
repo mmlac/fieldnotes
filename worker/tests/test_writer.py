@@ -1041,7 +1041,7 @@ class TestEmailGraphHints:
         assert len(queries) == 10
 
         # Verify SENT, TO, PART_OF edges were created
-        edge_queries = [q for q in queries if "MERGE" in q and ")-[:" in q]
+        edge_queries = [q for q in queries if "MERGE" in q and ")-[" in q and "]->" in q]
         predicates = set()
         for q in edge_queries:
             for pred in ("SENT", "TO", "PART_OF"):

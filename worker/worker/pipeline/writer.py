@@ -492,7 +492,12 @@ class Writer:
             chunk_id = _chunk_node_id(doc.source_id, chunk.index)
             _upsert_chunk(tx, chunk_id, doc.source_id, chunk)
 
-        # 6. Write GraphHints directly (bypass LLM)
+        # 6. Clean stale hint edges on modification, then write new hints
+        if doc.operation == "modified":
+            tx.run(
+                "MATCH ({source_id: $uri})-[r {hint: true}]->() DELETE r",
+                uri=doc.source_id,
+            )
         for hint in doc.graph_hints:
             _write_graph_hint(tx, hint)
 
@@ -858,11 +863,12 @@ def _write_graph_hint(tx: Any, hint: GraphHint) -> None:
         **obj_params,
     )
 
-    # --- Relationship edge ---
+    # --- Relationship edge (tagged hint=true for cleanup on modification) ---
     tx.run(
         f"MATCH (s:{subject_label} {{{subj_merge_key}: $s_merge}}) "
         f"MATCH (o:{object_label} {{{obj_merge_key}: $o_merge}}) "
-        f"MERGE (s)-[:{predicate}]->(o)",
+        f"MERGE (s)-[r:{predicate}]->(o) "
+        f"SET r.hint = true",
         s_merge=subj_merge_val,
         o_merge=obj_merge_val,
     )
