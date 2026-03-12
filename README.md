@@ -17,6 +17,7 @@ Fieldnotes is a personal knowledge graph that continuously indexes your digital 
 - [MCP Server](#mcp-server)
 - [Pipeline Architecture](#pipeline-architecture)
 - [Observability](#observability)
+- [Local Development](#local-development)
 - [Project Structure](#project-structure)
 
 ## How It Works
@@ -372,6 +373,66 @@ All services bind to `127.0.0.1` only. Data is persisted under `$FIELDNOTES_DATA
 - `worker_queue_depth` — pending ingest events
 
 Access Grafana at `http://localhost:3000` (default credentials: admin / `fieldnotes`).
+
+## Local Development
+
+All development commands use a virtualenv managed by `make`. The `.venv` is created automatically on first run — no manual activation needed.
+
+```bash
+# Clone and set up
+git clone https://github.com/mmlac/fieldnotes.git
+cd fieldnotes/worker
+
+# Install in editable mode with dev dependencies (creates .venv)
+make install-dev
+
+# Start infrastructure (Neo4j, Qdrant, Prometheus, Grafana)
+export NEO4J_PASSWORD=changeme
+make docker-up
+```
+
+### Make Targets
+
+| Target | Description |
+|---|---|
+| `make install` | Install fieldnotes into `.venv` |
+| `make install-dev` | Editable install with dev deps (pytest, ruff) |
+| `make lint` | Run ruff linter |
+| `make fmt` | Auto-format with ruff |
+| `make test` | Run test suite |
+| `make test-ci` | Lint + tests (CI mode) |
+| `make build` | Build sdist and wheel into `dist/` |
+| `make publish-test` | Upload to TestPyPI |
+| `make publish` | Upload to PyPI |
+| `make docker-up` | Start Docker services |
+| `make docker-down` | Stop Docker services |
+| `make version` | Print current version |
+
+### Running Commands Directly
+
+If you need to run `fieldnotes` or other commands inside the venv:
+
+```bash
+# Option 1: activate the venv
+source .venv/bin/activate
+fieldnotes search "test query"
+
+# Option 2: run directly via venv path
+.venv/bin/fieldnotes search "test query"
+```
+
+### Publishing to PyPI
+
+```bash
+# Dry run on TestPyPI first
+TWINE_USERNAME=__token__ TWINE_PASSWORD=pypi-test-... make publish-test
+
+# Install from TestPyPI to verify
+pip install -i https://test.pypi.org/simple/ fieldnotes
+
+# Publish for real
+TWINE_USERNAME=__token__ TWINE_PASSWORD=pypi-... make publish
+```
 
 ## Project Structure
 
