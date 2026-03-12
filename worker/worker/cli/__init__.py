@@ -124,6 +124,20 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="ask_verbose",
         help="Show query details (Cypher, vector scores, context size)",
     )
+    ask_p.add_argument(
+        "--resume",
+        nargs="?",
+        const="",
+        default=None,
+        metavar="ID",
+        help="Resume a previous conversation (omit ID for most recent)",
+    )
+    ask_p.add_argument(
+        "--history",
+        action="store_true",
+        dest="show_history",
+        help="List past conversations",
+    )
 
     # ── topics ──────────────────────────────────────────────────────
     topics_p = sub.add_parser("topics", help="Browse and inspect topics")
@@ -311,6 +325,11 @@ def main(argv: list[str] | None = None) -> int:
             return 1
 
     if args.command == "ask":
+        if args.show_history:
+            from worker.cli.ask import run_history
+
+            return run_history()
+
         from worker.cli.ask import run_ask
 
         question = " ".join(args.question) if args.question else None
@@ -319,6 +338,7 @@ def main(argv: list[str] | None = None) -> int:
                 question,
                 config_path=args.config,
                 verbose=args.ask_verbose,
+                resume_id=args.resume,
             )
         except Exception as exc:
             print(f"error: {exc}", file=sys.stderr)

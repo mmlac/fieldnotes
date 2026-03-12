@@ -22,13 +22,23 @@ from worker.query.graph import GraphQuerier, GraphQueryResult
 from worker.query.hybrid import merge
 from worker.query.vector import VectorQuerier, VectorQueryResult
 
+from worker.cli.history import (
+    Conversation,
+    TurnRecord,
+    load_conversation,
+    load_most_recent,
+    list_conversations,
+    prune_old_conversations,
+    save_conversation,
+)
+
 # Ensure provider registration side-effects run.
 import worker.models.providers.ollama  # noqa: F401
 
 logger = logging.getLogger("worker.cli.ask")
 
 # REPL slash-commands
-_COMMANDS = {"/history", "/clear", "/verbose", "/quit"}
+_COMMANDS = {"/history", "/clear", "/verbose", "/quit", "/save", "/sessions"}
 
 _MAX_CONTEXT_CHARS = 60_000
 
@@ -45,6 +55,7 @@ class _Session:
     id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
     history: list[_Turn] = field(default_factory=list)
     verbose: bool = False
+    conversation: Conversation = field(default_factory=Conversation)
 
 
 def _synthesize(
@@ -212,12 +223,24 @@ def _synthesize(
             answer=resp.text,
         ))
 
+        # Persist to conversation file.
+        session.conversation.add_turn(
+            TurnRecord(
+                question=question,
+                answer=resp.text,
+                sources_found=len(unique_ids),
+                source_ids=unique_ids,
+            )
+        )
+        save_conversation(session.conversation)
+
     return answer
 
 
 def _run_repl(
     *,
     config_path: Path | None,
+    resume_id: str | None = None,
 ) -> int:
     """Interactive REPL loop using prompt_toolkit."""
     try:
@@ -239,6 +262,33 @@ def _run_repl(
     vector_querier = VectorQuerier(registry, cfg.qdrant)
 
     session = _Session()
+
+    # Resume a previous conversation if requested.
+    if resume_id is not None:
+        if resume_id == "":
+            # --resume with no ID → most recent
+            conv = load_most_recent()
+        else:
+            conv = load_conversation(resume_id)
+
+        if conv is None:
+            print("error: no conversation found to resume.", file=sys.stderr)
+            graph_querier.close()
+            vector_querier.close()
+            return 1
+
+        session.conversation = conv
+        session.id = conv.id
+        # Restore in-memory history from persisted turns.
+        for turn in conv.turns:
+            session.history.append(_Turn(
+                question=turn.question,
+                context="",
+                answer=turn.answer,
+            ))
+    else:
+        session.conversation = Conversation(id=session.id)
+
     completer = WordCompleter(sorted(_COMMANDS), sentence=True)
     history = InMemoryHistory()
     prompt_session: PromptSession[str] = PromptSession(
@@ -248,7 +298,11 @@ def _run_repl(
         multiline=False,
     )
 
-    print(f"fieldnotes interactive mode (session {session.id})")
+    if resume_id is not None and session.history:
+        print(f"fieldnotes interactive mode (resumed session {session.id})")
+        print(f"  {len(session.history)} previous turn(s) loaded.")
+    else:
+        print(f"fieldnotes interactive mode (session {session.id})")
     print("Type a question, or /quit to exit. /help for commands.\n")
 
     try:
@@ -283,24 +337,46 @@ def _run_repl(
                     continue
                 elif cmd == "/clear":
                     session.history.clear()
-                    print("Conversation cleared.\n")
+                    # Start a new conversation (old one stays saved).
+                    session.conversation = Conversation()
+                    session.id = session.conversation.id
+                    print("Conversation cleared (new session started).\n")
                     continue
                 elif cmd == "/verbose":
                     session.verbose = not session.verbose
                     state = "on" if session.verbose else "off"
                     print(f"Verbose mode {state}.\n")
                     continue
+                elif cmd == "/save":
+                    save_conversation(session.conversation)
+                    print(f"Conversation saved ({session.conversation.id}).\n")
+                    continue
+                elif cmd == "/sessions":
+                    convs = list_conversations(limit=20)
+                    if not convs:
+                        print("No saved conversations.")
+                    else:
+                        for c in convs:
+                            n_turns = len(c.turns)
+                            q = c.first_question
+                            if len(q) > 60:
+                                q = q[:57] + "..."
+                            print(f"  {c.id}  {c.updated_at}  ({n_turns} turns)  {q}")
+                    print()
+                    continue
                 elif cmd == "/help":
                     print("Commands:")
-                    print("  /history  — Show conversation history")
-                    print("  /clear    — Clear conversation history")
-                    print("  /verbose  — Toggle source citations")
-                    print("  /quit     — Exit")
+                    print("  /history   — Show this session's questions")
+                    print("  /sessions  — List saved conversations")
+                    print("  /clear     — Clear history and start fresh")
+                    print("  /save      — Force save current conversation")
+                    print("  /verbose   — Toggle source citations")
+                    print("  /quit      — Exit")
                     print()
                     continue
                 else:
                     print(f"Unknown command: {cmd}")
-                    print("Available: /history, /clear, /verbose, /quit\n")
+                    print("Available: /history, /sessions, /clear, /save, /verbose, /quit\n")
                     continue
 
             # Ask the question.
@@ -318,6 +394,10 @@ def _run_repl(
             except Exception as exc:
                 print(f"error: {exc}\n", file=sys.stderr)
     finally:
+        # Auto-prune old conversations.
+        pruned = prune_old_conversations()
+        if pruned:
+            logger.debug("Pruned %d old conversation(s).", pruned)
         graph_querier.close()
         vector_querier.close()
 
@@ -329,13 +409,18 @@ def run_ask(
     *,
     config_path: Path | None,
     verbose: bool = False,
+    resume_id: str | None = None,
 ) -> int:
     """Entry point for the ``ask`` subcommand.
 
     If *question* is provided, runs one-shot mode. Otherwise starts the REPL.
+    *resume_id* triggers conversation resume (empty string = most recent).
     """
-    if question is None:
-        return _run_repl(config_path=config_path)
+    if resume_id is not None or question is None:
+        return _run_repl(
+            config_path=config_path,
+            resume_id=resume_id,
+        )
 
     # One-shot mode.
     cfg = load_config(config_path)
@@ -343,8 +428,9 @@ def run_ask(
     graph_querier = GraphQuerier(registry, cfg.neo4j)
     vector_querier = VectorQuerier(registry, cfg.qdrant)
 
-    # Create a session to carry verbose state for one-shot mode.
-    session = _Session(verbose=verbose) if verbose else None
+    # One-shot conversations are also persisted.
+    session = _Session(verbose=verbose)
+    session.conversation = Conversation(id=session.id)
 
     try:
         answer = _synthesize(
@@ -362,3 +448,19 @@ def run_ask(
     finally:
         graph_querier.close()
         vector_querier.close()
+
+
+def run_history() -> int:
+    """Entry point for the ``ask --history`` flag. Lists past conversations."""
+    convs = list_conversations(limit=50)
+    if not convs:
+        print("No saved conversations.")
+        return 0
+
+    for conv in convs:
+        n_turns = len(conv.turns)
+        q = conv.first_question
+        if len(q) > 70:
+            q = q[:67] + "..."
+        print(f"  {conv.id}  {conv.updated_at}  ({n_turns} turns)  {q}")
+    return 0
