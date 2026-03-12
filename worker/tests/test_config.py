@@ -383,3 +383,76 @@ class TestTypeValidation:
         assert cfg.vision.skip_patterns == ["icon", "thumb"]
         assert cfg.clustering.min_corpus_size == 50
         assert cfg.mcp.port == 9999
+
+
+class TestConfigValidate:
+    """Config.validate() — cron, vector_size, skip_patterns, boundaries."""
+
+    def _make_config(self, **overrides) -> Config:
+        """Build a Config with sensible defaults, applying overrides."""
+        cfg = _parse({})
+        for key, value in overrides.items():
+            parts = key.split(".")
+            obj = cfg
+            for part in parts[:-1]:
+                obj = getattr(obj, part)
+            setattr(obj, parts[-1], value)
+        return cfg
+
+    # -- Cron validation --
+
+    def test_valid_cron_passes(self) -> None:
+        cfg = self._make_config()
+        warnings = cfg.validate()  # default "0 3 * * 0" is valid
+        assert isinstance(warnings, list)
+
+    def test_invalid_cron_raises(self) -> None:
+        cfg = self._make_config(**{"clustering.cron": "not a cron"})
+        with pytest.raises(ValueError, match=r"\[clustering\] cron.*not a valid cron"):
+            cfg.validate()
+
+    def test_cron_too_many_fields_raises(self) -> None:
+        cfg = self._make_config(**{"clustering.cron": "* * * * * * *"})
+        with pytest.raises(ValueError, match=r"\[clustering\] cron"):
+            cfg.validate()
+
+    # -- Vector size warnings --
+
+    def test_default_vector_size_no_warning(self) -> None:
+        cfg = self._make_config()
+        warnings = cfg.validate()
+        assert not any("vector_size" in w for w in warnings)
+
+    def test_mismatched_vector_size_warns(self) -> None:
+        cfg = self._make_config(**{"qdrant.vector_size": 1536})
+        warnings = cfg.validate()
+        assert any("vector_size is 1536" in w for w in warnings)
+
+    # -- Skip patterns (regex) validation --
+
+    def test_valid_skip_patterns_pass(self) -> None:
+        cfg = self._make_config(**{"vision.skip_patterns": ["icon", "thumb.*", r"\d+"]})
+        warnings = cfg.validate()
+        assert not any("skip_patterns" in w for w in warnings)
+
+    def test_invalid_regex_skip_pattern_raises(self) -> None:
+        cfg = self._make_config(**{"vision.skip_patterns": ["icon", "[invalid"]})
+        with pytest.raises(ValueError, match=r"\[vision\] skip_patterns\[1\].*not a valid regex"):
+            cfg.validate()
+
+    # -- min_interval_seconds boundary warnings --
+
+    def test_min_interval_at_minimum_warns(self) -> None:
+        cfg = self._make_config(**{"clustering.min_interval_seconds": 10.0})
+        warnings = cfg.validate()
+        assert any("at the minimum" in w for w in warnings)
+
+    def test_min_interval_at_maximum_warns(self) -> None:
+        cfg = self._make_config(**{"clustering.min_interval_seconds": 86_400.0})
+        warnings = cfg.validate()
+        assert any("at the maximum" in w for w in warnings)
+
+    def test_min_interval_normal_no_warning(self) -> None:
+        cfg = self._make_config(**{"clustering.min_interval_seconds": 60.0})
+        warnings = cfg.validate()
+        assert not any("min_interval" in w for w in warnings)

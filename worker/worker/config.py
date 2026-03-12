@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -149,6 +150,66 @@ class Config:
     clustering: ClusteringConfig = field(default_factory=ClusteringConfig)
     mcp: McpConfig = field(default_factory=McpConfig)
 
+    # Expected embedding dimension used by the clustering pipeline.
+    _EXPECTED_VECTOR_SIZE = 768
+
+    def validate(self) -> list[str]:
+        """Validate configuration thoroughly and return a list of warnings.
+
+        Raises on hard errors (invalid cron, bad regex patterns).
+        Returns warnings for soft issues (vector size mismatch).
+        """
+        from croniter import croniter
+
+        warnings: list[str] = []
+
+        # -- Hard errors --
+
+        # (a) Validate cron expression
+        if not croniter.is_valid(self.clustering.cron):
+            raise ValueError(
+                f"[clustering] cron: {self.clustering.cron!r} is not a valid "
+                f"cron expression"
+            )
+
+        # (c) Validate vision.skip_patterns as valid regex
+        for i, pattern in enumerate(self.vision.skip_patterns):
+            try:
+                re.compile(pattern)
+            except re.error as exc:
+                raise ValueError(
+                    f"[vision] skip_patterns[{i}]: {pattern!r} is not a valid "
+                    f"regex: {exc}"
+                ) from exc
+
+        # -- Warnings --
+
+        # (b) Check vector_size against expected embedding dimensions
+        if self.qdrant.vector_size != self._EXPECTED_VECTOR_SIZE:
+            warnings.append(
+                f"[qdrant] vector_size is {self.qdrant.vector_size}, but the "
+                f"clustering pipeline expects {self._EXPECTED_VECTOR_SIZE}. "
+                f"Ensure your embedding model produces "
+                f"{self.qdrant.vector_size}-dimensional vectors."
+            )
+
+        # (d) Warn on clamped-looking min_interval_seconds boundaries
+        if self.clustering.min_interval_seconds == 10.0:
+            warnings.append(
+                "[clustering] min_interval_seconds is at the minimum (10.0). "
+                "This may cause excessive clustering runs."
+            )
+        if self.clustering.min_interval_seconds == 86_400.0:
+            warnings.append(
+                "[clustering] min_interval_seconds is at the maximum (86400). "
+                "Clustering will run at most once per day."
+            )
+
+        for w in warnings:
+            logger.warning(w)
+
+        return warnings
+
 
 def load_config(path: Path | None = None) -> Config:
     """Load and parse config.toml into a Config object."""
@@ -156,6 +217,7 @@ def load_config(path: Path | None = None) -> Config:
     raw = tomllib.loads(path.read_text())
     cfg = _parse(raw)
     cfg.neo4j.validate()
+    cfg.validate()
     return cfg
 
 
