@@ -26,6 +26,8 @@ from langchain_core.callbacks import CallbackManagerForLLMRun
 from langchain_core.messages import BaseMessage, AIMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 
+from neo4j import GraphDatabase
+
 from worker.config import Neo4jConfig
 from worker.models.resolver import ModelRegistry, ResolvedModel
 
@@ -33,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 # Cypher keywords that indicate a write operation.
 _WRITE_KEYWORDS = re.compile(
-    r"\b(MERGE|CREATE|DELETE|DETACH|SET|REMOVE|DROP|FOREACH\s*\(|LOAD\s+CSV)\b",
+    r"\b(MERGE|CREATE|DELETE|DETACH|SET|REMOVE|DROP|FOREACH\s*\(|LOAD\s+CSV|SHOW)\b",
     re.IGNORECASE,
 )
 
@@ -51,6 +53,22 @@ _WRITE_APOC = re.compile(
     r"\b(apoc\.periodic\.commit|apoc\.periodic\.iterate|apoc\.cypher\.run|apoc\.cypher\.doIt)\b",
     re.IGNORECASE,
 )
+
+
+# Default LIMIT appended to LLM-generated queries that lack one.
+_DEFAULT_QUERY_LIMIT = 1000
+
+# Timeout (in seconds) for read-only query transactions.
+_QUERY_TIMEOUT_S = 30
+
+_LIMIT_PATTERN = re.compile(r"\bLIMIT\s+\d+", re.IGNORECASE)
+
+
+def _ensure_limit(cypher: str, limit: int = _DEFAULT_QUERY_LIMIT) -> str:
+    """Append a LIMIT clause if the Cypher query doesn't already have one."""
+    if _LIMIT_PATTERN.search(cypher):
+        return cypher
+    return f"{cypher.rstrip().rstrip(';')} LIMIT {limit}"
 
 
 @dataclass
@@ -175,6 +193,15 @@ class GraphQuerier:
         )
         self._graph.refresh_schema()
 
+        # Maintain our own driver instance instead of reaching into
+        # LangChain internals (_graph._driver) which are not part of the
+        # public API and may break across versions.
+        self._driver = GraphDatabase.driver(
+            neo4j_cfg.uri,
+            auth=(neo4j_cfg.user, neo4j_cfg.password),
+        )
+        self._database = getattr(self._graph, "_database", None) or "neo4j"
+
         self._llm = _RegistryLLM(resolved=self._resolved)
         self._chain = GraphCypherQAChain.from_llm(
             llm=self._llm,
@@ -239,16 +266,18 @@ class GraphQuerier:
     def _execute_readonly(self, cypher: str) -> list[dict[str, Any]]:
         """Execute *cypher* inside a Neo4j read-only transaction.
 
+        Enforces a LIMIT clause (appended if missing) and a per-query
+        timeout so that runaway queries cannot exhaust server resources.
         Uses session.execute_read() so that Neo4j rejects any write
         operations at the protocol level, regardless of the query content.
         """
+        cypher = _ensure_limit(cypher)
+
         def _work(tx: Any) -> list[dict[str, Any]]:
-            result = tx.run(cypher)
+            result = tx.run(cypher, timeout=_QUERY_TIMEOUT_S)
             return [record.data() for record in result]
 
-        with self._graph._driver.session(
-            database=self._graph._database,
-        ) as session:
+        with self._driver.session(database=self._database) as session:
             return session.execute_read(_work)
 
     def refresh_schema(self) -> None:
@@ -263,9 +292,10 @@ class GraphQuerier:
 
     def close(self) -> None:
         """Release the Neo4j connection and close the driver pool."""
-        if self._graph is not None:
+        if self._driver is not None:
             try:
-                self._graph._driver.close()
+                self._driver.close()
             except Exception:
                 logger.debug("Error closing Neo4j driver", exc_info=True)
+            self._driver = None  # type: ignore[assignment]
             self._graph = None  # type: ignore[assignment]

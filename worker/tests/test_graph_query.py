@@ -16,6 +16,7 @@ from worker.query.graph import (
     GraphQueryResult,
     ReadOnlyCypherViolation,
     _validate_cypher_readonly,
+    _ensure_limit,
     _RegistryLLM,
     _lc_role,
 )
@@ -64,11 +65,39 @@ class TestCypherReadOnlyValidation:
             "CALL apoc.create.relationship(n, 'REL', {}, m)",
             "CALL dbms.security.createUser('admin', 'pass', false)",
             "CALL db.createLabel('Evil')",
+            "SHOW DATABASES",
+            "SHOW USERS",
+            "SHOW CURRENT USER",
+            "show databases yield name",
         ],
     )
     def test_blocks_write_queries(self, cypher: str) -> None:
         with pytest.raises(ReadOnlyCypherViolation):
             _validate_cypher_readonly(cypher)
+
+
+# ------------------------------------------------------------------
+# LIMIT enforcement
+# ------------------------------------------------------------------
+
+
+class TestEnsureLimit:
+    def test_appends_limit_when_missing(self) -> None:
+        assert _ensure_limit("MATCH (n) RETURN n") == "MATCH (n) RETURN n LIMIT 1000"
+
+    def test_preserves_existing_limit(self) -> None:
+        q = "MATCH (n) RETURN n LIMIT 10"
+        assert _ensure_limit(q) == q
+
+    def test_preserves_existing_limit_case_insensitive(self) -> None:
+        q = "MATCH (n) RETURN n limit 50"
+        assert _ensure_limit(q) == q
+
+    def test_strips_trailing_semicolon(self) -> None:
+        assert _ensure_limit("MATCH (n) RETURN n;") == "MATCH (n) RETURN n LIMIT 1000"
+
+    def test_custom_limit(self) -> None:
+        assert _ensure_limit("MATCH (n) RETURN n", limit=5) == "MATCH (n) RETURN n LIMIT 5"
 
 
 # ------------------------------------------------------------------
@@ -119,6 +148,7 @@ class TestGraphQueryResult:
 def _make_querier(
     mock_neo4j_graph_cls: MagicMock,
     mock_chain_cls: MagicMock,
+    mock_gdb_cls: MagicMock,
     *,
     generated_cypher: str = "MATCH (n:Entity) RETURN n.name",
     graph_results: list[dict[str, Any]] | None = None,
@@ -133,21 +163,22 @@ def _make_querier(
 
     mock_graph = MagicMock()
     mock_graph.get_structured_schema = {"nodes": [], "relationships": []}
+    mock_graph._database = "neo4j"
 
-    # Mock the driver for read-only transaction path.
+    mock_neo4j_graph_cls.return_value = mock_graph
+
+    # Mock the own driver for read-only transaction path.
+    mock_driver = MagicMock()
     mock_session = MagicMock()
     mock_records = graph_results if graph_results is not None else [{"name": "Alice"}, {"name": "Bob"}]
-    # execute_read calls the work function with a transaction; the tx.run()
-    # result must yield record objects with a .data() method.
     mock_record_objs = [MagicMock(**{"data.return_value": r}) for r in mock_records]
     mock_tx_result = MagicMock()
     mock_tx_result.__iter__ = lambda self: iter(mock_record_objs)
     mock_session.__enter__ = lambda self: mock_session
     mock_session.__exit__ = MagicMock(return_value=False)
     mock_session.execute_read.side_effect = lambda fn: fn(MagicMock(**{"run.return_value": mock_tx_result}))
-    mock_graph._driver.session.return_value = mock_session
-
-    mock_neo4j_graph_cls.return_value = mock_graph
+    mock_driver.session.return_value = mock_session
+    mock_gdb_cls.driver.return_value = mock_driver
 
     mock_chain = MagicMock()
     gen_chain = MagicMock()
@@ -170,12 +201,13 @@ def _make_querier(
 class TestGraphQuerier:
     """Tests for the GraphQuerier end-to-end flow with mocked deps."""
 
+    @patch("worker.query.graph.GraphDatabase")
     @patch("worker.query.graph.GraphCypherQAChain")
     @patch("worker.query.graph.Neo4jGraph")
     def test_query_returns_structured_result(
-        self, mock_neo4j_graph_cls: MagicMock, mock_chain_cls: MagicMock
+        self, mock_neo4j_graph_cls: MagicMock, mock_chain_cls: MagicMock, mock_gdb_cls: MagicMock
     ) -> None:
-        querier = _make_querier(mock_neo4j_graph_cls, mock_chain_cls)
+        querier = _make_querier(mock_neo4j_graph_cls, mock_chain_cls, mock_gdb_cls)
         result = querier.query("Who is mentioned?")
 
         assert result.question == "Who is mentioned?"
@@ -184,28 +216,30 @@ class TestGraphQuerier:
         assert result.answer == "Alice and Bob"
         assert result.error is None
 
+    @patch("worker.query.graph.GraphDatabase")
     @patch("worker.query.graph.GraphCypherQAChain")
     @patch("worker.query.graph.Neo4jGraph")
     def test_query_blocks_write_cypher_before_execution(
-        self, mock_neo4j_graph_cls: MagicMock, mock_chain_cls: MagicMock
+        self, mock_neo4j_graph_cls: MagicMock, mock_chain_cls: MagicMock, mock_gdb_cls: MagicMock
     ) -> None:
         querier = _make_querier(
-            mock_neo4j_graph_cls, mock_chain_cls,
+            mock_neo4j_graph_cls, mock_chain_cls, mock_gdb_cls,
             generated_cypher="CREATE (n:File {name: 'evil'})",
         )
         with pytest.raises(ReadOnlyCypherViolation):
             querier.query("Do something bad")
 
-        # Crucially, the write query must NOT have been executed against Neo4j.
-        mock_neo4j_graph_cls.return_value._driver.session.assert_not_called()
+        # Crucially, the write query must NOT have been executed.
+        mock_gdb_cls.driver.return_value.session.assert_not_called()
 
+    @patch("worker.query.graph.GraphDatabase")
     @patch("worker.query.graph.GraphCypherQAChain")
     @patch("worker.query.graph.Neo4jGraph")
     def test_query_handles_chain_exception(
-        self, mock_neo4j_graph_cls: MagicMock, mock_chain_cls: MagicMock
+        self, mock_neo4j_graph_cls: MagicMock, mock_chain_cls: MagicMock, mock_gdb_cls: MagicMock
     ) -> None:
         querier = _make_querier(
-            mock_neo4j_graph_cls, mock_chain_cls,
+            mock_neo4j_graph_cls, mock_chain_cls, mock_gdb_cls,
             generation_side_effect=RuntimeError("neo4j down"),
         )
         result = querier.query("test?")
@@ -213,49 +247,79 @@ class TestGraphQuerier:
         assert result.error == "neo4j down"
         assert result.cypher == ""
 
+    @patch("worker.query.graph.GraphDatabase")
     @patch("worker.query.graph.GraphCypherQAChain")
     @patch("worker.query.graph.Neo4jGraph")
     def test_query_uses_readonly_transaction(
-        self, mock_neo4j_graph_cls: MagicMock, mock_chain_cls: MagicMock
+        self, mock_neo4j_graph_cls: MagicMock, mock_chain_cls: MagicMock, mock_gdb_cls: MagicMock
     ) -> None:
-        querier = _make_querier(mock_neo4j_graph_cls, mock_chain_cls)
-        result = querier.query("Who is mentioned?")
+        querier = _make_querier(mock_neo4j_graph_cls, mock_chain_cls, mock_gdb_cls)
+        querier.query("Who is mentioned?")
 
-        # Verify execute_read was called (not a plain query/execute_write).
-        mock_graph = mock_neo4j_graph_cls.return_value
-        mock_graph._driver.session.assert_called_once()
-        # _make_querier sets up mock_session with custom __enter__ that returns itself
-        mock_session = mock_graph._driver.session.return_value
+        # Verify execute_read was called on the own driver (not _graph._driver).
+        mock_driver = mock_gdb_cls.driver.return_value
+        mock_driver.session.assert_called_once()
+        mock_session = mock_driver.session.return_value
         mock_session.execute_read.assert_called_once()
 
+    @patch("worker.query.graph.GraphDatabase")
+    @patch("worker.query.graph.GraphCypherQAChain")
+    @patch("worker.query.graph.Neo4jGraph")
+    def test_query_passes_timeout_to_tx_run(
+        self, mock_neo4j_graph_cls: MagicMock, mock_chain_cls: MagicMock, mock_gdb_cls: MagicMock
+    ) -> None:
+        querier = _make_querier(mock_neo4j_graph_cls, mock_chain_cls, mock_gdb_cls)
+        querier.query("Who is mentioned?")
+
+        # The work function passed to execute_read should call tx.run with timeout.
+        mock_driver = mock_gdb_cls.driver.return_value
+        mock_session = mock_driver.session.return_value
+        # execute_read was called with a function; that function calls tx.run
+        # Our mock setup in _make_querier makes execute_read call fn(mock_tx).
+        # Verify the mock tx.run was called with timeout kwarg.
+        call_args = mock_session.execute_read.call_args
+        work_fn = call_args[0][0]
+        mock_tx = MagicMock()
+        mock_record = MagicMock(**{"data.return_value": {"x": 1}})
+        mock_tx.run.return_value = [mock_record]
+        work_fn(mock_tx)
+        mock_tx.run.assert_called_once()
+        _, kwargs = mock_tx.run.call_args
+        assert kwargs["timeout"] == 30
+
+    @patch("worker.query.graph.GraphDatabase")
     @patch("worker.query.graph.GraphCypherQAChain")
     @patch("worker.query.graph.Neo4jGraph")
     def test_refresh_schema(
-        self, mock_neo4j_graph_cls: MagicMock, mock_chain_cls: MagicMock
+        self, mock_neo4j_graph_cls: MagicMock, mock_chain_cls: MagicMock, mock_gdb_cls: MagicMock
     ) -> None:
-        querier = _make_querier(mock_neo4j_graph_cls, mock_chain_cls)
+        querier = _make_querier(mock_neo4j_graph_cls, mock_chain_cls, mock_gdb_cls)
         mock_graph = mock_neo4j_graph_cls.return_value
         mock_graph.refresh_schema.reset_mock()
         querier.refresh_schema()
         mock_graph.refresh_schema.assert_called_once()
 
+    @patch("worker.query.graph.GraphDatabase")
     @patch("worker.query.graph.GraphCypherQAChain")
     @patch("worker.query.graph.Neo4jGraph")
     def test_close_calls_driver_close(
-        self, mock_neo4j_graph_cls: MagicMock, mock_chain_cls: MagicMock
+        self, mock_neo4j_graph_cls: MagicMock, mock_chain_cls: MagicMock, mock_gdb_cls: MagicMock
     ) -> None:
-        querier = _make_querier(mock_neo4j_graph_cls, mock_chain_cls)
-        mock_driver = querier._graph._driver
+        querier = _make_querier(mock_neo4j_graph_cls, mock_chain_cls, mock_gdb_cls)
+        mock_driver = querier._driver
         querier.close()
         mock_driver.close.assert_called_once()
         assert querier._graph is None
+        assert querier._driver is None
 
+    @patch("worker.query.graph.GraphDatabase")
     @patch("worker.query.graph.GraphCypherQAChain")
     @patch("worker.query.graph.Neo4jGraph")
     def test_close_idempotent(
-        self, mock_neo4j_graph_cls: MagicMock, mock_chain_cls: MagicMock
+        self, mock_neo4j_graph_cls: MagicMock, mock_chain_cls: MagicMock, mock_gdb_cls: MagicMock
     ) -> None:
-        querier = _make_querier(mock_neo4j_graph_cls, mock_chain_cls)
+        querier = _make_querier(mock_neo4j_graph_cls, mock_chain_cls, mock_gdb_cls)
         querier.close()
         querier.close()  # second call should not raise
         assert querier._graph is None
+        assert querier._driver is None
