@@ -70,6 +70,20 @@ class TestValidateOllamaUrl:
         with pytest.raises(ValueError, match="blocked address"):
             _validate_ollama_url("http://169.254.0.1")
 
+    # --- IPv4-mapped IPv6 ---
+
+    def test_rejects_ipv4_mapped_loopback(self) -> None:
+        with pytest.raises(ValueError, match="blocked address"):
+            _validate_ollama_url("http://[::ffff:127.0.0.1]:11434")
+
+    def test_rejects_ipv4_mapped_metadata(self) -> None:
+        with pytest.raises(ValueError, match="blocked address"):
+            _validate_ollama_url("http://[::ffff:169.254.169.254]")
+
+    def test_rejects_ipv4_mapped_rfc1918(self) -> None:
+        with pytest.raises(ValueError, match="blocked address"):
+            _validate_ollama_url("http://[::ffff:10.0.0.1]:11434")
+
     # --- CGNAT ---
 
     def test_rejects_cgnat(self) -> None:

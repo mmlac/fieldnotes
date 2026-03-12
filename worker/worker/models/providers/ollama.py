@@ -41,6 +41,7 @@ _BLOCKED_NETWORKS = [
     ipaddress.ip_network("169.254.0.0/16"),    # Link-local / cloud metadata
     ipaddress.ip_network("100.64.0.0/10"),     # CGNAT (RFC 6598)
     ipaddress.ip_network("::1/128"),           # IPv6 loopback
+    ipaddress.ip_network("::ffff:0:0/96"),     # IPv4-mapped IPv6 (RFC 4291 §2.5.5.2)
     ipaddress.ip_network("fe80::/10"),         # IPv6 link-local
     ipaddress.ip_network("fd00::/8"),          # IPv6 ULA
 ]
