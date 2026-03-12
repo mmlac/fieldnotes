@@ -200,6 +200,39 @@ class TestSha256Dedup:
         assert await q.submit(doc2)
 
     @pytest.mark.asyncio
+    async def test_concurrent_same_hash_only_one_passes(self) -> None:
+        """Two concurrent submits with identical image bytes — only the first should pass."""
+        import threading
+
+        gate = threading.Event()
+
+        def slow_checker(sha: str) -> bool:
+            """Block until the gate is set, simulating a slow Neo4j query."""
+            gate.wait(timeout=5)
+            return False
+
+        q = _make_queue(dedup_checker=slow_checker)
+        data = b"identical-image-content" * 100
+
+        doc_a = _image_doc(source_id="a.png", image_bytes=data)
+        doc_b = _image_doc(source_id="b.png", image_bytes=data)
+
+        # Launch both submits concurrently.
+        task_a = asyncio.create_task(q.submit(doc_a))
+        task_b = asyncio.create_task(q.submit(doc_b))
+
+        # Give both tasks a chance to reach the lock/checker.
+        await asyncio.sleep(0.05)
+        # Release the slow checker.
+        gate.set()
+
+        result_a, result_b = await asyncio.gather(task_a, task_b)
+
+        # Exactly one should be accepted.
+        assert sum([result_a, result_b]) == 1
+        assert q.stats.skipped_dedup == 1
+
+    @pytest.mark.asyncio
     async def test_seen_hashes_lru_eviction(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """_seen_hashes should evict the oldest entry when it exceeds the cap."""
         monkeypatch.setattr(

@@ -118,6 +118,10 @@ class VisionQueue:
         self._seen_hashes: collections.OrderedDict[str, None] = (
             collections.OrderedDict()
         )
+        # Per-hash async locks to serialize dedup checks for identical images.
+        # Prevents TOCTOU race where concurrent submits for the same SHA256
+        # could both pass dedup before either completes the Neo4j write.
+        self._hash_locks: dict[str, asyncio.Lock] = {}
         self._skip_patterns = [
             re.compile(pat, re.IGNORECASE) for pat in config.skip_patterns
         ]
@@ -216,11 +220,10 @@ class VisionQueue:
             self._stats.increment("skipped_pattern")
             return False
 
-        # SHA256 dedup — in-memory check first, then external.
-        # Reserve the hash BEFORE the external check to prevent concurrent
-        # workers from passing the in-memory gate for the same image.
+        # SHA256 dedup — serialize checks per hash to close the TOCTOU window.
         sha256 = _compute_sha256(doc.image_bytes)
 
+        # Fast path: if already seen in-memory, skip without locking.
         if sha256 in self._seen_hashes:
             self._seen_hashes.move_to_end(sha256)
             logger.debug(
@@ -229,22 +232,44 @@ class VisionQueue:
             self._stats.increment("skipped_dedup")
             return False
 
-        # Reserve the hash atomically before the slow external check.
-        # This closes the TOCTOU window: any concurrent submit() for the
-        # same image will hit the in-memory check above and short-circuit.
-        self._record_seen(sha256)
+        # Acquire a per-hash lock so that concurrent submits for the same
+        # SHA256 are serialized through the external dedup check.  Only the
+        # first caller performs the (slow) Neo4j query; subsequent callers
+        # for the same hash will block here and then hit the in-memory
+        # seen_hashes check inside the lock.
+        lock = self._hash_locks.setdefault(sha256, asyncio.Lock())
+        async with lock:
+            # Re-check in-memory after acquiring lock — a concurrent submit
+            # may have already recorded this hash while we waited.
+            if sha256 in self._seen_hashes:
+                self._seen_hashes.move_to_end(sha256)
+                logger.debug(
+                    "Vision skip %s: SHA256 already seen in session", doc.source_id
+                )
+                self._stats.increment("skipped_dedup")
+                return False
 
-        # Blocking dedup checker (e.g. Neo4j query) — run off the event loop.
-        loop = asyncio.get_running_loop()
-        already_processed = await loop.run_in_executor(
-            None, self._dedup_checker, sha256
-        )
-        if already_processed:
-            logger.debug(
-                "Vision skip %s: SHA256 %s already processed", doc.source_id, sha256[:12]
+            # Blocking dedup checker (e.g. Neo4j query) — run off the event loop.
+            loop = asyncio.get_running_loop()
+            already_processed = await loop.run_in_executor(
+                None, self._dedup_checker, sha256
             )
-            self._stats.increment("skipped_dedup")
-            return False
+            if already_processed:
+                self._record_seen(sha256)
+                logger.debug(
+                    "Vision skip %s: SHA256 %s already processed",
+                    doc.source_id,
+                    sha256[:12],
+                )
+                self._stats.increment("skipped_dedup")
+                return False
+
+            # Not a duplicate — record and enqueue.
+            self._record_seen(sha256)
+
+        # Clean up the lock if no one else is waiting on it.
+        if not lock.locked():
+            self._hash_locks.pop(sha256, None)
 
         await self._queue.put(doc)
         logger.debug(
