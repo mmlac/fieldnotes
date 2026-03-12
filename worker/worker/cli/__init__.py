@@ -151,6 +151,23 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Output structured JSON (question, answer, sources, timing)",
     )
 
+    # ── cluster ─────────────────────────────────────────────────────
+    cluster_p = sub.add_parser(
+        "cluster",
+        help="Run the clustering pipeline manually",
+    )
+    cluster_p.add_argument(
+        "--min-cluster-size",
+        type=int,
+        default=None,
+        help="Override HDBSCAN min_cluster_size (default from config)",
+    )
+    cluster_p.add_argument(
+        "--force",
+        action="store_true",
+        help="Run even if corpus is below min_corpus_size",
+    )
+
     # ── topics ──────────────────────────────────────────────────────
     topics_p = sub.add_parser("topics", help="Browse and inspect topics")
     topics_p.add_argument(
@@ -380,6 +397,19 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "topics":
         try:
             return _run_topics(args, config_path=args.config)
+        except Exception as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+
+    if args.command == "cluster":
+        from worker.cli.cluster import run_cluster
+
+        try:
+            return run_cluster(
+                config_path=args.config,
+                min_cluster_size=args.min_cluster_size,
+                force=args.force,
+            )
         except Exception as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
