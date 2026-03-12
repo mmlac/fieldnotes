@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from croniter import croniter
 from qdrant_client import QdrantClient
 
+from worker.clustering.app_linker import link_apps_to_topics
 from worker.clustering.cluster import (
     CorpusTooSmallError,
     cluster_embeddings,
@@ -78,6 +79,15 @@ def run_clustering_pipeline(
 
     labeled = label_clusters(clusters, registry, qdrant_cfg)
     write_clusters(labeled, clusters, neo4j_cfg, qdrant_cfg)
+
+    # Link Application/Tool nodes to topic clusters
+    try:
+        edge_count = link_apps_to_topics(
+            labeled, clusters, registry, neo4j_cfg,
+        )
+        logger.info("App-topic linking: %d RELATED_TO_TOPIC edges created", edge_count)
+    except Exception:
+        logger.exception("App-topic linking failed, clustering results still saved")
 
     logger.info("Clustering pipeline complete: %d topics written", len(labeled))
     return True
