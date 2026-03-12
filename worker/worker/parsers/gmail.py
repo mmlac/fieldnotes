@@ -18,6 +18,7 @@ from .registry import register
 logger = logging.getLogger(__name__)
 
 _MAX_HTML_BODY_SIZE = 10 * 1024 * 1024  # 10 MiB
+_MAX_RECIPIENTS = 100  # Cap recipients to prevent 100k graph hints per email
 
 
 def _strip_html(html: str) -> str:
@@ -115,6 +116,12 @@ class GmailParser(BaseParser):
             )
 
         # TO: Email → Person (email was sent to each recipient)
+        if len(recipients_raw) > _MAX_RECIPIENTS:
+            logger.warning(
+                "Email %s has %d recipients, truncating to %d",
+                source_id, len(recipients_raw), _MAX_RECIPIENTS,
+            )
+            recipients_raw = recipients_raw[:_MAX_RECIPIENTS]
         for recip_raw in recipients_raw:
             recip_addr = _parse_email_address(recip_raw)
             if not recip_addr:

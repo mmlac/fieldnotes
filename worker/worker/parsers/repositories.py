@@ -27,6 +27,7 @@ from .registry import register
 logger = logging.getLogger(__name__)
 
 _MAX_MANIFEST_SIZE = 1 * 1024 * 1024  # 1 MiB — manifests should never be this large
+_MAX_DEPS_PER_MANIFEST = 500  # Cap dependencies to prevent 100k GraphHints from a single manifest
 
 # Manifest filenames that trigger dependency extraction
 _MANIFEST_FILENAMES: set[str] = {
@@ -284,25 +285,33 @@ def _extract_dependencies(
             filename, repo_name, len(text), _MAX_MANIFEST_SIZE,
         )
         return []
+    hints: list[GraphHint] = []
     try:
         if filename == "Cargo.toml":
-            return _parse_cargo_toml(text, repo_path, repo_name, remote_url)
-        if filename == "pyproject.toml":
-            return _parse_pyproject_toml(text, repo_path, repo_name, remote_url)
-        if filename == "package.json":
-            return _parse_package_json(text, repo_path, repo_name, remote_url)
-        if filename == "go.mod":
-            return _parse_go_mod(text, repo_path, repo_name, remote_url)
-        ext = _file_ext(filename)
-        if ext in _MANIFEST_EXTENSIONS:
-            return _parse_dotnet_project(text, repo_path, repo_name, remote_url)
-        if filename == "Directory.Packages.props":
-            return _parse_directory_packages_props(text, repo_path, repo_name, remote_url)
-        if filename == "packages.config":
-            return _parse_packages_config(text, repo_path, repo_name, remote_url)
+            hints = _parse_cargo_toml(text, repo_path, repo_name, remote_url)
+        elif filename == "pyproject.toml":
+            hints = _parse_pyproject_toml(text, repo_path, repo_name, remote_url)
+        elif filename == "package.json":
+            hints = _parse_package_json(text, repo_path, repo_name, remote_url)
+        elif filename == "go.mod":
+            hints = _parse_go_mod(text, repo_path, repo_name, remote_url)
+        elif _file_ext(filename) in _MANIFEST_EXTENSIONS:
+            hints = _parse_dotnet_project(text, repo_path, repo_name, remote_url)
+        elif filename == "Directory.Packages.props":
+            hints = _parse_directory_packages_props(text, repo_path, repo_name, remote_url)
+        elif filename == "packages.config":
+            hints = _parse_packages_config(text, repo_path, repo_name, remote_url)
     except (json.JSONDecodeError, tomllib.TOMLDecodeError, ET.ParseError, KeyError, ValueError) as exc:
         logger.error("Failed to parse dependencies from %s in %s: %s", filename, repo_name, exc)
-    return []
+        return []
+
+    if len(hints) > _MAX_DEPS_PER_MANIFEST:
+        logger.warning(
+            "Manifest %s in %s has %d dependencies, truncating to %d",
+            filename, repo_name, len(hints), _MAX_DEPS_PER_MANIFEST,
+        )
+        hints = hints[:_MAX_DEPS_PER_MANIFEST]
+    return hints
 
 
 def _dep_hint(

@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 # Max image size to load into memory (50 MiB) — prevents OOM on huge files.
 _MAX_IMAGE_BYTES = 50 * 1024 * 1024
+_MAX_EMBEDS_PER_NOTE = 50  # Cap embedded images to prevent loading 50GB+ from a single note
 
 # [[target]] or [[target|alias]]  — but NOT ![[embed]]
 _WIKILINK_RE = re.compile(r"(?<!\!)\[\[([^\]|]+)(?:\|[^\]]+)?\]\]")
@@ -179,7 +180,14 @@ class ObsidianParser(BaseParser):
         # --- Handle ![[image.png]] embeds → separate image ParsedDocuments ----
         vault_root = meta.get("vault_root", "")
         vault_path = meta.get("vault_path", "")
-        for embed_path in _EMBED_RE.findall(body):
+        embed_matches = _EMBED_RE.findall(body)
+        if len(embed_matches) > _MAX_EMBEDS_PER_NOTE:
+            logger.warning(
+                "Note %s has %d image embeds, truncating to %d",
+                source_id, len(embed_matches), _MAX_EMBEDS_PER_NOTE,
+            )
+            embed_matches = embed_matches[:_MAX_EMBEDS_PER_NOTE]
+        for embed_path in embed_matches:
             # Build a source_id for the image relative to the vault
             if vault_root:
                 image_id = str(PurePosixPath(vault_root) / embed_path)

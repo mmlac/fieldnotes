@@ -39,6 +39,8 @@ _network_retry = retry(
 )
 
 DEFAULT_TOP_K = 10
+MAX_TOP_K = 1000
+MAX_QUESTION_LENGTH = 100_000  # 100k chars — prevents embedding OOM on multi-MB queries
 
 
 @dataclass
@@ -102,6 +104,21 @@ class VectorQuerier:
         source_type:
             If set, filter results to only this source type (e.g. "file").
         """
+        # Clamp top_k to valid range.
+        if top_k < 1 or top_k > MAX_TOP_K:
+            logger.warning(
+                "top_k=%d out of bounds, clamping to [1, %d]", top_k, MAX_TOP_K,
+            )
+            top_k = max(1, min(top_k, MAX_TOP_K))
+
+        # Truncate oversized questions to prevent embedding OOM.
+        if len(question) > MAX_QUESTION_LENGTH:
+            logger.warning(
+                "Question length %d exceeds max %d chars, truncating",
+                len(question), MAX_QUESTION_LENGTH,
+            )
+            question = question[:MAX_QUESTION_LENGTH]
+
         try:
             # Embed the query text (retry handled by provider).
             model = self._registry.for_role("embed")

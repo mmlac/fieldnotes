@@ -312,8 +312,22 @@ def _parse(raw: dict[str, Any]) -> Config:
                     f"[clustering] min_interval_seconds must be >= 10.0, "
                     f"got {cl['min_interval_seconds']}"
                 )
+            if cl["min_interval_seconds"] > 86_400.0:
+                raise ValueError(
+                    f"[clustering] min_interval_seconds must be <= 86400 (24h), "
+                    f"got {cl['min_interval_seconds']}"
+                )
         if "max_vectors" in cl:
             _check_type("clustering", "max_vectors", cl["max_vectors"], int)
+            if cl["max_vectors"] < 1:
+                raise ValueError(
+                    f"[clustering] max_vectors must be >= 1, got {cl['max_vectors']}"
+                )
+            if cl["max_vectors"] > 10_000_000:
+                raise ValueError(
+                    f"[clustering] max_vectors must be <= 10000000, "
+                    f"got {cl['max_vectors']}"
+                )
         cfg.clustering = ClusteringConfig(
             enabled=cl.get("enabled", cfg.clustering.enabled),
             cron=cl.get("cron", cfg.clustering.cron),
