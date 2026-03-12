@@ -40,6 +40,8 @@ from worker.sources.files import FileSource
 from worker.sources.gmail import GmailSource
 from worker.sources.obsidian import ObsidianSource
 from worker.sources.repositories import RepositorySource
+from worker.sources.homebrew import HomebrewSource
+from worker.sources.macos_apps import MacOSAppsSource
 from worker.sources.base import PythonSource
 
 # Importing parsers triggers @register decorators
@@ -56,6 +58,8 @@ SOURCE_CLASSES: dict[str, type[PythonSource]] = {
     "gmail": GmailSource,
     "obsidian": ObsidianSource,
     "repositories": RepositorySource,
+    "macos_apps": MacOSAppsSource,
+    "homebrew": HomebrewSource,
 }
 
 

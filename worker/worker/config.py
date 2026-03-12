@@ -174,6 +174,32 @@ def _validate_repositories_config(settings: dict[str, Any]) -> None:
         _check_type(section, "max_file_size", settings["max_file_size"], int)
 
 
+def _validate_macos_apps_config(settings: dict[str, Any]) -> None:
+    """Validate [sources.macos_apps] settings."""
+    section = "sources.macos_apps"
+    if "enabled" in settings:
+        _check_type(section, "enabled", settings["enabled"], bool)
+    if "scan_dirs" in settings:
+        _check_list_of(section, "scan_dirs", settings["scan_dirs"], str)
+    if "poll_interval_seconds" in settings:
+        _check_type(section, "poll_interval_seconds", settings["poll_interval_seconds"], int)
+    if "state_path" in settings:
+        _check_type(section, "state_path", settings["state_path"], str)
+
+
+def _validate_homebrew_config(settings: dict[str, Any]) -> None:
+    """Validate [sources.homebrew] settings."""
+    section = "sources.homebrew"
+    if "enabled" in settings:
+        _check_type(section, "enabled", settings["enabled"], bool)
+    if "poll_interval_seconds" in settings:
+        _check_type(section, "poll_interval_seconds", settings["poll_interval_seconds"], int)
+    if "state_path" in settings:
+        _check_type(section, "state_path", settings["state_path"], str)
+    if "include_system" in settings:
+        _check_type(section, "include_system", settings["include_system"], bool)
+
+
 def _parse(raw: dict[str, Any]) -> Config:
     cfg = Config()
 
@@ -240,6 +266,10 @@ def _parse(raw: dict[str, Any]) -> Config:
         settings = dict(scfg)
         if name == "repositories":
             _validate_repositories_config(settings)
+        elif name == "macos_apps":
+            _validate_macos_apps_config(settings)
+        elif name == "homebrew":
+            _validate_homebrew_config(settings)
         cfg.sources[name] = SourceConfig(name=name, settings=settings)
 
     # [vision]

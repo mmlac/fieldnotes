@@ -129,6 +129,9 @@ ALLOWED_PREDICATES: frozenset[str] = frozenset({
     "ATTENDED",
     "PARTICIPATED_IN",
     "SPOKE_AT",
+    "INSTALLED_VIA",
+    "CATEGORIZED_AS",
+    "PROVIDES",
 })
 
 _LUCENE_SPECIAL_RE = re.compile(r'([+\-&|!(){}[\]^"~*?:\\/])')
