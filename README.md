@@ -177,7 +177,14 @@ completion = "local_chat"         # ask tool synthesis
 ```toml
 [sources.files]
 watch_paths = ["~/Documents"]
-include_extensions = [".md", ".txt"]    # optional filter
+include_extensions = [                   # optional filter — omit to allow all
+  ".md", ".txt", ".pdf",                # documents
+  ".json", ".yaml", ".yml", ".toml",    # structured data
+  ".csv", ".html",                       # tabular / web
+  ".pages", ".key",                      # Apple iWork (macOS only, needs app installed)
+  ".png", ".jpg", ".jpeg", ".gif",       # images (vision pipeline)
+  ".webp", ".bmp", ".tiff", ".heic",
+]
 exclude_patterns = ["node_modules/"]
 recursive = true
 max_file_size = 104857600               # 100 MB
