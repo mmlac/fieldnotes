@@ -511,3 +511,59 @@ async def test_disabled_source_emits_nothing(tmp_path: Path) -> None:
         pass
 
     assert len(events) == 0
+
+
+@pytest.mark.asyncio
+async def test_poll_interval_respected(tmp_path: Path) -> None:
+    """poll_interval_seconds should be passed to asyncio.sleep between scans."""
+    _create_app(tmp_path, "App", bundle_id="com.test.poll")
+
+    s = MacOSAppsSource()
+    s.configure({
+        "enabled": True,
+        "scan_dirs": [str(tmp_path)],
+        "state_path": str(tmp_path / "state.json"),
+        "poll_interval_seconds": 42,
+    })
+
+    sleep_args: list[float] = []
+    original_sleep = asyncio.sleep
+
+    async def mock_sleep(delay: float, *args: Any, **kwargs: Any) -> None:
+        sleep_args.append(delay)
+        raise asyncio.CancelledError
+
+    q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    with patch("asyncio.sleep", side_effect=mock_sleep):
+        task = asyncio.create_task(s.start(q))
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    assert 42 in sleep_args
+
+
+@pytest.mark.asyncio
+async def test_graceful_shutdown_during_sleep(tmp_path: Path) -> None:
+    """Cancellation during sleep should exit cleanly without errors."""
+    _create_app(tmp_path, "App", bundle_id="com.test.shutdown")
+
+    s = MacOSAppsSource()
+    s.configure({
+        "enabled": True,
+        "scan_dirs": [str(tmp_path)],
+        "state_path": str(tmp_path / "state.json"),
+        "poll_interval_seconds": 9999,
+    })
+
+    q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    task = asyncio.create_task(s.start(q))
+
+    # Wait for initial scan to complete
+    await _collect_events(q, timeout=2.0)
+
+    # Cancel during sleep between polls
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task

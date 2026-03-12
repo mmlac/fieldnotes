@@ -8,7 +8,7 @@ Config section ``[sources.macos_apps]``::
 
     enabled = true
     scan_dirs = ["/Applications", "~/Applications"]
-    poll_interval_seconds = 86400
+    poll_interval_seconds = 21600
     state_path = "~/.fieldnotes/state/apps.json"
 """
 
@@ -35,7 +35,7 @@ from .base import PythonSource
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_POLL_INTERVAL = 86400  # 24 hours
+DEFAULT_POLL_INTERVAL = 21600  # 6 hours
 DEFAULT_SCAN_DIRS = ["/Applications", "~/Applications"]
 DEFAULT_STATE_PATH = Path.home() / ".fieldnotes" / "state" / "apps.json"
 
@@ -160,7 +160,7 @@ class MacOSAppsSource(PythonSource):
     Config keys (from ``[sources.macos_apps]``):
         enabled: bool             — enable scanning (default: true on macOS)
         scan_dirs: list[str]      — directories to scan (default: /Applications, ~/Applications)
-        poll_interval_seconds: int — scan interval (default: 86400)
+        poll_interval_seconds: int — scan interval (default: 21600)
         state_path: str           — state persistence file (optional)
     """
 
@@ -230,7 +230,8 @@ class MacOSAppsSource(PythonSource):
         apps = await loop.run_in_executor(None, _discover_apps, self._scan_dirs)
 
         current: dict[str, str] = {}  # bundle_id → hash
-        count = 0
+        new_count = 0
+        updated_count = 0
 
         for app_path in apps:
             metadata = await loop.run_in_executor(None, _parse_info_plist, app_path)
@@ -247,8 +248,10 @@ class MacOSAppsSource(PythonSource):
             prev_hash = state.get(bundle_id)
             if prev_hash is None:
                 operation = "created"
+                new_count += 1
             elif prev_hash != plist_hash:
                 operation = "modified"
+                updated_count += 1
             else:
                 continue  # unchanged
 
@@ -260,10 +263,10 @@ class MacOSAppsSource(PythonSource):
             WATCHER_LAST_EVENT_TIMESTAMP.labels(
                 source_type=_SOURCE_TYPE,
             ).set_to_current_time()
-            count += 1
 
         # Detect removed apps
-        for bundle_id in set(state) - set(current):
+        removed_ids = set(state) - set(current)
+        for bundle_id in removed_ids:
             event = _build_event(
                 {"bundle_id": bundle_id, "name": bundle_id, "path": "", "version": "", "category": ""},
                 "deleted",
@@ -275,19 +278,12 @@ class MacOSAppsSource(PythonSource):
             WATCHER_LAST_EVENT_TIMESTAMP.labels(
                 source_type=_SOURCE_TYPE,
             ).set_to_current_time()
-            count += 1
 
         # Update state to reflect current scan
         state.clear()
         state.update(current)
 
-        if count:
-            logger.info(
-                "macOS app scan complete: %d event(s) emitted (%d apps discovered)",
-                count, len(current),
-            )
-        else:
-            logger.debug(
-                "macOS app scan complete: no changes (%d apps discovered)",
-                len(current),
-            )
+        logger.info(
+            "App scan: %d new, %d removed, %d updated, %d total",
+            new_count, len(removed_ids), updated_count, len(current),
+        )

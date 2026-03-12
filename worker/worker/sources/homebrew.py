@@ -7,7 +7,7 @@ uninstalls, and version changes across scans using a local state file.
 Config section ``[sources.homebrew]``::
 
     enabled = true
-    poll_interval_seconds = 86400
+    poll_interval_seconds = 21600
     state_path = "~/.fieldnotes/state/brew.json"
     include_system = false
 """
@@ -36,7 +36,7 @@ from .base import PythonSource
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_POLL_INTERVAL = 86400  # 24 hours
+DEFAULT_POLL_INTERVAL = 21600  # 6 hours
 DEFAULT_STATE_PATH = Path.home() / ".fieldnotes" / "state" / "brew.json"
 BREW_TIMEOUT = 120  # seconds — some systems are very slow
 
@@ -244,7 +244,7 @@ class HomebrewSource(PythonSource):
 
     Config keys (from ``[sources.homebrew]``):
         enabled: bool                     — enable this source (default: true on macOS)
-        poll_interval_seconds: int        — scan interval (default: 86400)
+        poll_interval_seconds: int        — scan interval (default: 21600)
         state_path: str                   — state persistence file
         include_system: bool              — include macOS-bundled formulae (default: false)
     """
@@ -330,6 +330,9 @@ class HomebrewSource(PythonSource):
             # Initial scan — emit all as created
             changes = [(sid, snap, "created") for sid, snap in curr_state.items()]
 
+        new_count = 0
+        removed_count = 0
+        updated_count = 0
         for source_id, snapshot, operation in changes:
             event = _build_event(source_id, snapshot, operation)
             await queue.put(event)
@@ -339,16 +342,17 @@ class HomebrewSource(PythonSource):
             WATCHER_LAST_EVENT_TIMESTAMP.labels(
                 source_type="homebrew",
             ).set_to_current_time()
+            if operation == "created":
+                new_count += 1
+            elif operation == "deleted":
+                removed_count += 1
+            elif operation == "modified":
+                updated_count += 1
 
-        if changes:
-            logger.info(
-                "Homebrew scan complete: %d event(s) (%d formulae, %d casks total)",
-                len(changes),
-                sum(1 for s in curr_state.values() if s["kind"] == "formula"),
-                sum(1 for s in curr_state.values() if s["kind"] == "cask"),
-            )
-        else:
-            logger.debug("Homebrew scan complete: no changes")
+        logger.info(
+            "App scan: %d new, %d removed, %d updated, %d total",
+            new_count, removed_count, updated_count, len(curr_state),
+        )
 
         # Update state for next cycle
         prev_state.clear()

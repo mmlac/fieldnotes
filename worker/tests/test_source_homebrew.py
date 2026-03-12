@@ -382,3 +382,96 @@ async def test_uninstall_detection(tmp_path: Path) -> None:
     ops = {e["source_id"]: e["operation"] for e in events}
     assert ops["brew://formula/ripgrep"] == "deleted"
     assert ops["brew://cask/docker"] == "created"
+
+
+@pytest.mark.asyncio
+async def test_poll_interval_respected(tmp_path: Path) -> None:
+    """poll_interval_seconds should be passed to asyncio.sleep between scans."""
+    s = HomebrewSource()
+    s.configure({
+        "state_path": str(tmp_path / "state.json"),
+        "poll_interval_seconds": 42,
+    })
+
+    sleep_args: list[float] = []
+
+    async def mock_sleep(delay: float, *args: Any, **kwargs: Any) -> None:
+        sleep_args.append(delay)
+        raise asyncio.CancelledError
+
+    with patch("worker.sources.homebrew._find_brew", return_value="/usr/local/bin/brew"), \
+         patch("worker.sources.homebrew._collect_installed", return_value=SAMPLE_BREW_JSON), \
+         patch("worker.sources.homebrew._brew_prefix", return_value="/usr/local"), \
+         patch("asyncio.sleep", side_effect=mock_sleep):
+        q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        task = asyncio.create_task(s.start(q))
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    assert 42 in sleep_args
+
+
+@pytest.mark.asyncio
+async def test_graceful_shutdown_during_sleep(tmp_path: Path) -> None:
+    """Cancellation during sleep should exit cleanly without errors."""
+    s = HomebrewSource()
+    s.configure({
+        "state_path": str(tmp_path / "state.json"),
+        "poll_interval_seconds": 9999,
+    })
+
+    with patch("worker.sources.homebrew._find_brew", return_value="/usr/local/bin/brew"), \
+         patch("worker.sources.homebrew._collect_installed", return_value=SAMPLE_BREW_JSON), \
+         patch("worker.sources.homebrew._brew_prefix", return_value="/usr/local"):
+        q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        task = asyncio.create_task(s.start(q))
+
+        # Wait for initial scan to complete
+        await _collect_events(q, timeout=2.0)
+
+        # Cancel during sleep between polls
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+
+@pytest.mark.asyncio
+async def test_no_changes_emits_nothing(tmp_path: Path) -> None:
+    """Second scan with no changes should emit no new events."""
+    state_path = tmp_path / "state.json"
+
+    # Seed state with current packages (simulating first scan already done)
+    s1 = HomebrewSource()
+    s1.configure({"state_path": str(state_path)})
+
+    with patch("worker.sources.homebrew._find_brew", return_value="/usr/local/bin/brew"), \
+         patch("worker.sources.homebrew._collect_installed", return_value=SAMPLE_BREW_JSON), \
+         patch("worker.sources.homebrew._brew_prefix", return_value="/usr/local"):
+        q1: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        task1 = asyncio.create_task(s1.start(q1))
+        await _collect_events(q1)
+        task1.cancel()
+        try:
+            await task1
+        except asyncio.CancelledError:
+            pass
+
+    # Second scan with identical data
+    s2 = HomebrewSource()
+    s2.configure({"state_path": str(state_path)})
+
+    with patch("worker.sources.homebrew._find_brew", return_value="/usr/local/bin/brew"), \
+         patch("worker.sources.homebrew._collect_installed", return_value=SAMPLE_BREW_JSON), \
+         patch("worker.sources.homebrew._brew_prefix", return_value="/usr/local"):
+        q2: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        task2 = asyncio.create_task(s2.start(q2))
+        events = await _collect_events(q2)
+        task2.cancel()
+        try:
+            await task2
+        except asyncio.CancelledError:
+            pass
+
+    assert events == []
