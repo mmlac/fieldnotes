@@ -52,11 +52,14 @@ class MacOSAppsParser(BaseParser):
         version: str = meta.get("version", "")
         path: str = meta.get("path", "")
         category: str = meta.get("category", "")
+        description: str = meta.get("description", "")
 
-        # Build content text
+        # Build content text — include description if available
         parts = [name]
         if version:
             parts[0] = f"{name} (v{version})"
+        if description and description != "Unknown application":
+            parts.append(description)
         text = " — ".join(p for p in parts if p)
 
         node_props: dict[str, Any] = {
@@ -65,6 +68,8 @@ class MacOSAppsParser(BaseParser):
             "version": version,
             "path": path,
         }
+        if description:
+            node_props["description"] = description
 
         graph_hints: list[GraphHint] = []
 

@@ -175,6 +175,29 @@ class TestMacOSAppsParser:
         assert docs[0].node_props["name"] == ""
         assert docs[0].node_props["bundle_id"] == ""
 
+    def test_description_from_meta(self):
+        """Parser includes description in node_props and text when provided."""
+        event = _app_event()
+        event["meta"]["description"] = "A powerful code editor."
+        docs = self.parser.parse(event)
+        doc = docs[0]
+        assert doc.node_props["description"] == "A powerful code editor."
+        assert "A powerful code editor." in doc.text
+
+    def test_unknown_description_excluded_from_text(self):
+        """'Unknown application' descriptions are stored but not in text."""
+        event = _app_event()
+        event["meta"]["description"] = "Unknown application"
+        docs = self.parser.parse(event)
+        doc = docs[0]
+        assert doc.node_props["description"] == "Unknown application"
+        assert "Unknown application" not in doc.text
+
+    def test_no_description_no_prop(self):
+        """Without description in meta, node_props has no description key."""
+        docs = self.parser.parse(_app_event())
+        assert "description" not in docs[0].node_props
+
     def test_registry_registration(self):
         from worker.parsers.registry import get
 

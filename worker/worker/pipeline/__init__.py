@@ -43,6 +43,11 @@ from worker.pipeline.vision import (
     vision_result_to_chunk,
     vision_result_to_entities,
 )
+from worker.pipeline.app_describer import (
+    AppDescriptionCache,
+    AppInfo,
+    describe_apps,
+)
 from worker.pipeline.vision_queue import VisionQueue, VisionResult as VisionQueueResult
 from worker.pipeline.writer import WriteUnit, Writer
 
@@ -74,6 +79,7 @@ class Pipeline:
         self._registry = registry
         self._writer = writer
         self._vision_queue = vision_queue
+        self._app_desc_cache = AppDescriptionCache()
 
     def process(self, parsed_doc: ParsedDocument) -> None:
         """Process a single parsed document through the full pipeline.
@@ -88,6 +94,21 @@ class Pipeline:
 
     def _process_inner(self, parsed_doc: ParsedDocument) -> None:
         """Inner process logic, wrapped by total duration timing."""
+        # Enrich single app doc with LLM description if needed
+        if (
+            parsed_doc.source_type == "macos_apps"
+            and parsed_doc.operation != "deleted"
+            and not parsed_doc.node_props.get("description")
+        ):
+            try:
+                self._enrich_app_descriptions([parsed_doc])
+            except Exception:
+                logger.debug(
+                    "App description enrichment failed for %s",
+                    parsed_doc.source_id,
+                    exc_info=True,
+                )
+
         # Deletions: remove from both stores and return early
         if parsed_doc.operation == "deleted":
             with observe_duration(PIPELINE_DURATION, stage="write"):
@@ -130,6 +151,15 @@ class Pipeline:
         list[ParsedDocument]
             Documents that failed processing (empty list if all succeeded).
         """
+        # Enrich app descriptions before processing
+        try:
+            self._enrich_app_descriptions(docs)
+        except Exception:
+            logger.warning(
+                "App description enrichment failed — continuing without descriptions",
+                exc_info=True,
+            )
+
         failed: list[ParsedDocument] = []
         for doc in docs:
             try:
@@ -261,6 +291,67 @@ class Pipeline:
             len(write_entities),
             len(all_triples),
         )
+
+    # ------------------------------------------------------------------
+    # App description enrichment
+    # ------------------------------------------------------------------
+
+    def _enrich_app_descriptions(self, docs: list[ParsedDocument]) -> None:
+        """Enrich macOS app documents with LLM-generated descriptions.
+
+        Collects apps that have no description (not from brew, no cached
+        description), generates descriptions via LLM in batches, and
+        updates the documents' node_props and text in-place.
+
+        Brew descriptions are never overwritten.
+        """
+        apps_needing_desc: list[tuple[ParsedDocument, AppInfo]] = []
+
+        for doc in docs:
+            if doc.source_type != "macos_apps":
+                continue
+            if doc.operation == "deleted":
+                continue
+            # Skip if already has a description (e.g. from brew or prior enrichment)
+            if doc.node_props.get("description"):
+                continue
+
+            bundle_id = doc.node_props.get("bundle_id", "")
+            if not bundle_id:
+                continue
+
+            apps_needing_desc.append((
+                doc,
+                AppInfo(
+                    bundle_id=bundle_id,
+                    display_name=doc.node_props.get("name", ""),
+                    category="",  # category not in node_props, check source_metadata
+                    version=doc.node_props.get("version", ""),
+                ),
+            ))
+
+        if not apps_needing_desc:
+            return
+
+        # Batch describe via LLM (with cache)
+        app_infos = [info for _, info in apps_needing_desc]
+        descriptions = describe_apps(app_infos, self._registry, self._app_desc_cache)
+
+        # Update documents in-place
+        for doc, info in apps_needing_desc:
+            desc = descriptions.get(info.bundle_id)
+            if desc and desc != "Unknown application":
+                doc.node_props["description"] = desc
+                # Rebuild text to include description
+                name = doc.node_props.get("name", "")
+                version = doc.node_props.get("version", "")
+                parts = [name]
+                if version:
+                    parts[0] = f"{name} (v{version})"
+                parts.append(desc)
+                doc.text = " — ".join(p for p in parts if p)
+            elif desc == "Unknown application":
+                doc.node_props["description"] = desc
 
     # ------------------------------------------------------------------
     # Vision pipeline
