@@ -22,6 +22,7 @@ Deletions:
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 import threading
@@ -798,9 +799,31 @@ def _upsert_source_node(tx: Any, doc: ParsedDocument) -> None:
     tx.run(query, **props)
 
 
+def _truncate_entity_name(name: str) -> str:
+    """Truncate an entity name to MAX_ENTITY_NAME_LEN with hash disambiguation.
+
+    If the name exceeds the limit, appends a short hash of the full name to
+    avoid collisions where two distinct long names share a common prefix.
+    """
+    if len(name) <= MAX_ENTITY_NAME_LEN:
+        return name
+
+    suffix = hashlib.sha256(name.encode()).hexdigest()[:8]
+    # Leave room for the hash suffix: "…<truncated>_<8-char-hash>"
+    truncated = name[: MAX_ENTITY_NAME_LEN - 9] + "_" + suffix
+    logger.warning(
+        "Entity name truncated from %d to %d chars (hash=%s): %.80s...",
+        len(name),
+        len(truncated),
+        suffix,
+        name[:80],
+    )
+    return truncated
+
+
 def _upsert_entity(tx: Any, entity: dict[str, Any]) -> None:
     """MERGE an Entity node on name, setting type and confidence."""
-    name = entity["name"][:MAX_ENTITY_NAME_LEN]
+    name = _truncate_entity_name(entity["name"])
     tx.run(
         """
         MERGE (e:Entity {name: $name})
@@ -822,7 +845,7 @@ def _merge_mentions_edge(tx: Any, source_id: str, entity_name: str) -> None:
         MERGE (s)-[:MENTIONS]->(e)
         """,
         sid=source_id,
-        name=entity_name[:MAX_ENTITY_NAME_LEN],
+        name=_truncate_entity_name(entity_name),
     )
 
 
@@ -835,7 +858,7 @@ def _merge_depicts_edge(tx: Any, source_id: str, entity_name: str) -> None:
         MERGE (s)-[:DEPICTS]->(e)
         """,
         sid=source_id,
-        name=entity_name[:MAX_ENTITY_NAME_LEN],
+        name=_truncate_entity_name(entity_name),
     )
 
 
@@ -918,8 +941,8 @@ def _merge_entity_edge(tx: Any, triple: dict[str, str]) -> None:
         MERGE (o:Entity {{name: $object}})
         MERGE (s)-[:{predicate}]->(o)
         """,
-        subject=triple["subject"][:MAX_ENTITY_NAME_LEN],
-        object=triple["object"][:MAX_ENTITY_NAME_LEN],
+        subject=_truncate_entity_name(triple["subject"]),
+        object=_truncate_entity_name(triple["object"]),
     )
 
 

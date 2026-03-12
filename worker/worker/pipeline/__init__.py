@@ -53,6 +53,8 @@ from worker.pipeline.writer import WriteUnit, Writer
 
 logger = logging.getLogger(__name__)
 
+MAX_CHUNKS_PER_DOC = 10_000
+
 
 class Pipeline:
     """Orchestrates document processing through all pipeline stages.
@@ -217,6 +219,14 @@ class Pipeline:
         # 1. Chunk
         with observe_duration(PIPELINE_DURATION, stage="chunk"):
             chunks = chunk_text(doc.text)
+        if len(chunks) > MAX_CHUNKS_PER_DOC:
+            logger.warning(
+                "Document %s produced %d chunks (limit %d) — truncating",
+                doc.source_id,
+                len(chunks),
+                MAX_CHUNKS_PER_DOC,
+            )
+            chunks = chunks[:MAX_CHUNKS_PER_DOC]
         if not chunks:
             # No meaningful text to process — write source node + hints only
             with observe_duration(PIPELINE_DURATION, stage="write"):

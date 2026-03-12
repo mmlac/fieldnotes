@@ -28,6 +28,7 @@ LLM_TIMEOUT = 120.0  # seconds
 
 ALLOWED_ENTITY_TYPES = frozenset({"Person", "Technology", "Project", "Organization", "Concept"})
 DEFAULT_CONFIDENCE = 0.75
+MAX_ENTITY_NAME_LEN = 512
 
 SYSTEM_PROMPT = """\
 You are an entity and relationship extraction system. Given a text chunk, \
@@ -233,6 +234,15 @@ def _validate_and_build(data: dict[str, Any]) -> ExtractionResult:
     for ent in entities_raw:
         if not isinstance(ent, dict) or "name" not in ent:
             continue
+        name = ent["name"]
+        if not isinstance(name, str) or len(name) > MAX_ENTITY_NAME_LEN:
+            logger.warning(
+                "Rejecting entity with oversized name (%d chars, limit %d): %.80s...",
+                len(name) if isinstance(name, str) else 0,
+                MAX_ENTITY_NAME_LEN,
+                str(name)[:80],
+            )
+            continue
         entity_type = ent.get("type", "Concept")
         if entity_type not in ALLOWED_ENTITY_TYPES:
             entity_type = "Concept"
@@ -242,7 +252,7 @@ def _validate_and_build(data: dict[str, Any]) -> ExtractionResult:
             confidence = DEFAULT_CONFIDENCE
         confidence = max(0.0, min(1.0, confidence))
         entities.append({
-            "name": ent["name"],
+            "name": name,
             "type": entity_type,
             "confidence": confidence,
         })
@@ -252,10 +262,21 @@ def _validate_and_build(data: dict[str, Any]) -> ExtractionResult:
         if not isinstance(tri, dict):
             continue
         if all(k in tri for k in ("subject", "predicate", "object")):
+            subj = str(tri["subject"])
+            obj = str(tri["object"])
+            if len(subj) > MAX_ENTITY_NAME_LEN or len(obj) > MAX_ENTITY_NAME_LEN:
+                logger.warning(
+                    "Rejecting triple with oversized subject/object name "
+                    "(subject=%d chars, object=%d chars, limit %d)",
+                    len(subj),
+                    len(obj),
+                    MAX_ENTITY_NAME_LEN,
+                )
+                continue
             triples.append({
-                "subject": str(tri["subject"]),
+                "subject": subj,
                 "predicate": str(tri["predicate"]),
-                "object": str(tri["object"]),
+                "object": obj,
             })
 
     return ExtractionResult(entities=entities, triples=triples)
