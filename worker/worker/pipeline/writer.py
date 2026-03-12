@@ -462,6 +462,11 @@ class Writer:
         """Execute all Neo4j writes within a single transaction."""
         doc = unit.doc
 
+        # 0. Clean stale MENTIONS edges on source modification so only
+        #    edges for the current content are present after re-write.
+        if doc.operation == "modified":
+            _clean_source_edges(tx, doc.source_id, "MENTIONS")
+
         # 1. Upsert source node
         _upsert_source_node(tx, doc)
 
@@ -689,6 +694,19 @@ def _merge_depicts_edge(tx: Any, source_id: str, entity_name: str) -> None:
         """,
         sid=source_id,
         name=entity_name[:MAX_ENTITY_NAME_LEN],
+    )
+
+
+def _clean_source_edges(tx: Any, source_id: str, edge_type: str) -> None:
+    """Delete all edges of a given type from a source node.
+
+    Used to remove stale edges before re-writing them on source modification,
+    ensuring only edges corresponding to the current content remain.
+    """
+    edge_type = _validate_cypher_identifier(edge_type, "edge_type")
+    tx.run(
+        f"MATCH (s {{source_id: $sid}})-[r:{edge_type}]->() DELETE r",
+        sid=source_id,
     )
 
 
