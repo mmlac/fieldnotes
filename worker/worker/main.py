@@ -26,7 +26,13 @@ from qdrant_client import QdrantClient
 
 from worker.clustering.scheduler import clustering_loop
 from worker.config import Config, load_config
-from worker.metrics import QUEUE_DEPTH, init_metrics
+from worker.metrics import (
+    DEFAULT_COLLECT_INTERVAL,
+    QUEUE_DEPTH,
+    WORKER_UPTIME,
+    collect_index_status,
+    init_metrics,
+)
 from worker.models.resolver import ModelRegistry
 from worker.pipeline import Pipeline
 from worker.pipeline.writer import Writer
@@ -101,6 +107,32 @@ def _build_sources(cfg: Config) -> list[PythonSource]:
     return sources
 
 
+async def _index_status_loop(
+    writer: Writer,
+    collection_name: str,
+    start_time: float,
+    interval: float = DEFAULT_COLLECT_INTERVAL,
+) -> None:
+    """Background task: collect index status gauges periodically."""
+    logger.info("Index status collector started (interval=%.0fs)", interval)
+    loop = asyncio.get_running_loop()
+    while True:
+        try:
+            WORKER_UPTIME.set(time.monotonic() - start_time)
+            await loop.run_in_executor(
+                None,
+                collect_index_status,
+                writer._neo4j_driver,
+                writer._qdrant,
+                collection_name,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("Index status collection failed", exc_info=True)
+        await asyncio.sleep(interval)
+
+
 async def _run(cfg: Config) -> None:
     """Main async loop: start sources, consume events, run pipeline."""
     # Initialize model registry
@@ -110,6 +142,10 @@ async def _run(cfg: Config) -> None:
     # Initialize writer (connects to Neo4j + Qdrant)
     writer = Writer(neo4j_cfg=cfg.neo4j, qdrant_cfg=cfg.qdrant)
     logger.info("Writer initialized")
+
+    # Record startup time for uptime gauge
+    start_time = time.monotonic()
+    WORKER_UPTIME.set(0)
 
     # Initialize pipeline
     pipeline = Pipeline(registry=registry, writer=writer)
@@ -122,8 +158,19 @@ async def _run(cfg: Config) -> None:
         pipeline.close()
         return
 
-    # Start clustering scheduler as a background task
+    # Start background tasks
     background_tasks: list[asyncio.Task[None]] = []
+
+    # Index status collector — first collection on startup, then every 60s
+    collection_name = cfg.qdrant.collection or "fieldnotes"
+    status_task = asyncio.create_task(
+        _index_status_loop(writer, collection_name, start_time),
+        name="index-status-collector",
+    )
+    background_tasks.append(status_task)
+    logger.info("Index status collector enabled")
+
+    # Start clustering scheduler as a background task
     if cfg.clustering.enabled:
         cluster_task = asyncio.create_task(
             clustering_loop(registry, cfg.clustering, cfg.qdrant, cfg.neo4j),

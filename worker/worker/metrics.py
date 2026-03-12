@@ -22,7 +22,7 @@ import logging
 import threading
 import time
 from contextlib import contextmanager
-from typing import TYPE_CHECKING, Iterator
+from typing import TYPE_CHECKING, Any, Iterator
 
 from prometheus_client import (
     CollectorRegistry,
@@ -33,6 +33,8 @@ from prometheus_client import (
 )
 
 if TYPE_CHECKING:
+    from neo4j import Driver
+    from qdrant_client import QdrantClient
     from worker.config import Config
 
 logger = logging.getLogger(__name__)
@@ -257,6 +259,91 @@ def observe_duration(histogram: Histogram, **labels: str) -> Iterator[None]:
             histogram.labels(**labels).observe(elapsed)
         else:
             histogram.observe(elapsed)
+
+
+# ---------------------------------------------------------------------------
+# Index status collector
+# ---------------------------------------------------------------------------
+
+DEFAULT_COLLECT_INTERVAL = 60.0
+
+
+def collect_index_status(
+    neo4j_driver: Driver,
+    qdrant_client: QdrantClient,
+    collection_name: str,
+) -> None:
+    """Query Neo4j and Qdrant for current index statistics and update gauges.
+
+    All Neo4j queries use read-only (auto-commit) sessions.  Failures are
+    logged and swallowed so the collector never crashes the worker.
+    """
+    _collect_neo4j(neo4j_driver)
+    _collect_qdrant(qdrant_client, collection_name)
+
+
+def _collect_neo4j(driver: Driver) -> None:
+    """Read index stats from Neo4j."""
+    try:
+        with driver.session() as session:
+            # Source counts by type
+            result = session.run(
+                "MATCH (s) "
+                "WHERE s:File OR s:Email OR s:Repository OR s:ObsidianNote "
+                "RETURN labels(s)[0] AS type, count(s) AS count"
+            )
+            for record in result:
+                SOURCES_TOTAL.labels(source_type=record["type"]).set(record["count"])
+
+            # Entity, Chunk, Topic counts
+            for label, gauge in [
+                ("Entity", ENTITIES_TOTAL),
+                ("Chunk", CHUNKS_TOTAL),
+                ("Topic", TOPICS_TOTAL),
+            ]:
+                result = session.run(
+                    f"MATCH (n:{label}) RETURN count(n) AS count"
+                )
+                gauge.set(result.single()["count"])
+
+            # Edge counts by type
+            result = session.run(
+                "MATCH ()-[r]->() RETURN type(r) AS type, count(r) AS count"
+            )
+            for record in result:
+                EDGES_TOTAL.labels(type=record["type"]).set(record["count"])
+
+            # Store size (not available in all Neo4j editions)
+            try:
+                result = session.run(
+                    "CALL dbms.queryJmx("
+                    "'org.neo4j:instance=kernel#0,name=Store sizes'"
+                    ") YIELD attributes "
+                    "RETURN attributes"
+                )
+                rec = result.single()
+                if rec:
+                    attrs: dict[str, Any] = rec["attributes"]
+                    total = attrs.get("TotalStoreSize", {})
+                    val = total.get("value")
+                    if val is not None:
+                        NEO4J_STORE_BYTES.set(int(val))
+            except Exception:
+                logger.debug("Neo4j store size metric unavailable", exc_info=True)
+
+    except Exception:
+        logger.warning("Failed to collect Neo4j index status", exc_info=True)
+
+
+def _collect_qdrant(client: QdrantClient, collection_name: str) -> None:
+    """Read index stats from Qdrant."""
+    try:
+        info = client.get_collection(collection_name)
+        QDRANT_POINTS_TOTAL.set(info.points_count or 0)
+        if info.disk_data_size:
+            QDRANT_COLLECTION_BYTES.set(info.disk_data_size)
+    except Exception:
+        logger.warning("Failed to collect Qdrant index status", exc_info=True)
 
 
 # ---------------------------------------------------------------------------
