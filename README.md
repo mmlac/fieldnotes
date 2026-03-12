@@ -57,7 +57,9 @@ Source Event (file / email / commit / app)
 
 Images follow a parallel path through a vision model that extracts descriptions, OCR text, and entities before rejoining the main pipeline at the embedding stage.
 
-Topic discovery runs on a schedule (default: weekly) using UMAP dimensionality reduction and HDBSCAN clustering over the full vector corpus, with an LLM naming each discovered cluster.
+Files that can't be parsed for content (e.g. `.3mf`, `.psd`, `.mp4`) are still indexed as metadata-only records — the filename, extension, path, and a human-readable description are embedded so they're discoverable via semantic search.
+
+Topic discovery runs on a schedule (default: weekly) or on demand via `fieldnotes cluster`, using UMAP dimensionality reduction and HDBSCAN clustering over the full vector corpus, with an LLM naming each discovered cluster.
 
 ## Requirements
 
@@ -206,7 +208,15 @@ poll_interval_seconds = 300
 max_file_size = 104857600
 ```
 
-macOS apps and Homebrew sources require no configuration — they auto-discover installed software.
+macOS apps and Homebrew sources auto-discover installed software and rescan on a configurable interval:
+
+```toml
+[sources.macos_apps]
+poll_interval_seconds = 21600   # default: 6 hours
+
+[sources.homebrew]
+poll_interval_seconds = 21600   # default: 6 hours
+```
 
 ### Features
 
@@ -246,8 +256,8 @@ port = 3456
 | **Obsidian** | Initial scan + real-time (watchdog) | Notes with frontmatter, wikilinks, and #tags |
 | **Gmail** | Backfill + polling (configurable interval) | Email threads — subjects, bodies, metadata |
 | **Git Repositories** | Initial scan + polling (configurable interval) | READMEs, changelogs, docs, commit messages |
-| **macOS Apps** | On-demand | Installed application bundles (Info.plist) |
-| **Homebrew** | On-demand | Installed formulae and casks with descriptions |
+| **macOS Apps** | Polling (default: every 6 hours) | Installed application bundles (Info.plist) |
+| **Homebrew** | Polling (default: every 6 hours) | Installed formulae and casks with descriptions |
 
 Each source emits `IngestEvent` dicts into the pipeline queue. Modified files trigger a delete-before-rewrite cycle that cleans stale graph data (edges, chunks, orphan entities) in a single Neo4j transaction before writing the updated version.
 
@@ -286,6 +296,8 @@ fieldnotes [-c CONFIG] [-v] <command>
   - `--history` — list past conversations.
   - `--no-stream` — disable streaming output.
   - `--json` — structured JSON output.
+
+**`cluster [--min-cluster-size N] [--force]`** — Run the clustering pipeline manually. Connects to Neo4j and Qdrant, fetches all vectors, runs UMAP + HDBSCAN, labels clusters via LLM, and writes topic nodes. Use `--force` to run even if the corpus is below `min_corpus_size`. Prints progress and a summary of discovered topics.
 
 **`topics list`** — List all discovered topics with document counts.
 
@@ -340,7 +352,7 @@ This registers fieldnotes as an MCP server in Claude Desktop's configuration. Af
 
 ### Pipeline Stages
 
-1. **Parser** — Source-specific adapter extracts text, metadata, and graph hints (pre-known entities/edges) from raw content.
+1. **Parser** — Source-specific adapter extracts text, metadata, and graph hints (pre-known entities/edges) from raw content. Files with unsupported MIME types get a metadata-only record (filename, extension, path, size) with a human-readable description so they remain discoverable via search.
 2. **Chunker** — Sentence-aware splitter produces ~512-token chunks with 64-token overlap. Short chunks are merged to avoid fragmentation.
 3. **Embedder** — Generates 768-dim vectors via the `embed` role model. Batches 64 texts per call.
 4. **Extractor** — LLM extracts named entities (typed: Person, Technology, etc.) and relationship triples from each chunk. Falls back to `extract_fallback` role on JSON parse errors.
@@ -358,7 +370,7 @@ The output becomes a synthetic text chunk that flows through the standard embedd
 
 ### Topic Clustering
 
-Runs on a configurable schedule (default: Sunday 3 AM):
+Runs on a configurable schedule (default: Sunday 3 AM) or on demand via `fieldnotes cluster`:
 1. UMAP reduces the full vector corpus to 2D
 2. HDBSCAN discovers density-based clusters
 3. An LLM names each cluster based on representative documents
@@ -465,6 +477,7 @@ worker/
 ├── cli/                    # CLI entry point and interactive Q&A
 │   ├── __init__.py         # Argument parsing and command dispatch
 │   ├── ask.py              # Interactive REPL with streaming
+│   ├── cluster.py          # Manual clustering run
 │   ├── reformulator.py     # Follow-up question reformulation
 │   └── history.py          # Conversation persistence
 ├── sources/                # Data source adapters
@@ -472,10 +485,11 @@ worker/
 │   ├── obsidian.py         # Obsidian vault watcher
 │   ├── gmail.py            # Gmail polling with cursor sync
 │   ├── repositories.py     # Git repository scanner
-│   ├── macos_apps.py       # macOS app discovery
-│   └── homebrew.py         # Homebrew package listing
+│   ├── macos_apps.py       # macOS app discovery (polling)
+│   └── homebrew.py         # Homebrew package listing (polling)
 ├── parsers/                # Document type parsers
-│   ├── files.py            # Plain text and markdown
+│   ├── files.py            # Text, PDF, image, iWork, and metadata-only
+│   ├── iwork.py            # Apple Pages and Keynote (osascript)
 │   ├── obsidian.py         # Obsidian notes (wikilinks, frontmatter)
 │   ├── gmail.py            # Email messages
 │   ├── repositories.py     # Git commits and READMEs
