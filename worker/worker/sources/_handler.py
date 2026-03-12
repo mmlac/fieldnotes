@@ -13,6 +13,7 @@ import hashlib
 import logging
 import os
 import threading
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -26,7 +27,11 @@ from watchdog.events import (
     FileSystemEventHandler,
 )
 
-from worker.metrics import SOURCE_WATCHER_EVENTS, WATCHER_LAST_EVENT_TIMESTAMP
+from worker.metrics import (
+    INITIAL_SCAN_DEDUP_DROPPED,
+    SOURCE_WATCHER_EVENTS,
+    WATCHER_LAST_EVENT_TIMESTAMP,
+)
 
 from .cursor import FileEntry
 
@@ -131,6 +136,53 @@ class BaseHandler(FileSystemEventHandler):
         self._max_file_size = max_file_size
         self._cursor: dict[str, FileEntry] = {}
         self._cursor_lock = threading.Lock()
+        # Dedup window state — guarded by _dedup_lock since watchdog
+        # dispatches from its observer thread while the timer fires
+        # on the event loop thread.
+        self._dedup_set: set[tuple[str, str]] = set()
+        self._dedup_lock = threading.Lock()
+        self._dedup_deadline: float = 0.0
+
+    # -- Dedup window -------------------------------------------------------
+
+    def set_dedup_window(
+        self,
+        scan_results: set[tuple[str, str]],
+        duration_seconds: float = 5.0,
+    ) -> None:
+        """Arm the post-scan dedup window.
+
+        *scan_results* is a set of ``(path, sha256)`` pairs from the initial
+        scan.  For *duration_seconds* after this call, any watchdog event
+        whose ``(path, sha256)`` matches an entry in the set is silently
+        dropped (it was already emitted by the scan).
+
+        After the window expires the set is cleared automatically via an
+        ``asyncio`` timer on the event loop.
+        """
+        with self._dedup_lock:
+            self._dedup_set = scan_results
+            self._dedup_deadline = time.monotonic() + duration_seconds
+        self._loop.call_later(duration_seconds, self._clear_dedup_window)
+
+    def _clear_dedup_window(self) -> None:
+        with self._dedup_lock:
+            self._dedup_set = set()
+            self._dedup_deadline = 0.0
+
+    def _is_dedup_duplicate(self, path: str, sha256: str | None) -> bool:
+        """Check if an event should be dropped by the dedup window."""
+        if sha256 is None:
+            return False
+        with self._dedup_lock:
+            if not self._dedup_set:
+                return False
+            if time.monotonic() > self._dedup_deadline:
+                # Window expired but timer hasn't fired yet — clear now.
+                self._dedup_set = set()
+                self._dedup_deadline = 0.0
+                return False
+            return (path, sha256) in self._dedup_set
 
     # -- Filtering ----------------------------------------------------------
 
@@ -275,6 +327,17 @@ class BaseHandler(FileSystemEventHandler):
         ingest = self._build_event(event)
         if ingest is not None:
             self._update_cursor(ingest)
+
+            # Check dedup window before enqueuing
+            sha256 = ingest.get("meta", {}).get("sha256")
+            src_path = ingest.get("source_id", "")
+            if self._is_dedup_duplicate(src_path, sha256):
+                logger.info("Dedup: skipping %s (already scanned)", src_path)
+                INITIAL_SCAN_DEDUP_DROPPED.labels(
+                    source_type=self._source_type,
+                ).inc()
+                return
+
             SOURCE_WATCHER_EVENTS.labels(
                 source_type=self._source_type,
                 event_type=ingest["operation"],

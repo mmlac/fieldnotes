@@ -279,6 +279,13 @@ INITIAL_SCAN_DURATION_SECONDS = Gauge(
     registry=REGISTRY,
 )
 
+INITIAL_SCAN_DEDUP_DROPPED = Counter(
+    "fieldnotes_initial_scan_dedup_dropped_total",
+    "Watchdog events dropped by the post-scan dedup window",
+    ["source_type"],
+    registry=REGISTRY,
+)
+
 OBSIDIAN_VAULTS_DISCOVERED = Gauge(
     "fieldnotes_obsidian_vaults_discovered",
     "Number of Obsidian vaults discovered and being watched",

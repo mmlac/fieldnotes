@@ -419,6 +419,11 @@ class ObsidianSource(PythonSource):
             total_deleted,
         )
 
+        # Build dedup set from all scanned files
+        scan_pairs: set[tuple[str, str]] = {
+            (path, entry.sha256) for path, entry in current_cursor.items()
+        }
+
         # -- Start watchdog observer --
         observer = Observer()
         handlers: list[_VaultHandler] = []
@@ -434,6 +439,12 @@ class ObsidianSource(PythonSource):
                 max_file_size=self._max_file_size,
             )
             handler.set_cursor(stored_cursor)
+            # Filter dedup set to entries belonging to this vault
+            vault_prefix = str(vault) + os.sep
+            vault_dedup = {
+                (p, s) for p, s in scan_pairs if p.startswith(vault_prefix)
+            }
+            handler.set_dedup_window(vault_dedup)
             handlers.append(handler)
             observer.schedule(handler, str(vault), recursive=self._recursive)
             logger.info(

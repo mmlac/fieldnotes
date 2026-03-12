@@ -185,8 +185,14 @@ class FileSource(PythonSource):
 
         return ingest
 
-    async def _initial_scan(self, queue: asyncio.Queue[dict[str, Any]]) -> None:
-        """Walk directories, diff against cursor, and emit events."""
+    async def _initial_scan(
+        self, queue: asyncio.Queue[dict[str, Any]]
+    ) -> set[tuple[str, str]]:
+        """Walk directories, diff against cursor, and emit events.
+
+        Returns the set of ``(path, sha256)`` pairs from the scan for use
+        in the post-scan dedup window.
+        """
         scan_start = time.monotonic()
 
         loop = asyncio.get_running_loop()
@@ -233,9 +239,11 @@ class FileSource(PythonSource):
                 counts["unchanged"],
             )
 
+        return {(path, entry.sha256) for path, entry in current.items()}
+
     async def start(self, queue: asyncio.Queue[dict[str, Any]]) -> None:
         # Initial scan BEFORE watchdog to avoid duplicate events
-        await self._initial_scan(queue)
+        scan_pairs = await self._initial_scan(queue)
 
         loop = asyncio.get_running_loop()
         handler = _Handler(
@@ -249,6 +257,7 @@ class FileSource(PythonSource):
         # Load existing cursor into handler for incremental tracking
         stored_cursor = load_cursor(self._cursor_path)
         handler.set_cursor(stored_cursor)
+        handler.set_dedup_window(scan_pairs)
 
         observer = Observer()
         for watch_path in self._watch_paths:
