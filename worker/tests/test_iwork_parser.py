@@ -8,8 +8,31 @@ from unittest.mock import MagicMock, mock_open, patch
 import pytest
 
 from worker.parsers.files import FileParser
-from worker.parsers.iwork import IWorkParser
+from worker.parsers.iwork import IWorkParser, _escape_applescript_string
 from worker.sources._handler import guess_mime
+
+
+class TestEscapeAppleScriptString:
+    """Verify that _escape_applescript_string prevents injection."""
+
+    def test_plain_path_unchanged(self) -> None:
+        assert _escape_applescript_string("/docs/report.pages") == "/docs/report.pages"
+
+    def test_double_quotes_escaped(self) -> None:
+        assert _escape_applescript_string('file"name.pages') == 'file\\"name.pages'
+
+    def test_backslashes_escaped(self) -> None:
+        assert _escape_applescript_string("path\\to\\file") == "path\\\\to\\\\file"
+
+    def test_both_quotes_and_backslashes(self) -> None:
+        result = _escape_applescript_string('a\\"b')
+        assert result == 'a\\\\\\"b'
+
+    def test_injection_payload_neutralised(self) -> None:
+        """A filename designed to break out of the AppleScript string."""
+        payload = '/tmp/evil" & do shell script "rm -rf /" & "'
+        escaped = _escape_applescript_string(payload)
+        assert '"' not in escaped.replace('\\"', "")
 
 
 class TestIWorkMimeTypes:
@@ -248,6 +271,31 @@ class TestIWorkParserDarwin:
 
         mock_close.assert_called_once_with(99)
         mock_unlink.assert_called_once_with("/tmp/out.txt")
+
+    def test_path_with_quotes_is_escaped(self, parser: IWorkParser) -> None:
+        """Filenames with double quotes must be escaped in the osascript command."""
+        evil_event = {
+            "mime_type": "application/x-iwork-pages",
+            "source_id": '/docs/evil"file.pages',
+            "operation": "created",
+        }
+        p_sys, p_inst = self._darwin_and_installed()
+        with (
+            p_sys,
+            p_inst,
+            patch("worker.parsers.iwork.os.path.isfile", return_value=True),
+            patch("worker.parsers.iwork.tempfile.mkstemp", return_value=(99, "/tmp/out.txt")),
+            patch("worker.parsers.iwork.os.close"),
+            patch("worker.parsers.iwork.subprocess.run") as mock_run,
+            patch("builtins.open", mock_open(read_data="content")),
+            patch("worker.parsers.iwork.os.unlink"),
+        ):
+            parser.parse(evil_event)
+
+        script_arg = mock_run.call_args[0][0][2]  # osascript -e <script>
+        # The raw quote must NOT appear unescaped in the script
+        assert 'evil"file' not in script_arg
+        assert 'evil\\"file' in script_arg
 
     def test_temp_file_cleanup_on_error(self, parser: IWorkParser, pages_event: dict) -> None:
         p_sys, p_inst = self._darwin_and_installed()

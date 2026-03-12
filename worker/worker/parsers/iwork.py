@@ -39,6 +39,16 @@ _MIME_TO_APP: dict[str, str] = {
 }
 
 _DEFAULT_TIMEOUT_SECONDS = 60
+
+
+def _escape_applescript_string(s: str) -> str:
+    """Escape a string for safe embedding inside AppleScript double-quoted literals.
+
+    AppleScript string literals use ``"..."`` with backslash as the escape
+    character.  We must escape existing backslashes first, then double-quotes,
+    to prevent breaking out of the string context.
+    """
+    return s.replace("\\", "\\\\").replace('"', '\\"')
 _DEFAULT_KEYNOTE_TIMEOUT = 120  # presentations can be large
 
 _KEYNOTE_SCRIPT_TEMPLATE = """\
@@ -165,10 +175,12 @@ class IWorkParser:
         fd, tmp_path = tempfile.mkstemp(suffix=".txt")
         os.close(fd)
         try:
+            safe_path = _escape_applescript_string(path)
+            safe_tmp = _escape_applescript_string(tmp_path)
             script = (
                 f'tell application "{app_name}"\n'
-                f'  open POSIX file "{path}"\n'
-                f'  export front document to POSIX file "{tmp_path}" as unformatted text\n'
+                f'  open POSIX file "{safe_path}"\n'
+                f'  export front document to POSIX file "{safe_tmp}" as unformatted text\n'
                 f"  close front document\n"
                 f"end tell"
             )
@@ -202,7 +214,9 @@ class IWorkParser:
             log.error("Keynote file not found: %s", source_id)
             return []
 
-        script = _KEYNOTE_SCRIPT_TEMPLATE.format(path=source_id)
+        script = _KEYNOTE_SCRIPT_TEMPLATE.format(
+            path=_escape_applescript_string(source_id)
+        )
         timeout = int(
             event.get("meta", {}).get("keynote_timeout", _DEFAULT_KEYNOTE_TIMEOUT)
         )
