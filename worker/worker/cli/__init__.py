@@ -1,7 +1,6 @@
-"""CLI entry point: ``fieldnotes search <query>`` and ``fieldnotes topics``.
+"""CLI entry point for the ``fieldnotes`` command.
 
-Loads config, connects to Neo4j + Qdrant via ModelRegistry, runs a
-hybrid query (graph + vector), and prints formatted results to stdout.
+Subcommands: search, ask, topics, serve, service, init, setup-claude, etc.
 """
 
 from __future__ import annotations
@@ -106,6 +105,18 @@ def _build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help="GasTown rig root (auto-detected if omitted)",
+    )
+
+    # ── ask ─────────────────────────────────────────────────────────
+    ask_p = sub.add_parser(
+        "ask",
+        help="Ask a question against your knowledge graph",
+    )
+    ask_p.add_argument(
+        "question",
+        nargs="*",
+        default=None,
+        help="Question to ask (omit for interactive REPL mode)",
     )
 
     # ── topics ──────────────────────────────────────────────────────
@@ -289,6 +300,16 @@ def main(argv: list[str] | None = None) -> int:
                 config_path=args.config,
                 rig_root=args.rig_root,
             )
+        except Exception as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+
+    if args.command == "ask":
+        from worker.cli.ask import run_ask
+
+        question = " ".join(args.question) if args.question else None
+        try:
+            return run_ask(question, config_path=args.config)
         except Exception as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
