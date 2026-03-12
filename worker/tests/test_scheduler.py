@@ -1,6 +1,7 @@
 """Tests for clustering/scheduler.py — cron-based clustering scheduler."""
 
 import asyncio
+import time as time_mod
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -269,7 +270,7 @@ class TestClusteringLoop:
         call_times: list[float] = []
 
         def timed_pipeline(*args: object) -> bool:
-            call_times.append(asyncio.get_event_loop().time())
+            call_times.append(time_mod.monotonic())
             return True
 
         cfg = _clustering_cfg()
@@ -292,6 +293,11 @@ class TestClusteringLoop:
             with pytest.raises(asyncio.CancelledError):
                 await task
 
-        # With 50ms min interval and 200ms runtime, we should get at most ~4 calls
-        # Without the fix, we'd get hundreds
-        assert len(call_times) <= 6
+        # Verify the min_interval is respected by checking gaps between calls
+        assert len(call_times) >= 2, "Need at least 2 calls to check interval"
+        for i in range(1, len(call_times)):
+            gap = call_times[i] - call_times[i - 1]
+            assert gap >= 0.04, (
+                f"Gap between call {i - 1} and {i} was {gap:.3f}s, "
+                f"expected >= 0.04s (min_interval=0.05s with scheduling jitter)"
+            )

@@ -2,6 +2,7 @@ package repositories
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -274,6 +275,225 @@ func TestScanRepo_EmitsFileAndCommitEvents(t *testing.T) {
 	// Verify cursor was updated.
 	if _, ok := s.cursors[repoDir]; !ok {
 		t.Error("cursor not updated after scan")
+	}
+}
+
+func TestScanRepo_MaxFileSizeSkipsLargeFiles(t *testing.T) {
+	// Create a file that exceeds a small maxFileSize limit.
+	repoDir := initTestRepo(t, "README.md", "# Small\n")
+
+	// Add a large file
+	largePath := filepath.Join(repoDir, "big.md")
+	largeContent := make([]byte, 1024)
+	for i := range largeContent {
+		largeContent[i] = 'x'
+	}
+	if err := os.WriteFile(largePath, largeContent, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Commit the large file
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repoDir
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=Test",
+			"GIT_AUTHOR_EMAIL=test@test.com",
+			"GIT_COMMITTER_NAME=Test",
+			"GIT_COMMITTER_EMAIL=test@test.com",
+		)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v failed: %v\n%s", args, err, out)
+		}
+	}
+	run("add", "big.md")
+	run("commit", "-m", "add big file")
+
+	s := &RepoSource{
+		repoRoots:       []string{filepath.Dir(repoDir)},
+		pollInterval:    time.Minute,
+		includePatterns: []string{"README*", "*.md"},
+		excludePatterns: defaultExcludePatterns,
+		maxFileSize:     512, // Only 512 bytes — big.md exceeds this
+		maxCommits:      10,
+		cursors:         make(map[string]string),
+	}
+
+	events := make(chan sources.IngestEvent, 100)
+	ctx := context.Background()
+	s.scanRepo(ctx, repoDir, events)
+	close(events)
+
+	var filePaths []string
+	for ev := range events {
+		if len(ev.SourceID) > 5 && ev.SourceID[:5] == "repo:" {
+			if rp, ok := ev.Meta["relative_path"].(string); ok {
+				filePaths = append(filePaths, rp)
+			}
+		}
+	}
+
+	// README.md should be included but big.md should be skipped
+	found := false
+	for _, p := range filePaths {
+		if p == "README.md" {
+			found = true
+		}
+		if p == "big.md" {
+			t.Error("big.md should have been skipped due to maxFileSize")
+		}
+	}
+	if !found {
+		t.Error("expected README.md in file events")
+	}
+}
+
+func TestScanRepo_EmptyRepo(t *testing.T) {
+	// Create a repo with no commits (just initialized)
+	dir := t.TempDir()
+	cmd := exec.Command("git", "init")
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git init failed: %v\n%s", err, out)
+	}
+
+	s := &RepoSource{
+		repoRoots:       []string{filepath.Dir(dir)},
+		pollInterval:    time.Minute,
+		includePatterns: defaultIncludePatterns,
+		excludePatterns: defaultExcludePatterns,
+		maxFileSize:     defaultMaxFileSize,
+		maxCommits:      10,
+		cursors:         make(map[string]string),
+	}
+
+	events := make(chan sources.IngestEvent, 100)
+	ctx := context.Background()
+	// Should not panic on a repo with no HEAD
+	s.scanRepo(ctx, dir, events)
+	close(events)
+
+	count := 0
+	for range events {
+		count++
+	}
+	if count != 0 {
+		t.Errorf("expected 0 events from empty repo, got %d", count)
+	}
+}
+
+func TestScanRepo_BinaryFileSkipped(t *testing.T) {
+	repoDir := initTestRepo(t, "image.png", "\x89PNG\r\n\x1a\n")
+
+	s := &RepoSource{
+		repoRoots:       []string{filepath.Dir(repoDir)},
+		pollInterval:    time.Minute,
+		includePatterns: []string{"*"},
+		excludePatterns: defaultExcludePatterns,
+		maxFileSize:     defaultMaxFileSize,
+		maxCommits:      10,
+		cursors:         make(map[string]string),
+	}
+
+	events := make(chan sources.IngestEvent, 100)
+	ctx := context.Background()
+	s.scanRepo(ctx, repoDir, events)
+	close(events)
+
+	for ev := range events {
+		if len(ev.SourceID) > 5 && ev.SourceID[:5] == "repo:" {
+			// Binary files should have empty text (non-text MIME)
+			if rp, ok := ev.Meta["relative_path"].(string); ok && rp == "image.png" {
+				if ev.Text != "" {
+					t.Errorf("binary file should have empty text, got %q", ev.Text)
+				}
+			}
+		}
+	}
+}
+
+func TestScanRepo_ContextCancellation(t *testing.T) {
+	repoDir := initTestRepo(t, "README.md", "# Hello\n")
+
+	s := &RepoSource{
+		repoRoots:       []string{filepath.Dir(repoDir)},
+		pollInterval:    time.Minute,
+		includePatterns: []string{"README*"},
+		excludePatterns: defaultExcludePatterns,
+		maxFileSize:     defaultMaxFileSize,
+		maxCommits:      10,
+		cursors:         make(map[string]string),
+	}
+
+	events := make(chan sources.IngestEvent, 100)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // Cancel immediately
+
+	// Should return without hanging
+	s.scanRepo(ctx, repoDir, events)
+	close(events)
+
+	// We don't assert exact event count — the point is it doesn't hang
+}
+
+func TestScanRepo_MaxCommitsLimit(t *testing.T) {
+	dir := t.TempDir()
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=Test",
+			"GIT_AUTHOR_EMAIL=test@test.com",
+			"GIT_COMMITTER_NAME=Test",
+			"GIT_COMMITTER_EMAIL=test@test.com",
+		)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v failed: %v\n%s", args, err, out)
+		}
+	}
+
+	run("init")
+	run("config", "user.email", "test@test.com")
+	run("config", "user.name", "Test")
+
+	// Create 5 commits
+	for i := 0; i < 5; i++ {
+		fpath := filepath.Join(dir, "file.txt")
+		content := fmt.Sprintf("version %d\n", i)
+		if err := os.WriteFile(fpath, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		run("add", "file.txt")
+		run("commit", "-m", fmt.Sprintf("commit %d", i))
+	}
+
+	s := &RepoSource{
+		repoRoots:       []string{filepath.Dir(dir)},
+		pollInterval:    time.Minute,
+		includePatterns: []string{"*"},
+		excludePatterns: defaultExcludePatterns,
+		maxFileSize:     defaultMaxFileSize,
+		maxCommits:      2, // Limit to 2 commits
+		cursors:         make(map[string]string),
+	}
+
+	events := make(chan sources.IngestEvent, 100)
+	ctx := context.Background()
+	s.scanRepo(ctx, dir, events)
+	close(events)
+
+	var commitEvents int
+	for ev := range events {
+		if len(ev.SourceID) > 7 && ev.SourceID[:7] == "commit:" {
+			commitEvents++
+		}
+	}
+
+	if commitEvents > 2 {
+		t.Errorf("expected at most 2 commit events (maxCommits=2), got %d", commitEvents)
 	}
 }
 

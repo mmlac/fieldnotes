@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 from unittest.mock import MagicMock, patch
 
@@ -19,10 +18,6 @@ def _make_server() -> FieldnotesServer:
         qdrant=QdrantConfig(host="localhost", port=6333, collection="fieldnotes"),
     )
     return FieldnotesServer(cfg)
-
-
-def _run(coro):
-    return asyncio.run(coro)
 
 
 def _mock_querier(
@@ -45,8 +40,9 @@ def _mock_querier(
 
 
 class TestListTopicsTool:
+    @pytest.mark.asyncio
     @patch("worker.mcp_server.TopicQuerier")
-    def test_list_all_topics(self, mock_tq_cls: MagicMock) -> None:
+    async def test_list_all_topics(self, mock_tq_cls: MagicMock) -> None:
         mock_tq_cls.return_value = _mock_querier(
             topics=[
                 TopicSummary("ML", "cluster", "Machine learning", 5),
@@ -55,7 +51,7 @@ class TestListTopicsTool:
         )
 
         server = _make_server()
-        result = _run(server._call_tool("list_topics", {}))
+        result = await server._call_tool("list_topics", {})
 
         assert len(result) == 1
         data = json.loads(result[0].text)
@@ -63,8 +59,9 @@ class TestListTopicsTool:
         names = {t["name"] for t in data}
         assert names == {"ML", "Python"}
 
+    @pytest.mark.asyncio
     @patch("worker.mcp_server.TopicQuerier")
-    def test_list_topics_with_source_filter(self, mock_tq_cls: MagicMock) -> None:
+    async def test_list_topics_with_source_filter(self, mock_tq_cls: MagicMock) -> None:
         mock_tq_cls.return_value = _mock_querier(
             topics=[
                 TopicSummary("ML", "cluster", "Machine learning", 5),
@@ -73,14 +70,15 @@ class TestListTopicsTool:
         )
 
         server = _make_server()
-        result = _run(server._call_tool("list_topics", {"source": "cluster"}))
+        result = await server._call_tool("list_topics", {"source": "cluster"})
 
         data = json.loads(result[0].text)
         assert len(data) == 1
         assert data[0]["name"] == "ML"
 
+    @pytest.mark.asyncio
     @patch("worker.mcp_server.TopicQuerier")
-    def test_list_topics_user_filter(self, mock_tq_cls: MagicMock) -> None:
+    async def test_list_topics_user_filter(self, mock_tq_cls: MagicMock) -> None:
         mock_tq_cls.return_value = _mock_querier(
             topics=[
                 TopicSummary("ML", "cluster", "Machine learning", 5),
@@ -89,18 +87,19 @@ class TestListTopicsTool:
         )
 
         server = _make_server()
-        result = _run(server._call_tool("list_topics", {"source": "user"}))
+        result = await server._call_tool("list_topics", {"source": "user"})
 
         data = json.loads(result[0].text)
         assert len(data) == 1
         assert data[0]["name"] == "Python"
 
+    @pytest.mark.asyncio
     @patch("worker.mcp_server.TopicQuerier")
-    def test_list_topics_empty(self, mock_tq_cls: MagicMock) -> None:
+    async def test_list_topics_empty(self, mock_tq_cls: MagicMock) -> None:
         mock_tq_cls.return_value = _mock_querier(topics=[])
 
         server = _make_server()
-        result = _run(server._call_tool("list_topics", {}))
+        result = await server._call_tool("list_topics", {})
 
         data = json.loads(result[0].text)
         assert data == []
@@ -112,8 +111,9 @@ class TestListTopicsTool:
 
 
 class TestShowTopicTool:
+    @pytest.mark.asyncio
     @patch("worker.mcp_server.TopicQuerier")
-    def test_show_existing_topic(self, mock_tq_cls: MagicMock) -> None:
+    async def test_show_existing_topic(self, mock_tq_cls: MagicMock) -> None:
         detail = TopicDetail(
             name="ML",
             source="cluster",
@@ -125,19 +125,20 @@ class TestShowTopicTool:
         mock_tq_cls.return_value = _mock_querier(detail=detail)
 
         server = _make_server()
-        result = _run(server._call_tool("show_topic", {"name": "ML"}))
+        result = await server._call_tool("show_topic", {"name": "ML"})
 
         data = json.loads(result[0].text)
         assert data["name"] == "ML"
         assert data["source"] == "cluster"
         assert len(data["documents"]) == 1
 
+    @pytest.mark.asyncio
     @patch("worker.mcp_server.TopicQuerier")
-    def test_show_nonexistent_topic(self, mock_tq_cls: MagicMock) -> None:
+    async def test_show_nonexistent_topic(self, mock_tq_cls: MagicMock) -> None:
         mock_tq_cls.return_value = _mock_querier(detail=None)
 
         server = _make_server()
-        result = _run(server._call_tool("show_topic", {"name": "nonexistent"}))
+        result = await server._call_tool("show_topic", {"name": "nonexistent"})
 
         assert "not found" in result[0].text.lower() or result[0].text == "Topic not found."
 
@@ -148,26 +149,28 @@ class TestShowTopicTool:
 
 
 class TestTopicGapsTool:
+    @pytest.mark.asyncio
     @patch("worker.mcp_server.TopicQuerier")
-    def test_gaps_with_results(self, mock_tq_cls: MagicMock) -> None:
+    async def test_gaps_with_results(self, mock_tq_cls: MagicMock) -> None:
         mock_tq_cls.return_value = _mock_querier(
             gaps=[TopicGap("NewTopic", "A new discovery", 4)]
         )
 
         server = _make_server()
-        result = _run(server._call_tool("topic_gaps", {}))
+        result = await server._call_tool("topic_gaps", {})
 
         data = json.loads(result[0].text)
         assert len(data) == 1
         assert data[0]["name"] == "NewTopic"
         assert data[0]["doc_count"] == 4
 
+    @pytest.mark.asyncio
     @patch("worker.mcp_server.TopicQuerier")
-    def test_gaps_empty(self, mock_tq_cls: MagicMock) -> None:
+    async def test_gaps_empty(self, mock_tq_cls: MagicMock) -> None:
         mock_tq_cls.return_value = _mock_querier(gaps=[])
 
         server = _make_server()
-        result = _run(server._call_tool("topic_gaps", {}))
+        result = await server._call_tool("topic_gaps", {})
 
         data = json.loads(result[0].text)
         assert data == []

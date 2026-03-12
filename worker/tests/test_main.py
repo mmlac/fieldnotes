@@ -201,26 +201,28 @@ class TestBuildSources:
 
 
 class TestRun:
+    @pytest.mark.asyncio
     @patch("worker.main.Pipeline")
     @patch("worker.main.Writer")
     @patch("worker.main.ModelRegistry")
     @patch("worker.main._build_sources")
-    def test_no_sources_returns_early(
+    async def test_no_sources_returns_early(
         self, mock_build, mock_reg, mock_writer, mock_pipeline
     ):
         mock_build.return_value = []
         pipeline_inst = mock_pipeline.return_value
 
-        asyncio.run(_run(_cfg()))
+        await _run(_cfg())
 
         pipeline_inst.close.assert_called_once()
 
+    @pytest.mark.asyncio
     @patch("worker.main.get_parser")
     @patch("worker.main.Pipeline")
     @patch("worker.main.Writer")
     @patch("worker.main.ModelRegistry")
     @patch("worker.main._build_sources")
-    def test_processes_events_from_queue(
+    async def test_processes_events_from_queue(
         self, mock_build, mock_reg, mock_writer, mock_pipeline, mock_get_parser
     ):
         """Events put on the queue are parsed and processed through the pipeline."""
@@ -246,35 +248,29 @@ class TestRun:
 
         pipeline_inst = mock_pipeline.return_value
 
-        async def run_with_timeout():
-            task = asyncio.create_task(_run(_cfg()))
-            # Let it process, then stop
-            await asyncio.sleep(0.15)
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-
-        asyncio.run(run_with_timeout())
+        task = asyncio.create_task(_run(_cfg()))
+        # Let it process, then stop
+        await asyncio.sleep(0.15)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
 
         mock_get_parser.assert_called_with("file")
         parser.parse.assert_called_once()
         pipeline_inst.process.assert_called_once()
 
+    @pytest.mark.asyncio
     @patch("worker.main.get_parser")
     @patch("worker.main.Pipeline")
     @patch("worker.main.Writer")
     @patch("worker.main.ModelRegistry")
     @patch("worker.main._build_sources")
-    def test_parser_error_does_not_crash_loop(
+    async def test_parser_error_does_not_crash_loop(
         self, mock_build, mock_reg, mock_writer, mock_pipeline, mock_get_parser
     ):
         """A parsing error on one event should not stop processing."""
         fake_source = MagicMock()
         fake_source.name.return_value = "files"
-
-        call_count = 0
 
         async def fake_start(queue):
             await queue.put({
@@ -301,27 +297,23 @@ class TestRun:
 
         pipeline_inst = mock_pipeline.return_value
 
-        async def run_with_timeout():
-            task = asyncio.create_task(_run(_cfg()))
-            await asyncio.sleep(0.3)
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-
-        asyncio.run(run_with_timeout())
+        task = asyncio.create_task(_run(_cfg()))
+        await asyncio.sleep(0.3)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
 
         # Both events were attempted
         assert parser.parse.call_count == 2
         # Only the good event made it to the pipeline
         pipeline_inst.process.assert_called_once()
 
+    @pytest.mark.asyncio
     @patch("worker.main.Pipeline")
     @patch("worker.main.Writer")
     @patch("worker.main.ModelRegistry")
     @patch("worker.main._build_sources")
-    def test_shutdown_cancels_sources_and_closes_pipeline(
+    async def test_shutdown_cancels_sources_and_closes_pipeline(
         self, mock_build, mock_reg, mock_writer, mock_pipeline
     ):
         """On shutdown, source tasks are cancelled and pipeline is closed."""
@@ -336,26 +328,22 @@ class TestRun:
 
         pipeline_inst = mock_pipeline.return_value
 
-        async def run_with_signal():
-            task = asyncio.create_task(_run(_cfg()))
-            await asyncio.sleep(0.05)
-            # Simulate SIGINT by cancelling the task
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-
-        asyncio.run(run_with_signal())
+        task = asyncio.create_task(_run(_cfg()))
+        await asyncio.sleep(0.05)
+        # Simulate SIGINT by cancelling the task
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
 
         pipeline_inst.close.assert_called_once()
 
+    @pytest.mark.asyncio
     @patch("worker.main.clustering_loop")
     @patch("worker.main.Pipeline")
     @patch("worker.main.Writer")
     @patch("worker.main.ModelRegistry")
     @patch("worker.main._build_sources")
-    def test_clustering_enabled_starts_background_task(
+    async def test_clustering_enabled_starts_background_task(
         self, mock_build, mock_reg, mock_writer, mock_pipeline, mock_cluster
     ):
         """When clustering is enabled, clustering_loop is started as a task."""
@@ -375,25 +363,21 @@ class TestRun:
 
         cfg = _cfg(clustering=ClusteringConfig(enabled=True, cron="0 * * * *"))
 
-        async def run_with_cancel():
-            task = asyncio.create_task(_run(cfg))
-            await asyncio.sleep(0.05)
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-
-        asyncio.run(run_with_cancel())
+        task = asyncio.create_task(_run(cfg))
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
 
         mock_cluster.assert_called_once()
 
+    @pytest.mark.asyncio
     @patch("worker.main.clustering_loop")
     @patch("worker.main.Pipeline")
     @patch("worker.main.Writer")
     @patch("worker.main.ModelRegistry")
     @patch("worker.main._build_sources")
-    def test_clustering_disabled_no_background_task(
+    async def test_clustering_disabled_no_background_task(
         self, mock_build, mock_reg, mock_writer, mock_pipeline, mock_cluster
     ):
         """When clustering is disabled, clustering_loop is not called."""
@@ -401,7 +385,7 @@ class TestRun:
         mock_pipeline.return_value = MagicMock()
 
         cfg = _cfg(clustering=ClusteringConfig(enabled=False))
-        asyncio.run(_run(cfg))
+        await _run(cfg)
 
         mock_cluster.assert_not_called()
 

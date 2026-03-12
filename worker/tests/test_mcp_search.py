@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -22,20 +21,17 @@ def _make_server() -> FieldnotesServer:
     return FieldnotesServer(cfg)
 
 
-def _run(coro):
-    return asyncio.run(coro)
-
-
 # ------------------------------------------------------------------
 # Search tool
 # ------------------------------------------------------------------
 
 
 class TestSearchTool:
+    @pytest.mark.asyncio
     @patch("worker.mcp_server.VectorQuerier")
     @patch("worker.mcp_server.GraphQuerier")
     @patch("worker.mcp_server.ModelRegistry")
-    def test_basic_search(
+    async def test_basic_search(
         self,
         mock_registry: MagicMock,
         mock_gq_cls: MagicMock,
@@ -66,17 +62,18 @@ class TestSearchTool:
         server._graph_querier.query = MagicMock(return_value=graph_result)
         server._vector_querier.query = MagicMock(return_value=vector_result)
 
-        result = _run(server._call_tool("search", {"query": "test query"}))
+        result = await server._call_tool("search", {"query": "test query"})
 
         assert len(result) == 1
         text = result[0].text
         assert "Doc 1" in text or "doc1" in text
         assert "doc2" in text
 
+    @pytest.mark.asyncio
     @patch("worker.mcp_server.VectorQuerier")
     @patch("worker.mcp_server.GraphQuerier")
     @patch("worker.mcp_server.ModelRegistry")
-    def test_search_with_source_type_filter(
+    async def test_search_with_source_type_filter(
         self,
         mock_registry: MagicMock,
         mock_gq_cls: MagicMock,
@@ -91,11 +88,11 @@ class TestSearchTool:
         server._graph_querier.query = MagicMock(return_value=graph_result)
         server._vector_querier.query = MagicMock(return_value=vector_result)
 
-        _run(server._call_tool("search", {
+        await server._call_tool("search", {
             "query": "test",
             "source_type": "email",
             "top_k": 5,
-        }))
+        })
 
         # Verify source_type and top_k were passed to vector query
         server._vector_querier.query.assert_called_once()
@@ -103,10 +100,11 @@ class TestSearchTool:
         # The lambda captures args, so we check the mock was called
         assert server._vector_querier.query.called
 
+    @pytest.mark.asyncio
     @patch("worker.mcp_server.VectorQuerier")
     @patch("worker.mcp_server.GraphQuerier")
     @patch("worker.mcp_server.ModelRegistry")
-    def test_search_graph_failure_fallback(
+    async def test_search_graph_failure_fallback(
         self,
         mock_registry: MagicMock,
         mock_gq_cls: MagicMock,
@@ -133,16 +131,17 @@ class TestSearchTool:
         )
         server._vector_querier.query = MagicMock(return_value=vector_result)
 
-        result = _run(server._call_tool("search", {"query": "test"}))
+        result = await server._call_tool("search", {"query": "test"})
 
         text = result[0].text
         # Should contain warnings about graph failure
         assert "v1" in text
 
+    @pytest.mark.asyncio
     @patch("worker.mcp_server.VectorQuerier")
     @patch("worker.mcp_server.GraphQuerier")
     @patch("worker.mcp_server.ModelRegistry")
-    def test_search_vector_failure_fallback(
+    async def test_search_vector_failure_fallback(
         self,
         mock_registry: MagicMock,
         mock_gq_cls: MagicMock,
@@ -163,15 +162,16 @@ class TestSearchTool:
             side_effect=ConnectionError("Qdrant down")
         )
 
-        result = _run(server._call_tool("search", {"query": "test"}))
+        result = await server._call_tool("search", {"query": "test"})
 
         text = result[0].text
         assert "Graph answer" in text
 
+    @pytest.mark.asyncio
     @patch("worker.mcp_server.VectorQuerier")
     @patch("worker.mcp_server.GraphQuerier")
     @patch("worker.mcp_server.ModelRegistry")
-    def test_search_empty_results(
+    async def test_search_empty_results(
         self,
         mock_registry: MagicMock,
         mock_gq_cls: MagicMock,
@@ -186,14 +186,15 @@ class TestSearchTool:
         server._graph_querier.query = MagicMock(return_value=graph_result)
         server._vector_querier.query = MagicMock(return_value=vector_result)
 
-        result = _run(server._call_tool("search", {"query": "nothing"}))
+        result = await server._call_tool("search", {"query": "nothing"})
 
         assert "No results found" in result[0].text
 
+    @pytest.mark.asyncio
     @patch("worker.mcp_server.VectorQuerier")
     @patch("worker.mcp_server.GraphQuerier")
     @patch("worker.mcp_server.ModelRegistry")
-    def test_search_top_k_parameter(
+    async def test_search_top_k_parameter(
         self,
         mock_registry: MagicMock,
         mock_gq_cls: MagicMock,
@@ -208,15 +209,16 @@ class TestSearchTool:
         server._graph_querier.query = MagicMock(return_value=graph_result)
         server._vector_querier.query = MagicMock(return_value=vector_result)
 
-        _run(server._call_tool("search", {"query": "test", "top_k": 20}))
+        await server._call_tool("search", {"query": "test", "top_k": 20})
 
         # The lambda in _handle_search captures top_k, so verify the mock was called
         assert server._vector_querier.query.called
 
+    @pytest.mark.asyncio
     @patch("worker.mcp_server.VectorQuerier")
     @patch("worker.mcp_server.GraphQuerier")
     @patch("worker.mcp_server.ModelRegistry")
-    def test_search_source_ids_deduplication(
+    async def test_search_source_ids_deduplication(
         self,
         mock_registry: MagicMock,
         mock_gq_cls: MagicMock,
@@ -245,7 +247,7 @@ class TestSearchTool:
         server._graph_querier.query = MagicMock(return_value=graph_result)
         server._vector_querier.query = MagicMock(return_value=vector_result)
 
-        result = _run(server._call_tool("search", {"query": "test"}))
+        result = await server._call_tool("search", {"query": "test"})
 
         text = result[0].text
         # dup1 should appear in Sources but only once
