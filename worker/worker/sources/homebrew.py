@@ -115,7 +115,9 @@ def _formula_binaries(prefix: str | None, formula_name: str) -> list[str]:
     bins: list[str] = []
     for link in bin_dir.iterdir():
         try:
-            target = link.resolve()
+            if not link.is_symlink():
+                continue
+            target = link.resolve(strict=True)
             if cellar in target.parents or target.parent == cellar:
                 bins.append(link.name)
         except OSError:

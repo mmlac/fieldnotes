@@ -55,7 +55,15 @@ class FileSource(PythonSource):
         raw_paths = cfg.get("watch_paths")
         if not raw_paths:
             raise ValueError("FileSource requires 'watch_paths' in config")
-        self._watch_paths = [Path(p).expanduser().resolve() for p in raw_paths]
+        self._watch_paths = []
+        for p in raw_paths:
+            path = Path(p).expanduser()
+            if path.is_symlink():
+                logger.warning(
+                    "Watch path is a symlink, skipping for safety: %s", path
+                )
+                continue
+            self._watch_paths.append(path.resolve())
 
         exts = cfg.get("include_extensions")
         if exts:
@@ -80,6 +88,11 @@ class FileSource(PythonSource):
         for watch_path in self._watch_paths:
             if not watch_path.is_dir():
                 logger.warning("Watch path does not exist, skipping: %s", watch_path)
+                continue
+            if watch_path.is_symlink():
+                logger.warning(
+                    "Watch path is a symlink, skipping for safety: %s", watch_path
+                )
                 continue
             observer.schedule(handler, str(watch_path), recursive=self._recursive)
             logger.info("Watching %s (recursive=%s)", watch_path, self._recursive)

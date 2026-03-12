@@ -54,11 +54,17 @@ def _discover_apps(scan_dirs: list[Path]) -> list[Path]:
             logger.debug("Scan directory does not exist, skipping: %s", base)
             continue
         for child in sorted(base.iterdir()):
+            if child.is_symlink():
+                logger.debug("Skipping symlinked entry: %s", child)
+                continue
             if child.suffix == ".app" and child.is_dir():
                 apps.append(child)
             elif child.is_dir() and not child.suffix == ".app":
                 # Recurse one level (e.g. /Applications/Utilities/)
                 for grandchild in sorted(child.iterdir()):
+                    if grandchild.is_symlink():
+                        logger.debug("Skipping symlinked entry: %s", grandchild)
+                        continue
                     if grandchild.suffix == ".app" and grandchild.is_dir():
                         apps.append(grandchild)
     return apps
@@ -174,7 +180,15 @@ class MacOSAppsSource(PythonSource):
             self._enabled = False
 
         raw_dirs = cfg.get("scan_dirs", DEFAULT_SCAN_DIRS)
-        self._scan_dirs = [Path(d).expanduser().resolve() for d in raw_dirs]
+        self._scan_dirs = []
+        for d in raw_dirs:
+            path = Path(d).expanduser()
+            if path.is_symlink():
+                logger.warning(
+                    "Scan directory is a symlink, skipping for safety: %s", path
+                )
+                continue
+            self._scan_dirs.append(path.resolve())
 
         self._poll_interval = int(
             cfg.get("poll_interval_seconds", DEFAULT_POLL_INTERVAL)

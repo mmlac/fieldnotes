@@ -33,12 +33,23 @@ def discover_vaults(search_paths: list[Path]) -> list[Path]:
         if not base.is_dir():
             logger.warning("Vault search path does not exist, skipping: %s", base)
             continue
+        if base.is_symlink():
+            logger.warning(
+                "Vault search path is a symlink, skipping for safety: %s", base
+            )
+            continue
         # Direct check: is base itself a vault?
         if (base / ".obsidian").is_dir():
             vaults.append(base)
             continue
         # One-level scan for vaults under base
         for child in sorted(base.iterdir()):
+            if child.is_symlink():
+                logger.warning(
+                    "Skipping symlinked directory during vault discovery: %s",
+                    child,
+                )
+                continue
             if child.is_dir() and (child / ".obsidian").is_dir():
                 vaults.append(child)
     return vaults
@@ -113,7 +124,15 @@ class ObsidianSource(PythonSource):
         raw_paths = cfg.get("vault_paths")
         if not raw_paths:
             raise ValueError("ObsidianSource requires 'vault_paths' in config")
-        self._vault_paths = [Path(p).expanduser().resolve() for p in raw_paths]
+        self._vault_paths = []
+        for p in raw_paths:
+            path = Path(p).expanduser()
+            if path.is_symlink():
+                logger.warning(
+                    "Vault search path is a symlink, skipping for safety: %s", path
+                )
+                continue
+            self._vault_paths.append(path.resolve())
 
         exts = cfg.get("include_extensions")
         if exts:
