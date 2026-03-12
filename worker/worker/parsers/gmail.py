@@ -7,6 +7,7 @@ IngestEvents, and produces GraphHints for Person/Email/Thread relationships.
 from __future__ import annotations
 
 import logging
+from email.utils import parseaddr
 from typing import Any
 
 from bs4 import BeautifulSoup
@@ -38,9 +39,8 @@ def _strip_html(html: str) -> str:
 
 def _parse_email_address(raw: str) -> str:
     """Extract bare email address from 'Display Name <addr>' format."""
-    if "<" in raw and ">" in raw:
-        return raw[raw.index("<") + 1 : raw.index(">")].strip()
-    return raw.strip()
+    _, addr = parseaddr(raw)
+    return addr.strip()
 
 
 @register

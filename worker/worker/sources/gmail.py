@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 
 from .base import PythonSource
 from .gmail_auth import get_credentials
@@ -212,7 +213,7 @@ class GmailSource(PythonSource):
                 kwargs["pageToken"] = page_token
 
             result = await self._api_call_with_retry(
-                loop, lambda: messages_api.list(**kwargs).execute()
+                loop, lambda kw=kwargs: messages_api.list(**kw).execute()
             )
             msg_stubs = result.get("messages", [])
             if not msg_stubs:
@@ -250,6 +251,9 @@ class GmailSource(PythonSource):
         logger.info("Backfill complete: %d messages fetched", fetched)
         return latest_history_id
 
+    # HTTP status codes that are safe to retry (transient errors).
+    _RETRYABLE_STATUS_CODES = frozenset({429, 500, 503})
+
     @staticmethod
     async def _api_call_with_retry(
         loop: asyncio.AbstractEventLoop,
@@ -262,13 +266,16 @@ class GmailSource(PythonSource):
         for attempt in range(max_retries + 1):
             try:
                 return await loop.run_in_executor(None, call)
-            except Exception:
+            except HttpError as exc:
+                if exc.resp.status not in GmailSource._RETRYABLE_STATUS_CODES:
+                    raise
                 if attempt == max_retries:
                     raise
                 logger.warning(
-                    "Gmail API call failed (attempt %d/%d), retrying in %.1fs",
+                    "Gmail API call failed (attempt %d/%d, status %d), retrying in %.1fs",
                     attempt + 1,
                     max_retries + 1,
+                    exc.resp.status,
                     backoff,
                 )
                 await asyncio.sleep(backoff)

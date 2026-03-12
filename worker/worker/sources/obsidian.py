@@ -159,7 +159,6 @@ class ObsidianSource(PythonSource):
         try:
             while True:
                 await asyncio.sleep(1)
-        except asyncio.CancelledError:
+        finally:
             observer.stop()
             observer.join()
-            raise
