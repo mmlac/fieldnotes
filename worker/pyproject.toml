@@ -3,10 +3,11 @@ requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "fieldnotes-worker"
+name = "fieldnotes"
 version = "0.1.0"
-description = "ML pipeline worker for the Fieldnotes personal knowledge graph"
+description = "Personal knowledge graph — ingest, search, and serve your notes"
 requires-python = ">=3.11"
+license = "MIT"
 dependencies = [
     "anthropic>=0.39,<1.0",
     "beautifulsoup4>=4.12,<5.0",
@@ -34,8 +35,11 @@ dependencies = [
     "mcp>=1.0",
 ]
 
+[project.urls]
+Repository = "https://github.com/mmlac/fieldnotes"
+
 [tool.setuptools.package-data]
-worker = ["templates/*"]
+worker = ["templates/*", "config.toml.example"]
 
 [project.scripts]
 fieldnotes = "worker.cli:main"

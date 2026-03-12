@@ -75,6 +75,12 @@ def _build_parser() -> argparse.ArgumentParser:
     daemon_sub.add_parser("start", help="Start the daemon service")
     daemon_sub.add_parser("stop", help="Stop the daemon service")
 
+    # ── init ───────────────────────────────────────────────────────
+    sub.add_parser(
+        "init",
+        help="Create ~/.fieldnotes/ directory and generate default config",
+    )
+
     # ── setup-claude ─────────────────────────────────────────────────
     sub.add_parser(
         "setup-claude",
@@ -196,6 +202,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.command is None:
         parser.print_help()
         return 1
+
+    if args.command == "init":
+        from worker.init import init
+
+        return init()
 
     if args.command == "setup-claude":
         from worker.setup import setup_claude
