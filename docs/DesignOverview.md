@@ -79,13 +79,13 @@ For POC: the daemon POSTs ingest events to a local HTTP endpoint on the worker (
 
 ### POC Path
 
-**For the initial POC, the worker runs standalone with Python source shims.** `worker/worker/sources/` contains lightweight Python implementations of the same watching and polling logic that will eventually live in the Go daemon — `watchdog` for files, direct Gmail API calls for email. They emit `IngestEvent` dicts to the worker's internal queue rather than over HTTP. Every other component (`parsers/`, `pipeline/`, `clustering/`, `query/`) is identical between Phase 1 and the target architecture. The shims are the only thing replaced if the Go daemon is built in Phase 6.
+**For the initial POC, the worker runs standalone with Python source shims.** `worker/worker/sources/` contains lightweight Python implementations of the same watching and polling logic that will eventually live in the Go daemon — `watchdog` for files, direct Gmail API calls for email. They emit `IngestEvent` dicts to the worker's internal queue rather than over HTTP. Every other component (`parsers/`, `pipeline/`, `clustering/`, `query/`) is identical between Phase 1 and the target architecture. The shims are the only thing replaced if the Go daemon is built in Phase 8.
 
-The Go `daemon/` skeleton — `Source` interface, `IngestEvent` struct, registry — is committed from day one even before any Go adapters are written. This keeps the contract stable and means the Go daemon rewrite (Phase 6, optional) is a drop-in replacement rather than a design-time decision made under pressure.
+The Go `daemon/` skeleton — `Source` interface, `IngestEvent` struct, registry — is committed from day one even before any Go adapters are written. This keeps the contract stable and means the Go daemon rewrite (Phase 8, optional) is a drop-in replacement rather than a design-time decision made under pressure.
 
 ```
 Phase 1 (shims):  Python sources + Python worker — fast to build, validates the full pipeline
-Phase 6 (optional): Go daemon + Python worker — right tool for each job, single binary distribution
+Phase 8 (optional): Go daemon + Python worker — right tool for each job, single binary distribution
 ```
 
 ---
@@ -1884,7 +1884,7 @@ volumes:
   qdrant_data:
 ```
 
-Ollama runs natively on macOS (Metal-accelerated). In the target architecture (Phase 6, optional), the Go daemon would be managed by `launchd` on macOS as a persistent background service, and the Python worker launched by the daemon on startup. Currently, the worker runs standalone — `worker/worker/main.py` starts both the Python source shims and the pipeline in a single process, with no Go daemon required.
+Ollama runs natively on macOS (Metal-accelerated). In the target architecture (Phase 8, optional), the Go daemon would be managed by `launchd` on macOS as a persistent background service, and the Python worker launched by the daemon on startup. Currently, the worker runs standalone — `worker/worker/main.py` starts both the Python source shims and the pipeline in a single process, with no Go daemon required.
 
 ---
 
@@ -1913,7 +1913,7 @@ fieldnotes/
 │   │   │       └── adapter.go          # git log + file allowlist scanner
 │   │   ├── dispatcher/
 │   │   │   ├── dispatcher.go           # fan-in from all sources → worker queue
-│   │   │   └── redis.go                # optional Redis queue (Phase 6)
+│   │   │   └── redis.go                # optional Redis queue (Phase 8)
 │   │   ├── mcp/
 │   │   │   └── server.go               # MCP server + tool definitions
 │   │   └── api/
@@ -1967,7 +1967,7 @@ fieldnotes/
     └── pyproject.toml
 ```
 
-In Phase 1, `worker/worker/sources/` contains lightweight Python shims that implement the same watching and polling logic that will eventually live in the Go daemon. They emit `IngestEvent` dicts directly to the worker's internal queue rather than over HTTP. The `parsers/` package, the full pipeline, and all downstream code are identical between Phase 1 and the target architecture — the shims are the only thing that gets replaced if the Go daemon is built (Phase 6, optional).
+In Phase 1, `worker/worker/sources/` contains lightweight Python shims that implement the same watching and polling logic that will eventually live in the Go daemon. They emit `IngestEvent` dicts directly to the worker's internal queue rather than over HTTP. The `parsers/` package, the full pipeline, and all downstream code are identical between Phase 1 and the target architecture — the shims are the only thing that gets replaced if the Go daemon is built (Phase 8, optional).
 
 The Go `daemon/` tree is committed from day one as a skeleton with the `Source` interface, `IngestEvent` types, and registry defined — even before the adapters are implemented. This keeps the contract stable and means the Go rewrite would be a drop-in replacement rather than a refactor.
 
@@ -2019,14 +2019,32 @@ The Go `daemon/` tree is committed from day one as a skeleton with the `Source` 
 - [ ] Cross-source entity resolution improvements
 - [ ] End-to-end integration tests across all sources and MCP tools
 
-### Phase 6 — Go Daemon Refactor (Optional)
+### Phase 6 — Observability & New Sources
+- [ ] Pipeline metrics: Prometheus Pushgateway + push-based instrumentation
+- [ ] Grafana dashboard: auto-provisioned panels for pipeline throughput, LLM latency, index status
+- [ ] Stage-level timing histograms, LLM token tracking per model/task
+- [ ] Index status gauges: source counts, entity counts, store sizes (Neo4j + Qdrant)
+- [ ] macOS installed applications source adapter (Info.plist scanning + LLM descriptions)
+- [ ] Homebrew formulae/cask source adapter (brew info descriptions)
+- [ ] Application → Topic cluster linking (RELATED_TO_TOPIC edges)
+- [ ] MCP tool: `ask` — RAG + LLM synthesized answers with source citations
+
+### Phase 7 — Interactive CLI
+- [ ] `fieldnotes ask` REPL with prompt_toolkit, readline history
+- [ ] Question reformulator: expand follow-up questions using conversation context
+- [ ] Retrieval display: progress tree showing search steps and source counts
+- [ ] Streaming answer renderer: token-by-token output with rich formatting and citations
+- [ ] Conversation persistence: save/resume conversations to ~/.fieldnotes/conversations/
+- [ ] One-shot mode: `fieldnotes ask "question"` with --json and --no-stream flags
+
+### Phase 8 — Go Daemon Refactor (Optional)
 - [ ] `daemon/` — Go rewrite of all adapters (file watcher, Obsidian parser, Gmail poller, git scanner)
 - [ ] `worker/` — Python ML pipeline unchanged
 - [ ] HTTP queue interface between daemon and worker
 - [ ] Go daemon distributed as single binary (`brew install fieldnotes`)
 - [ ] Replace `watchdog` Python dependency with `fsnotify` in Go
 
-### Phase 7 — Fine-tuning (Experimental)
+### Phase 9 — Fine-tuning (Experimental)
 - [ ] Generate fine-tuning dataset from extraction errors
 - [ ] LoRA fine-tune Qwen3.5-9B on personal corpus via mlx-lm
 - [ ] A/B eval: base model vs fine-tuned on extraction quality
