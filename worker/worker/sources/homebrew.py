@@ -31,6 +31,8 @@ from worker.metrics import (
     WATCHER_LAST_EVENT_TIMESTAMP,
 )
 
+from worker.log_sanitizer import redact_home_path
+
 from .base import PythonSource
 
 logger = logging.getLogger(__name__)
@@ -60,7 +62,7 @@ def _load_state(path: Path) -> dict[str, dict[str, Any]]:
         data = json.loads(path.read_text())
         return data if isinstance(data, dict) else {}
     except (json.JSONDecodeError, OSError):
-        logger.warning("Failed to read brew state file %s, starting fresh", path)
+        logger.warning("Failed to read brew state file %s, starting fresh", redact_home_path(str(path)))
         return {}
 
 

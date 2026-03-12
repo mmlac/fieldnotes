@@ -14,6 +14,8 @@ from tenacity import (
 
 from collections.abc import Iterator
 
+from worker.log_sanitizer import sanitize_exception
+
 from ..base import (
     CompletionRequest,
     CompletionResponse,
@@ -33,7 +35,9 @@ _anthropic_retry = retry(
     stop=stop_after_attempt(4),
     wait=wait_exponential_jitter(initial=0.5, max=10),
     before_sleep=lambda rs: logger.warning(
-        "Anthropic call failed (%s), retry %d", rs.outcome.exception(), rs.attempt_number
+        "Anthropic call failed (%s), retry %d",
+        sanitize_exception(rs.outcome.exception()),
+        rs.attempt_number,
     ),
     reraise=True,
 )

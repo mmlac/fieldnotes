@@ -51,6 +51,7 @@ from tenacity import (
 )
 
 from worker.config import Neo4jConfig, QdrantConfig
+from worker.log_sanitizer import sanitize_exception
 from worker.metrics import (
     NEO4J_WRITE_DURATION,
     QDRANT_WRITE_DURATION,
@@ -142,7 +143,9 @@ _neo4j_retry = retry(
     stop=stop_after_attempt(4),
     wait=wait_exponential_jitter(initial=0.5, max=10),
     before_sleep=lambda rs: logger.warning(
-        "Neo4j call failed (%s), retry %d", rs.outcome.exception(), rs.attempt_number
+        "Neo4j call failed (%s), retry %d",
+        sanitize_exception(rs.outcome.exception()),
+        rs.attempt_number,
     ),
     reraise=True,
 )
@@ -152,7 +155,9 @@ _qdrant_retry = retry(
     stop=stop_after_attempt(4),
     wait=wait_exponential_jitter(initial=0.5, max=10),
     before_sleep=lambda rs: logger.warning(
-        "Qdrant call failed (%s), retry %d", rs.outcome.exception(), rs.attempt_number
+        "Qdrant call failed (%s), retry %d",
+        sanitize_exception(rs.outcome.exception()),
+        rs.attempt_number,
     ),
     reraise=True,
 )

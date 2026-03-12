@@ -34,6 +34,8 @@ from worker.metrics import (
     observe_duration,
 )
 
+from worker.log_sanitizer import redact_home_path
+
 from .base import PythonSource
 from .gmail_auth import get_credentials
 
@@ -61,7 +63,7 @@ def _load_cursor(path: Path) -> str | None:
         int(hid)
         return hid
     except (json.JSONDecodeError, OSError):
-        logger.warning("Failed to read cursor file %s, starting fresh", path)
+        logger.warning("Failed to read cursor file %s, starting fresh", redact_home_path(str(path)))
         return None
     except (ValueError, TypeError):
         logger.warning(

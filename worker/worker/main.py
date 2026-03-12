@@ -26,6 +26,7 @@ from qdrant_client import QdrantClient
 
 from worker.clustering.scheduler import clustering_loop
 from worker.config import Config, load_config
+from worker.log_sanitizer import SanitizingFormatter, redact_uri
 from worker.metrics import (
     DEFAULT_COLLECT_INTERVAL,
     QUEUE_DEPTH,
@@ -66,11 +67,17 @@ SOURCE_CLASSES: dict[str, type[PythonSource]] = {
 def _setup_logging(level: str) -> None:
     """Configure root logger from config.core.log_level."""
     numeric = getattr(logging, level.upper(), logging.INFO)
-    logging.basicConfig(
-        level=numeric,
-        format="%(asctime)s %(levelname)-8s %(name)s — %(message)s",
+    production = numeric > logging.DEBUG
+    formatter = SanitizingFormatter(
+        fmt="%(asctime)s %(levelname)-8s %(name)s — %(message)s",
         datefmt="%Y-%m-%dT%H:%M:%S",
+        production=production,
     )
+    handler = logging.StreamHandler()
+    handler.setFormatter(formatter)
+    root = logging.getLogger()
+    root.setLevel(numeric)
+    root.addHandler(handler)
 
 
 def _check_neo4j(cfg: Config) -> None:
@@ -81,7 +88,7 @@ def _check_neo4j(cfg: Config) -> None:
     )
     try:
         driver.verify_connectivity()
-        logger.info("Neo4j connection OK (%s)", cfg.neo4j.uri)
+        logger.info("Neo4j connection OK (%s)", redact_uri(cfg.neo4j.uri))
     finally:
         driver.close()
 

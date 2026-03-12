@@ -19,6 +19,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
 
+	"github.com/mmlac/fieldnotes/daemon/internal/sanitize"
 	"github.com/mmlac/fieldnotes/daemon/internal/sources"
 )
 
@@ -172,7 +173,7 @@ func (s *RepoSource) poll(ctx context.Context, events chan<- sources.IngestEvent
 func discoverRepos(root string) []string {
 	info, err := os.Stat(root)
 	if err != nil || !info.IsDir() {
-		slog.Warn("repo_root is not a directory, skipping", "root", root)
+		slog.Warn("repo_root is not a directory, skipping", "root", sanitize.Path(root))
 		return nil
 	}
 
@@ -186,7 +187,7 @@ func discoverRepos(root string) []string {
 	// Walk one level of subdirectories.
 	entries, err := os.ReadDir(root)
 	if err != nil {
-		slog.Warn("failed to list repo_root", "root", root, "error", err)
+		slog.Warn("failed to list repo_root", "root", sanitize.Path(root), "error", err)
 		return repos
 	}
 	for _, entry := range entries {
@@ -210,13 +211,13 @@ func isGitRepo(dir string) bool {
 func (s *RepoSource) scanRepo(ctx context.Context, repoPath string, events chan<- sources.IngestEvent) {
 	repo, err := git.PlainOpen(repoPath)
 	if err != nil {
-		slog.Warn("failed to open git repo", "path", repoPath, "error", err)
+		slog.Warn("failed to open git repo", "path", sanitize.Path(repoPath), "error", err)
 		return
 	}
 
 	head, err := repo.Head()
 	if err != nil {
-		slog.Debug("skipping repo with no HEAD", "path", repoPath)
+		slog.Debug("skipping repo with no HEAD", "path", sanitize.Path(repoPath))
 		return
 	}
 	headSHA := head.Hash().String()
@@ -269,7 +270,7 @@ func (s *RepoSource) scanFiles(ctx context.Context, repo *git.Repository, repoPa
 			return nil
 		}
 		if info.Size() > s.maxFileSize {
-			slog.Warn("skipping file exceeding max size", "path", absPath, "size", info.Size())
+			slog.Warn("skipping file exceeding max size", "path", sanitize.Path(absPath), "size", info.Size())
 			return nil
 		}
 

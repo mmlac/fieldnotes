@@ -41,6 +41,8 @@ from worker.metrics import (
     WATCHER_LAST_EVENT_TIMESTAMP,
 )
 
+from worker.log_sanitizer import redact_home_path
+
 from ._handler import guess_mime, streaming_sha256
 from .base import PythonSource
 
@@ -87,7 +89,7 @@ def _load_cursor(path: Path) -> dict[str, str]:
         data = json.loads(path.read_text())
         return data if isinstance(data, dict) else {}
     except (json.JSONDecodeError, OSError):
-        logger.warning("Failed to read repo cursor file %s, starting fresh", path)
+        logger.warning("Failed to read repo cursor file %s, starting fresh", redact_home_path(str(path)))
         return {}
 
 
@@ -142,7 +144,7 @@ def _discover_repos(roots: list[Path]) -> list[Path]:
     repos: list[Path] = []
     for root in roots:
         if not root.is_dir():
-            logger.warning("repo_root %s is not a directory, skipping", root)
+            logger.warning("repo_root %s is not a directory, skipping", redact_home_path(str(root)))
             continue
         # Check if root itself is a repo
         if (root / ".git").exists():
@@ -193,7 +195,7 @@ def _build_event(
             if result is None:
                 logger.warning(
                     "Skipping %s — exceeds max_file_size (%d bytes)",
-                    file_path,
+                    redact_home_path(str(file_path)),
                     max_file_size,
                 )
                 return None
@@ -207,10 +209,10 @@ def _build_event(
                         encoding="utf-8", errors="replace"
                     )
                 except OSError:
-                    logger.warning("Failed to read text content from %s", file_path)
+                    logger.warning("Failed to read text content from %s", redact_home_path(str(file_path)))
                     event["text"] = ""
         except OSError:
-            logger.warning("Failed to stat %s, emitting without content hash", file_path)
+            logger.warning("Failed to stat %s, emitting without content hash", redact_home_path(str(file_path)))
             event["source_modified_at"] = now
     else:
         event["source_modified_at"] = now
@@ -337,19 +339,19 @@ class RepositorySource(PythonSource):
         try:
             repo = git.Repo(repo_path)
         except git.InvalidGitRepositoryError:
-            logger.warning("Invalid git repo at %s, skipping", repo_path)
+            logger.warning("Invalid git repo at %s, skipping", redact_home_path(str(repo_path)))
             return
 
         # Skip bare repos
         if repo.bare:
-            logger.debug("Skipping bare repo %s", repo_path)
+            logger.debug("Skipping bare repo %s", redact_home_path(str(repo_path)))
             return
 
         try:
             head_sha = repo.head.commit.hexsha
         except ValueError:
             # Empty repo with no commits
-            logger.debug("Skipping empty repo %s (no commits)", repo_path)
+            logger.debug("Skipping empty repo %s (no commits)", redact_home_path(str(repo_path)))
             return
 
         prev_sha = cursors.get(repo_key)
@@ -395,7 +397,7 @@ class RepositorySource(PythonSource):
                 if len(paths) >= DEFAULT_MAX_TREE_ITEMS:
                     logger.warning(
                         "Tree traversal for %s hit %d-item limit, truncating",
-                        repo_path,
+                        redact_home_path(str(repo_path)),
                         DEFAULT_MAX_TREE_ITEMS,
                     )
                     break
@@ -409,7 +411,7 @@ class RepositorySource(PythonSource):
         except asyncio.TimeoutError:
             logger.error(
                 "Tree traversal for %s timed out after %ds, skipping",
-                repo_path,
+                redact_home_path(str(repo_path)),
                 GIT_OPERATION_TIMEOUT,
             )
             return
