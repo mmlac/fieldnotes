@@ -227,32 +227,35 @@ func (s *RepoSource) scanRepo(ctx context.Context, repoPath string, events chan<
 		return // no changes
 	}
 
+	commit, err := repo.CommitObject(head.Hash())
+	if err != nil {
+		slog.Warn("failed to resolve HEAD commit", "path", sanitize.Path(repoPath), "error", err)
+		return
+	}
+
 	repoName := filepath.Base(repoPath)
 	remoteURL := getRemoteURL(repo)
 
 	// Emit file events.
-	s.scanFiles(ctx, repo, repoPath, repoName, remoteURL, events)
+	s.scanFiles(ctx, commit, repoPath, repoName, remoteURL, events)
 
 	// Emit commit events (only new commits since prevSHA).
-	s.scanCommits(ctx, repo, repoPath, repoName, remoteURL, prevSHA, events)
+	s.scanCommits(ctx, repo, head, repoPath, repoName, remoteURL, prevSHA, events)
 
 	s.cursors[repoPath] = headSHA
 }
 
 // scanFiles walks tracked files and emits events for those matching include patterns.
-func (s *RepoSource) scanFiles(ctx context.Context, repo *git.Repository, repoPath, repoName, remoteURL string, events chan<- sources.IngestEvent) {
-	head, err := repo.Head()
-	if err != nil {
-		return
-	}
-	commit, err := repo.CommitObject(head.Hash())
-	if err != nil {
-		return
-	}
+// It reads file content and size from the git object store to avoid TOCTOU races
+// with on-disk files: git objects are immutable and content-addressed, so a single
+// read is both safe and consistent with the committed tree.
+func (s *RepoSource) scanFiles(ctx context.Context, commit *object.Commit, repoPath, repoName, remoteURL string, events chan<- sources.IngestEvent) {
 	tree, err := commit.Tree()
 	if err != nil {
 		return
 	}
+
+	commitTime := commit.Author.When.UTC()
 
 	count := 0
 	tree.Files().ForEach(func(f *object.File) error {
@@ -264,22 +267,17 @@ func (s *RepoSource) scanFiles(ctx context.Context, repo *git.Repository, repoPa
 			return nil
 		}
 
-		absPath := filepath.Join(repoPath, relPath)
-		info, err := os.Stat(absPath)
-		if err != nil {
-			return nil
-		}
-		if info.Size() > s.maxFileSize {
-			slog.Warn("skipping file exceeding max size", "path", sanitize.Path(absPath), "size", info.Size())
+		if f.Blob.Size > s.maxFileSize {
+			slog.Warn("skipping file exceeding max size", "path", sanitize.Path(filepath.Join(repoPath, relPath)), "size", f.Blob.Size)
 			return nil
 		}
 
 		text := ""
 		mimeType := guessMIME(relPath)
 		if isTextMIME(mimeType) {
-			data, err := os.ReadFile(absPath)
+			contents, err := f.Contents()
 			if err == nil {
-				text = string(data)
+				text = contents
 			}
 		}
 
@@ -295,7 +293,7 @@ func (s *RepoSource) scanFiles(ctx context.Context, repo *git.Repository, repoPa
 				"remote_url":    remoteURL,
 				"relative_path": relPath,
 			},
-			SourceModifiedAt: info.ModTime().UTC(),
+			SourceModifiedAt: commitTime,
 			EnqueuedAt:       time.Now().UTC(),
 		}
 		count++
@@ -309,12 +307,8 @@ func (s *RepoSource) scanFiles(ctx context.Context, repo *git.Repository, repoPa
 
 // scanCommits emits events for recent commits, up to maxCommits.
 // When prevSHA is non-empty, only commits between prevSHA and HEAD are emitted.
-func (s *RepoSource) scanCommits(ctx context.Context, repo *git.Repository, repoPath, repoName, remoteURL, prevSHA string, events chan<- sources.IngestEvent) {
-	head, err := repo.Head()
-	if err != nil {
-		return
-	}
-
+// head is passed in from scanRepo to avoid a redundant repo.Head() call.
+func (s *RepoSource) scanCommits(ctx context.Context, repo *git.Repository, head *plumbing.Reference, repoPath, repoName, remoteURL, prevSHA string, events chan<- sources.IngestEvent) {
 	iter, err := repo.Log(&git.LogOptions{
 		From:  head.Hash(),
 		Order: git.LogOrderCommitterTime,
