@@ -19,6 +19,13 @@ from worker.config import Neo4jConfig
 
 logger = logging.getLogger(__name__)
 
+# Maximum rows returned by each TopicQuerier query.  These are hardcoded
+# Cypher queries (not LLM-generated), so we can set conservative upper
+# bounds to prevent OOM on large graphs.
+_MAX_TOPICS = 500
+_MAX_DOCUMENTS_PER_TOPIC = 200
+_MAX_GAPS = 500
+
 
 @dataclass
 class TopicSummary:
@@ -71,7 +78,9 @@ class TopicQuerier:
                        COALESCE(t.description, '') AS description,
                        count(source_node) AS doc_count
                 ORDER BY t.source, t.name
-                """
+                LIMIT $limit
+                """,
+                limit=_MAX_TOPICS,
             ).data()
         return [
             TopicSummary(
@@ -97,8 +106,10 @@ class TopicQuerier:
                        COALESCE(doc.source_id, '') AS source_id,
                        COALESCE(doc.name, doc.source_id, '') AS doc_name
                 ORDER BY doc_name
+                LIMIT $limit
                 """,
                 name=name,
+                limit=_MAX_DOCUMENTS_PER_TOPIC,
             ).data()
 
         if not records:
@@ -140,7 +151,9 @@ class TopicQuerier:
                        COALESCE(t.description, '') AS description,
                        count(doc) AS doc_count
                 ORDER BY doc_count DESC, t.name
-                """
+                LIMIT $limit
+                """,
+                limit=_MAX_GAPS,
             ).data()
         return [
             TopicGap(
