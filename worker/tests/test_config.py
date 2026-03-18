@@ -377,6 +377,21 @@ class TestTypeValidation:
         with pytest.raises(TypeError, match=r"\[mcp\] auth_token: expected str"):
             _parse({"mcp": {"auth_token": 12345}})
 
+    def test_mcp_auth_token_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("FIELDNOTES_MCP_AUTH_TOKEN", "env-token-xyz")
+        cfg = _parse({"mcp": {}})
+        assert cfg.mcp.auth_token == "env-token-xyz"
+
+    def test_mcp_auth_token_config_overrides_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("FIELDNOTES_MCP_AUTH_TOKEN", "env-token-xyz")
+        cfg = _parse({"mcp": {"auth_token": "config-token"}})
+        assert cfg.mcp.auth_token == "config-token"
+
+    def test_mcp_auth_token_empty_env_is_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("FIELDNOTES_MCP_AUTH_TOKEN", "")
+        cfg = _parse({"mcp": {}})
+        assert cfg.mcp.auth_token is None
+
     def test_valid_types_still_accepted(self) -> None:
         """Ensure valid configs still parse without errors."""
         cfg = _parse({

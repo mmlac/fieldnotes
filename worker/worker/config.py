@@ -144,6 +144,10 @@ class McpConfig:
     port: int = 3456
     auth_token: str | None = None
 
+    def __post_init__(self) -> None:
+        if not self.auth_token:
+            self.auth_token = os.environ.get("FIELDNOTES_MCP_AUTH_TOKEN") or None
+
 
 @dataclass
 class RateLimitConfig:
