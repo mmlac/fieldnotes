@@ -135,7 +135,6 @@ def _emit_scan_events(
     vault_path: Path,
     vault_name: str,
     queue: asyncio.Queue[dict[str, Any]],
-    loop: asyncio.AbstractEventLoop,
 ) -> None:
     """Emit IngestEvent dicts for scan diff results."""
     now = datetime.now(timezone.utc).isoformat()
@@ -143,18 +142,18 @@ def _emit_scan_events(
     for file_path in diff.new:
         entry = current[file_path]
         _enqueue_scan_event(
-            file_path, "created", entry, vault_path, vault_name, now, queue, loop
+            file_path, "created", entry, vault_path, vault_name, now, queue
         )
 
     for file_path in diff.modified:
         entry = current[file_path]
         _enqueue_scan_event(
-            file_path, "modified", entry, vault_path, vault_name, now, queue, loop
+            file_path, "modified", entry, vault_path, vault_name, now, queue
         )
 
     for file_path in diff.deleted:
         _enqueue_scan_event(
-            file_path, "deleted", None, vault_path, vault_name, now, queue, loop
+            file_path, "deleted", None, vault_path, vault_name, now, queue
         )
 
 
@@ -166,9 +165,14 @@ def _enqueue_scan_event(
     vault_name: str,
     now: str,
     queue: asyncio.Queue[dict[str, Any]],
-    loop: asyncio.AbstractEventLoop,
 ) -> None:
-    """Build and enqueue a single scan event."""
+    """Build and enqueue a single scan event.
+
+    Must be called from the event loop thread (e.g. inside an ``async def``).
+    Uses ``put_nowait`` so the item is placed immediately without scheduling a
+    coroutine via ``run_coroutine_threadsafe``, which produces an unawaited
+    future when called from the loop thread itself.
+    """
     try:
         relative_path = str(Path(file_path).relative_to(vault_path))
     except ValueError:
@@ -207,7 +211,7 @@ def _enqueue_scan_event(
     else:
         ingest["source_modified_at"] = now
 
-    asyncio.run_coroutine_threadsafe(queue.put(ingest), loop)
+    queue.put_nowait(ingest)
 
 
 class _VaultHandler(BaseHandler):
@@ -349,7 +353,7 @@ class ObsidianSource(PythonSource):
             handled_stored_paths.update(vault_stored)
 
             diff = diff_cursor(vault_entries, vault_stored)
-            _emit_scan_events(diff, vault_entries, vault, vault_name, queue, loop)
+            _emit_scan_events(diff, vault_entries, vault, vault_name, queue)
 
             n_new = len(diff.new)
             n_mod = len(diff.modified)
@@ -396,7 +400,7 @@ class ObsidianSource(PythonSource):
                 "enqueued_at": now,
                 "source_modified_at": now,
             }
-            asyncio.run_coroutine_threadsafe(queue.put(ingest), loop)
+            queue.put_nowait(ingest)
             total_deleted += 1
 
         # Save updated cursor
@@ -438,9 +442,16 @@ class ObsidianSource(PythonSource):
                 exclude_patterns=self._exclude_patterns,
                 max_file_size=self._max_file_size,
             )
-            handler.set_cursor(stored_cursor)
-            # Filter dedup set to entries belonging to this vault
+            # Seed handler with the just-scanned current state so that
+            # _save_checkpoint (called on cancel or interval) persists the
+            # fresh scan data rather than overwriting it with the stale
+            # stored_cursor that predates this run.
             vault_prefix = str(vault) + os.sep
+            vault_current = {
+                k: v for k, v in current_cursor.items() if k.startswith(vault_prefix)
+            }
+            handler.set_cursor(vault_current)
+            # Filter dedup set to entries belonging to this vault
             vault_dedup = {
                 (p, s) for p, s in scan_pairs if p.startswith(vault_prefix)
             }
