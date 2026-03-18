@@ -32,6 +32,7 @@ from worker.metrics import (
 )
 
 from .base import PythonSource
+from .cursor import save_json_atomic
 
 logger = logging.getLogger(__name__)
 
@@ -173,9 +174,7 @@ def _load_state(path: Path) -> dict[str, str]:
 
 def _save_state(path: Path, state: dict[str, str]) -> None:
     """Persist scan state to disk."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(state))
-    path.chmod(0o600)
+    save_json_atomic(path, state)
 
 
 def _build_event(

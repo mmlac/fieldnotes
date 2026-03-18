@@ -33,6 +33,7 @@ from worker.metrics import (
 from worker.log_sanitizer import redact_home_path
 
 from .base import PythonSource
+from .cursor import save_json_atomic
 
 logger = logging.getLogger(__name__)
 
@@ -67,9 +68,7 @@ def _load_state(path: Path) -> dict[str, dict[str, Any]]:
 
 def _save_state(path: Path, state: dict[str, dict[str, Any]]) -> None:
     """Persist scan state to disk."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(state))
-    path.chmod(0o600)
+    save_json_atomic(path, state)
 
 
 def _collect_installed(brew_path: str) -> dict[str, Any]:

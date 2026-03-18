@@ -63,6 +63,36 @@ def load_cursor(path: Path) -> dict[str, FileEntry]:
         return {}
 
 
+def save_json_atomic(path: Path, data: Any) -> None:
+    """Persist *data* as JSON to *path* atomically.
+
+    Writes to a temporary file in the same directory, fsyncs, then renames
+    into place.  On POSIX ``os.replace`` is atomic so a crash mid-write
+    cannot leave a partially-written state file.  File permissions are set
+    to 0o600 (owner read/write only).
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = tempfile.NamedTemporaryFile(
+        mode="w",
+        dir=path.parent,
+        prefix=".state_",
+        suffix=".tmp",
+        delete=False,
+    )
+    try:
+        fd.write(json.dumps(data))
+        fd.flush()
+        os.fsync(fd.fileno())
+        fd.close()
+        os.chmod(fd.name, 0o600)
+        os.replace(fd.name, path)
+    except BaseException:
+        fd.close()
+        with contextlib.suppress(OSError):
+            os.unlink(fd.name)
+        raise
+
+
 def save_cursor(path: Path, cursor: dict[str, FileEntry]) -> None:
     """Persist *cursor* to *path* atomically.
 

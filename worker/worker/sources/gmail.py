@@ -37,6 +37,7 @@ from worker.metrics import (
 from worker.log_sanitizer import redact_home_path
 
 from .base import PythonSource
+from .cursor import save_json_atomic
 from .gmail_auth import get_credentials
 
 logger = logging.getLogger(__name__)
@@ -74,9 +75,7 @@ def _load_cursor(path: Path) -> str | None:
 
 def _save_cursor(path: Path, history_id: str) -> None:
     """Persist the latest history ID to disk."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"history_id": history_id}))
-    path.chmod(0o600)
+    save_json_atomic(path, {"history_id": history_id})
 
 
 def _extract_recipients(headers: list[dict[str, str]]) -> list[str]:
