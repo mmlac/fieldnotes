@@ -306,3 +306,194 @@ class TestConfigAuthToken:
     def test_mcp_config_with_token(self) -> None:
         cfg = McpConfig(auth_token="my-secret")
         assert cfg.auth_token == "my-secret"
+
+
+# ------------------------------------------------------------------
+# Thread pool executor (thread pool exhaustion fix)
+# ------------------------------------------------------------------
+
+
+class TestExecutorLifecycle:
+    @patch("worker.mcp_server.VectorQuerier")
+    @patch("worker.mcp_server.GraphQuerier")
+    @patch("worker.mcp_server.ModelRegistry")
+    def test_connect_creates_executor(
+        self,
+        mock_registry: MagicMock,
+        mock_gq: MagicMock,
+        mock_vq: MagicMock,
+    ) -> None:
+        cfg = _make_cfg()
+        server = FieldnotesServer(cfg)
+        assert server._executor is None
+        server._connect()
+        assert server._executor is not None
+
+    @patch("worker.mcp_server.VectorQuerier")
+    @patch("worker.mcp_server.GraphQuerier")
+    @patch("worker.mcp_server.ModelRegistry")
+    def test_disconnect_shuts_down_executor(
+        self,
+        mock_registry: MagicMock,
+        mock_gq: MagicMock,
+        mock_vq: MagicMock,
+    ) -> None:
+        cfg = _make_cfg()
+        server = FieldnotesServer(cfg)
+        server._connect()
+        executor = server._executor
+        server._disconnect()
+        assert server._executor is None
+        # The executor should have been shut down.
+        assert executor._shutdown  # type: ignore[union-attr]
+
+    def test_disconnect_without_connect_does_not_raise(self) -> None:
+        cfg = _make_cfg()
+        server = FieldnotesServer(cfg)
+        # No connect — executor is None. Should not raise.
+        server._disconnect()
+        assert server._executor is None
+
+
+# ------------------------------------------------------------------
+# Shutdown signal cancels task, not double-disconnect (race fix)
+# ------------------------------------------------------------------
+
+
+class TestShutdownSignalHandler:
+    @patch("worker.mcp_server.VectorQuerier")
+    @patch("worker.mcp_server.GraphQuerier")
+    @patch("worker.mcp_server.ModelRegistry")
+    @patch("worker.mcp_server.stdio_server")
+    def test_disconnect_called_once_on_cancellation(
+        self,
+        mock_stdio: MagicMock,
+        mock_registry: MagicMock,
+        mock_gq: MagicMock,
+        mock_vq: MagicMock,
+    ) -> None:
+        """Signal-driven cancellation must not cause a double _disconnect call."""
+        import asyncio
+        from unittest.mock import AsyncMock, patch as _patch
+
+        cfg = _make_cfg()
+        server = FieldnotesServer(cfg)
+
+        disconnect_calls = []
+        original_disconnect = server._disconnect
+
+        def counting_disconnect():
+            disconnect_calls.append(1)
+            original_disconnect()
+
+        server._disconnect = counting_disconnect  # type: ignore[method-assign]
+
+        # stdio_server context manager that immediately cancels the current task.
+        class _CancellingStdio:
+            async def __aenter__(self):
+                asyncio.current_task().cancel()
+                read_s, _ = anyio.create_memory_object_stream(1)
+                write_s, _ = anyio.create_memory_object_stream(1)
+                return read_s, write_s
+
+            async def __aexit__(self, *args):
+                pass
+
+        mock_stdio.return_value = _CancellingStdio()
+
+        asyncio.run(server.run())
+
+        assert disconnect_calls == [1], (
+            f"_disconnect should be called exactly once, got {len(disconnect_calls)}"
+        )
+
+
+# ------------------------------------------------------------------
+# Input validation
+# ------------------------------------------------------------------
+
+
+class TestInputValidation:
+    @pytest.mark.asyncio
+    async def test_search_empty_query_returns_error(self) -> None:
+        cfg = _make_cfg()
+        server = FieldnotesServer(cfg)
+        result = await server._call_tool("search", {"query": ""})
+        assert len(result) == 1
+        assert "error" in result[0].text.lower()
+
+    @pytest.mark.asyncio
+    async def test_search_whitespace_query_returns_error(self) -> None:
+        cfg = _make_cfg()
+        server = FieldnotesServer(cfg)
+        result = await server._call_tool("search", {"query": "   "})
+        assert len(result) == 1
+        assert "error" in result[0].text.lower()
+
+    @pytest.mark.asyncio
+    async def test_search_invalid_source_type_returns_error(self) -> None:
+        cfg = _make_cfg()
+        server = FieldnotesServer(cfg)
+        result = await server._call_tool("search", {"query": "hello", "source_type": "bogus"})
+        assert len(result) == 1
+        assert "error" in result[0].text.lower()
+
+    @pytest.mark.asyncio
+    async def test_ask_empty_question_returns_error(self) -> None:
+        cfg = _make_cfg()
+        server = FieldnotesServer(cfg)
+        result = await server._call_tool("ask", {"question": ""})
+        assert len(result) == 1
+        assert "error" in result[0].text.lower()
+
+    @pytest.mark.asyncio
+    async def test_ask_invalid_source_type_returns_error(self) -> None:
+        cfg = _make_cfg()
+        server = FieldnotesServer(cfg)
+        result = await server._call_tool("ask", {"question": "what?", "source_type": "unknown"})
+        assert len(result) == 1
+        assert "error" in result[0].text.lower()
+
+    @pytest.mark.asyncio
+    async def test_show_topic_empty_name_returns_error(self) -> None:
+        cfg = _make_cfg()
+        server = FieldnotesServer(cfg)
+        result = await server._call_tool("show_topic", {"name": ""})
+        assert len(result) == 1
+        assert "error" in result[0].text.lower()
+
+    @pytest.mark.asyncio
+    @patch("worker.mcp_server.VectorQuerier")
+    @patch("worker.mcp_server.GraphQuerier")
+    @patch("worker.mcp_server.ModelRegistry")
+    @patch("worker.mcp_server.is_corpus_empty", return_value=False)
+    async def test_search_top_k_zero_clamped_to_one(
+        self,
+        mock_empty: MagicMock,
+        mock_registry: MagicMock,
+        mock_gq_cls: MagicMock,
+        mock_vq_cls: MagicMock,
+    ) -> None:
+        from worker.query.graph import GraphQueryResult
+        from worker.query.vector import VectorQueryResult
+
+        cfg = Config(
+            neo4j=Neo4jConfig(uri="bolt://localhost:7687", user="neo4j", password="test"),
+            qdrant=QdrantConfig(host="localhost", port=6333, collection="fieldnotes"),
+        )
+        server = FieldnotesServer(cfg)
+        server._connect()
+
+        server._graph_querier.query = MagicMock(
+            return_value=GraphQueryResult(question="q", cypher="", raw_results=[])
+        )
+        server._vector_querier.query = MagicMock(
+            return_value=VectorQueryResult(question="q", results=[])
+        )
+
+        # top_k=0 must be clamped to >= 1 and not raise.
+        await server._call_tool("search", {"query": "test", "top_k": 0})
+        call_args = server._vector_querier.query.call_args
+        # top_k is passed as keyword argument
+        top_k_used = call_args.kwargs.get("top_k")
+        assert top_k_used is not None and top_k_used >= 1

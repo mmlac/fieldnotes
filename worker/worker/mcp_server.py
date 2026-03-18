@@ -13,6 +13,7 @@ Usage::
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import hmac
 import json
 import logging
@@ -265,6 +266,7 @@ class FieldnotesServer:
         self._registry: ModelRegistry | None = None
         self._graph_querier: GraphQuerier | None = None
         self._vector_querier: VectorQuerier | None = None
+        self._executor: concurrent.futures.ThreadPoolExecutor | None = None
 
         # Register handlers.
         self._app.list_tools()(self._list_tools)
@@ -273,12 +275,13 @@ class FieldnotesServer:
     # -- connection management ----------------------------------------------
 
     def _connect(self) -> None:
-        """Initialise ModelRegistry, GraphQuerier, and VectorQuerier.
+        """Initialise ModelRegistry, GraphQuerier, VectorQuerier, and thread pool.
 
         Uses try/except so that a failure in a later connection (e.g. Qdrant)
         cleans up already-opened connections (e.g. Neo4j) instead of leaking
         them.
         """
+        self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=10)
         self._registry = ModelRegistry(self._cfg)
         try:
             self._graph_querier = GraphQuerier(self._registry, self._cfg.neo4j)
@@ -294,7 +297,7 @@ class FieldnotesServer:
         logger.info("Fieldnotes MCP server: connections initialised")
 
     def _disconnect(self) -> None:
-        """Close all connections gracefully."""
+        """Close all connections and thread pool gracefully."""
         if self._graph_querier is not None:
             self._graph_querier.close()
             self._graph_querier = None
@@ -302,6 +305,9 @@ class FieldnotesServer:
             self._vector_querier.close()
             self._vector_querier = None
         self._registry = None
+        if self._executor is not None:
+            self._executor.shutdown(wait=False)
+            self._executor = None
         logger.info("Fieldnotes MCP server: connections closed")
 
     # -- MCP handlers -------------------------------------------------------
@@ -334,10 +340,19 @@ class FieldnotesServer:
 
     # -- tool implementations -----------------------------------------------
 
+    _VALID_SOURCE_TYPES = frozenset({"file", "email", "obsidian", "repositories"})
+
     async def _handle_search(self, arguments: dict) -> list[TextContent]:
-        query = arguments["query"]
-        top_k = min(arguments.get("top_k", 10), 100)
+        query = arguments.get("query", "")
+        if not isinstance(query, str) or not query.strip():
+            return [TextContent(type="text", text="error: 'query' must be a non-empty string")]
+        top_k = max(1, min(int(arguments.get("top_k", 10)), 100))
         source_type: str | None = arguments.get("source_type")
+        if source_type is not None and source_type not in self._VALID_SOURCE_TYPES:
+            return [TextContent(
+                type="text",
+                text=f"error: 'source_type' must be one of {sorted(self._VALID_SOURCE_TYPES)}",
+            )]
 
         if self._graph_querier is None or self._vector_querier is None:
             raise RuntimeError("Server not initialised — call _connect() first")
@@ -345,7 +360,7 @@ class FieldnotesServer:
         # Check for empty corpus before running expensive queries.
         loop = asyncio.get_running_loop()
         empty = await loop.run_in_executor(
-            None,
+            self._executor,
             is_corpus_empty,
             self._graph_querier,
             self._vector_querier,
@@ -355,10 +370,10 @@ class FieldnotesServer:
 
         # Run graph and vector queries concurrently in the thread pool.
         graph_future = loop.run_in_executor(
-            None, self._graph_querier.query, query
+            self._executor, self._graph_querier.query, query
         )
         vector_future = loop.run_in_executor(
-            None,
+            self._executor,
             lambda: self._vector_querier.query(
                 query, top_k=top_k, source_type=source_type
             ),
@@ -428,8 +443,15 @@ class FieldnotesServer:
 
     async def _handle_ask(self, arguments: dict) -> list[TextContent]:
         """Retrieve context via hybrid search, then synthesize an LLM answer."""
-        question = arguments["question"]
+        question = arguments.get("question", "")
+        if not isinstance(question, str) or not question.strip():
+            return [TextContent(type="text", text="error: 'question' must be a non-empty string")]
         source_type: str | None = arguments.get("source_type")
+        if source_type is not None and source_type not in self._VALID_SOURCE_TYPES:
+            return [TextContent(
+                type="text",
+                text=f"error: 'source_type' must be one of {sorted(self._VALID_SOURCE_TYPES)}",
+            )]
 
         if self._graph_querier is None or self._vector_querier is None:
             raise RuntimeError("Server not initialised — call _connect() first")
@@ -439,7 +461,7 @@ class FieldnotesServer:
         # Check for empty corpus before running expensive queries.
         loop = asyncio.get_running_loop()
         empty = await loop.run_in_executor(
-            None,
+            self._executor,
             is_corpus_empty,
             self._graph_querier,
             self._vector_querier,
@@ -457,10 +479,10 @@ class FieldnotesServer:
         # --- 1. Retrieve context (same as _handle_search) ---
 
         graph_future = loop.run_in_executor(
-            None, self._graph_querier.query, question
+            self._executor, self._graph_querier.query, question
         )
         vector_future = loop.run_in_executor(
-            None,
+            self._executor,
             lambda: self._vector_querier.query(
                 question, top_k=20, source_type=source_type
             ),
@@ -561,7 +583,7 @@ class FieldnotesServer:
         )
 
         resp = await loop.run_in_executor(
-            None, lambda: model.complete(req, task="ask")
+            self._executor, lambda: model.complete(req, task="ask")
         )
 
         # --- 3. Format response ---
@@ -594,7 +616,9 @@ class FieldnotesServer:
         return [TextContent(type="text", text=text)]
 
     def _handle_show_topic(self, arguments: dict) -> list[TextContent]:
-        topic_name = arguments["name"]
+        topic_name = arguments.get("name", "")
+        if not isinstance(topic_name, str) or not topic_name.strip():
+            return [TextContent(type="text", text="error: 'name' must be a non-empty string")]
         with TopicQuerier(self._cfg.neo4j) as querier:
             detail = querier.show_topic(topic_name)
             text = format_topic_detail(detail, use_json=True)
@@ -705,10 +729,12 @@ class FieldnotesServer:
         self._connect()
 
         loop = asyncio.get_running_loop()
+        current_task = asyncio.current_task()
 
         def _shutdown_handler() -> None:
             logger.info("Received shutdown signal")
-            self._disconnect()
+            if current_task is not None:
+                current_task.cancel()
 
         for sig in (signal.SIGTERM, signal.SIGINT):
             loop.add_signal_handler(sig, _shutdown_handler)
@@ -726,6 +752,8 @@ class FieldnotesServer:
                     write_stream,
                     self._app.create_initialization_options(),
                 )
+        except asyncio.CancelledError:
+            logger.info("MCP server shutting down")
         finally:
             self._disconnect()
 
