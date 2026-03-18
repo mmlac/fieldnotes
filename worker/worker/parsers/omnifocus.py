@@ -51,6 +51,7 @@ class OmniFocusParser(BaseParser):
         tags: list[str] = meta.get("tags", [])
         project: str = meta.get("project", "")
         parent_task: str = meta.get("parent_task", "")
+        parent_task_id: str = meta.get("parent_task_id", "")
 
         # Dates
         creation_date = meta.get("creation_date")
@@ -128,14 +129,15 @@ class OmniFocusParser(BaseParser):
                 )
             )
 
-        # Parent task edge
-        if parent_task:
+        # Parent task edge — only emit when we have the parent's ID so the
+        # MERGE key matches the parent task's actual source_id format.
+        if parent_task_id:
             graph_hints.append(
                 GraphHint(
                     subject_id=source_id,
                     subject_label="Task",
                     predicate="SUBTASK_OF",
-                    object_id=f"omnifocus-task:{parent_task}",
+                    object_id=f"omnifocus://{parent_task_id}",
                     object_label="Task",
                     object_props={"name": parent_task, "source": "omnifocus"},
                     subject_merge_key="source_id",

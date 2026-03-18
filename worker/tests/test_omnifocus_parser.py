@@ -21,6 +21,7 @@ def _make_event(
     tags: list[str] | None = None,
     project: str = "",
     parent_task: str = "",
+    parent_task_id: str = "",
     operation: str = "created",
     **kwargs: Any,
 ) -> dict[str, Any]:
@@ -39,6 +40,7 @@ def _make_event(
             "tags": tags or [],
             "project": project,
             "parent_task": parent_task,
+            "parent_task_id": parent_task_id,
             "creation_date": kwargs.get("creation_date"),
             "modification_date": kwargs.get("modification_date"),
             "completion_date": kwargs.get("completion_date"),
@@ -196,17 +198,26 @@ class TestParentTaskGraphHints:
         self.parser = OmniFocusParser()
 
     def test_subtask_edge(self) -> None:
-        event = _make_event(parent_task="Plan grocery list")
+        event = _make_event(parent_task="Plan grocery list", parent_task_id="parent-42")
         docs = self.parser.parse(event)
         hints = docs[0].graph_hints
         parent_hints = [h for h in hints if h.predicate == "SUBTASK_OF"]
         assert len(parent_hints) == 1
-        assert parent_hints[0].object_id == "omnifocus-task:Plan grocery list"
+        assert parent_hints[0].object_id == "omnifocus://parent-42"
         assert parent_hints[0].object_label == "Task"
+        assert parent_hints[0].object_props["name"] == "Plan grocery list"
         assert parent_hints[0].confidence == 0.95
 
+    def test_subtask_edge_no_id_skipped(self) -> None:
+        """Without parent_task_id we cannot produce a valid merge key — skip the hint."""
+        event = _make_event(parent_task="Plan grocery list", parent_task_id="")
+        docs = self.parser.parse(event)
+        hints = docs[0].graph_hints
+        parent_hints = [h for h in hints if h.predicate == "SUBTASK_OF"]
+        assert len(parent_hints) == 0
+
     def test_no_parent(self) -> None:
-        event = _make_event(parent_task="")
+        event = _make_event(parent_task="", parent_task_id="")
         docs = self.parser.parse(event)
         hints = docs[0].graph_hints
         parent_hints = [h for h in hints if h.predicate == "SUBTASK_OF"]

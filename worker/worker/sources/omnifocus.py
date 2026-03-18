@@ -69,9 +69,13 @@ for (var i = 0; i < tasks.length; i++) {
     } catch(e) {}
 
     var parentName = "";
+    var parentId = "";
     try {
         var par = t.parentTask();
-        if (par) parentName = par.name();
+        if (par) {
+            parentName = par.name();
+            parentId = par.id();
+        }
     } catch(e) {}
 
     var status;
@@ -99,6 +103,7 @@ for (var i = 0; i < tasks.length; i++) {
         tags: tagNames,
         project: projectName,
         parent_task: parentName,
+        parent_task_id: parentId,
         creation_date: t.creationDate() ? t.creationDate().toISOString() : null,
         modification_date: t.modificationDate() ? t.modificationDate().toISOString() : null,
         completion_date: t.completionDate() ? t.completionDate().toISOString() : null,
@@ -151,6 +156,7 @@ def _task_hash(task: dict[str, Any]) -> str:
             "tags": sorted(task.get("tags", [])),
             "project": task.get("project", ""),
             "parent_task": task.get("parent_task", ""),
+            "parent_task_id": task.get("parent_task_id", ""),
             "due_date": task.get("due_date"),
             "defer_date": task.get("defer_date"),
             "completion_date": task.get("completion_date"),
