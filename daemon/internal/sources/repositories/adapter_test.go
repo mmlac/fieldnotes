@@ -115,6 +115,28 @@ func TestDiscoverRepos(t *testing.T) {
 	}
 }
 
+func TestDiscoverRepos_IgnoresSymlinkedDotGit(t *testing.T) {
+	parent := t.TempDir()
+	// Create a real repo for the symlink target.
+	realRepo := initTestRepo(t, "README.md", "# Real\n")
+
+	// Create a directory whose .git is a symlink to the real repo's .git.
+	fakeRepo := filepath.Join(parent, "fake-repo")
+	if err := os.MkdirAll(fakeRepo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(realRepo, ".git"), filepath.Join(fakeRepo, ".git")); err != nil {
+		t.Skip("symlink not supported:", err)
+	}
+
+	repos := discoverRepos(parent)
+	for _, r := range repos {
+		if r == fakeRepo {
+			t.Errorf("discoverRepos should not include directory with symlinked .git: %s", fakeRepo)
+		}
+	}
+}
+
 func TestMatchesIncludeExclude(t *testing.T) {
 	s := &RepoSource{
 		includePatterns: []string{"README*", "docs/**/*.md", "*.toml"},

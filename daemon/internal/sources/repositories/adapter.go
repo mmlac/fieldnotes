@@ -203,7 +203,7 @@ func discoverRepos(root string) []string {
 }
 
 func isGitRepo(dir string) bool {
-	info, err := os.Stat(filepath.Join(dir, ".git"))
+	info, err := os.Lstat(filepath.Join(dir, ".git"))
 	return err == nil && info.IsDir()
 }
 
