@@ -519,6 +519,54 @@ func TestScanRepo_MaxCommitsLimit(t *testing.T) {
 	}
 }
 
+func TestScanRepo_ReadsGitObjectsNotWorkingTree(t *testing.T) {
+	// Verify that scanRepo reads file content from the git object store,
+	// not from the on-disk working tree.  A working-tree modification that
+	// has NOT been committed must not appear in the emitted events.
+	committedContent := "# Committed Version\n"
+	repoDir := initTestRepo(t, "README.md", committedContent)
+
+	// Overwrite the working-tree file without staging or committing.
+	workingTreeContent := "MODIFIED IN WORKING TREE — must not appear in events\n"
+	if err := os.WriteFile(filepath.Join(repoDir, "README.md"), []byte(workingTreeContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	s := &RepoSource{
+		repoRoots:       []string{filepath.Dir(repoDir)},
+		pollInterval:    time.Minute,
+		includePatterns: []string{"README*"},
+		excludePatterns: defaultExcludePatterns,
+		maxFileSize:     defaultMaxFileSize,
+		maxCommits:      10,
+		cursors:         make(map[string]string),
+	}
+
+	events := make(chan sources.IngestEvent, 100)
+	ctx := context.Background()
+	s.scanRepo(ctx, repoDir, events)
+	close(events)
+
+	var fileEvents []sources.IngestEvent
+	for ev := range events {
+		if len(ev.SourceID) > 5 && ev.SourceID[:5] == "repo:" {
+			fileEvents = append(fileEvents, ev)
+		}
+	}
+
+	if len(fileEvents) == 0 {
+		t.Fatal("expected at least one file event")
+	}
+	for _, ev := range fileEvents {
+		if rp, ok := ev.Meta["relative_path"].(string); ok && rp == "README.md" {
+			if ev.Text != committedContent {
+				t.Errorf("file event Text = %q, want committed content %q (working-tree modification must not be picked up)",
+					ev.Text, committedContent)
+			}
+		}
+	}
+}
+
 func TestScanRepo_CursorSkipsUnchanged(t *testing.T) {
 	repoDir := initTestRepo(t, "README.md", "# Test\n")
 
