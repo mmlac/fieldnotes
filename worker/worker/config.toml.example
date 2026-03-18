@@ -32,6 +32,11 @@ exclude_patterns = ["node_modules/", ".git/", "vendor/", "target/", "__pycache__
 poll_interval_seconds = 300
 max_file_size = 104857600
 
+[sources.omnifocus]
+# enabled = true             # auto-detected on macOS
+# poll_interval_seconds = 300
+# state_path = "~/.fieldnotes/state/omnifocus.json"
+
 # --- Clustering ---
 
 [clustering]
