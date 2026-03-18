@@ -211,9 +211,16 @@ class GmailSource(PythonSource):
             while True:
                 await asyncio.sleep(self._poll_interval)
                 with observe_duration(GMAIL_POLL_DURATION):
-                    cursor = await self._poll_incremental(
-                        service, messages_api, queue, cursor
-                    )
+                    if cursor is None:
+                        # No valid cursor (e.g. history ID expired) — re-backfill.
+                        logger.info("No cursor available — re-running backfill")
+                        cursor = await self._backfill(messages_api, queue)
+                        if cursor:
+                            _save_cursor(self._cursor_path, cursor)
+                    else:
+                        cursor = await self._poll_incremental(
+                            service, messages_api, queue, cursor
+                        )
         except asyncio.CancelledError:
             WATCHER_ACTIVE.labels(source_type="gmail").set(0)
             raise
@@ -415,7 +422,22 @@ class GmailSource(PythonSource):
                 cursor,
             )
             return cursor
-        except HttpError:
+        except HttpError as exc:
+            if exc.resp.status == 404:
+                # History ID has expired (Google purges history after ~30 days).
+                # Reset the cursor so the next poll triggers a full backfill.
+                logger.warning(
+                    "Gmail history ID %s no longer valid (404) — resetting cursor for full backfill",
+                    cursor,
+                )
+                try:
+                    self._cursor_path.unlink(missing_ok=True)
+                except OSError:
+                    logger.warning(
+                        "Failed to delete stale cursor file %s",
+                        redact_home_path(str(self._cursor_path)),
+                    )
+                return None
             logger.exception("Failed to fetch Gmail history (cursor=%s)", cursor)
             return cursor
 

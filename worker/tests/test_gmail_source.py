@@ -330,6 +330,59 @@ class TestPollIncremental:
         assert queue.qsize() == 0
 
     @pytest.mark.asyncio
+    async def test_404_resets_cursor_and_returns_none(self, tmp_path: Path) -> None:
+        """404 on history list means history ID expired — reset cursor, return None."""
+        cursor_file = tmp_path / "cursor.json"
+        _save_cursor(cursor_file, "100")
+
+        service = MagicMock()
+        history_api = MagicMock()
+        history_list_req = MagicMock()
+        history_list_req.execute.side_effect = HttpError(
+            Response({"status": "404"}), b"Not Found"
+        )
+        history_api.list.return_value = history_list_req
+        service.users.return_value.history.return_value = history_api
+
+        source = GmailSource()
+        source._cursor_path = cursor_file
+        source._label_filter = "INBOX"
+
+        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        result = await source._poll_incremental(
+            service, MagicMock(), queue, "100"
+        )
+
+        assert result is None
+        assert not cursor_file.exists()
+        assert queue.qsize() == 0
+
+    @pytest.mark.asyncio
+    async def test_404_with_missing_cursor_file_does_not_raise(
+        self, tmp_path: Path
+    ) -> None:
+        """404 reset is safe even when cursor file was already deleted."""
+        service = MagicMock()
+        history_api = MagicMock()
+        history_list_req = MagicMock()
+        history_list_req.execute.side_effect = HttpError(
+            Response({"status": "404"}), b"Not Found"
+        )
+        history_api.list.return_value = history_list_req
+        service.users.return_value.history.return_value = history_api
+
+        source = GmailSource()
+        source._cursor_path = tmp_path / "nonexistent.json"
+        source._label_filter = "INBOX"
+
+        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        result = await source._poll_incremental(
+            service, MagicMock(), queue, "100"
+        )
+
+        assert result is None
+
+    @pytest.mark.asyncio
     async def test_saves_new_cursor_to_disk(self, tmp_path: Path) -> None:
         service = MagicMock()
         history_api = MagicMock()
