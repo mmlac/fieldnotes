@@ -31,21 +31,32 @@ def _json_response(status_line: str, body: dict[str, Any]) -> bytes:
     ).encode() + payload
 
 
-async def _check_neo4j_health(cfg: Config) -> dict[str, Any]:
-    """Check Neo4j connectivity.  Runs in a thread to avoid blocking."""
+async def _check_neo4j_health(cfg: Config, driver: Any = None) -> dict[str, Any]:
+    """Check Neo4j connectivity.  Runs in a thread to avoid blocking.
+
+    If *driver* is provided (an existing ``neo4j.Driver`` instance) it is
+    reused — no new connection is opened.  Otherwise a short-lived driver is
+    created and closed after the probe.
+    """
     def _probe() -> dict[str, Any]:
+        if driver is not None:
+            try:
+                driver.verify_connectivity()
+                return {"status": "ok"}
+            except Exception as exc:
+                return {"status": "unhealthy", "error": type(exc).__name__}
         from neo4j import GraphDatabase
-        driver = GraphDatabase.driver(
+        d = GraphDatabase.driver(
             cfg.neo4j.uri,
             auth=(cfg.neo4j.user, cfg.neo4j.password),
         )
         try:
-            driver.verify_connectivity()
+            d.verify_connectivity()
             return {"status": "ok"}
         except Exception as exc:
             return {"status": "unhealthy", "error": type(exc).__name__}
         finally:
-            driver.close()
+            d.close()
 
     try:
         return await asyncio.wait_for(
@@ -56,18 +67,29 @@ async def _check_neo4j_health(cfg: Config) -> dict[str, Any]:
         return {"status": "unhealthy", "error": "timeout"}
 
 
-async def _check_qdrant_health(cfg: Config) -> dict[str, Any]:
-    """Check Qdrant connectivity.  Runs in a thread to avoid blocking."""
+async def _check_qdrant_health(cfg: Config, client: Any = None) -> dict[str, Any]:
+    """Check Qdrant connectivity.  Runs in a thread to avoid blocking.
+
+    If *client* is provided (an existing ``QdrantClient`` instance) it is
+    reused — no new connection is opened.  Otherwise a short-lived client is
+    created and closed after the probe.
+    """
     def _probe() -> dict[str, Any]:
+        if client is not None:
+            try:
+                client.get_collections()
+                return {"status": "ok"}
+            except Exception as exc:
+                return {"status": "unhealthy", "error": type(exc).__name__}
         from qdrant_client import QdrantClient
-        client = QdrantClient(host=cfg.qdrant.host, port=cfg.qdrant.port)
+        c = QdrantClient(host=cfg.qdrant.host, port=cfg.qdrant.port)
         try:
-            client.get_collections()
+            c.get_collections()
             return {"status": "ok"}
         except Exception as exc:
             return {"status": "unhealthy", "error": type(exc).__name__}
         finally:
-            client.close()
+            c.close()
 
     try:
         return await asyncio.wait_for(
@@ -82,11 +104,13 @@ async def _build_health_payload(
     cfg: Config,
     queue: asyncio.Queue[Any] | None,
     start_time: float,
+    neo4j_driver: Any = None,
+    qdrant_client: Any = None,
 ) -> dict[str, Any]:
     """Assemble the full health-check response payload."""
     neo4j_result, qdrant_result = await asyncio.gather(
-        _check_neo4j_health(cfg),
-        _check_qdrant_health(cfg),
+        _check_neo4j_health(cfg, driver=neo4j_driver),
+        _check_qdrant_health(cfg, client=qdrant_client),
     )
 
     components: dict[str, Any] = {
@@ -123,11 +147,15 @@ class HealthServer:
         cfg: Config,
         queue: asyncio.Queue[Any] | None = None,
         start_time: float | None = None,
+        neo4j_driver: Any = None,
+        qdrant_client: Any = None,
     ) -> None:
         self._cfg = cfg
         self._queue = queue
         self._start_time = start_time or time.monotonic()
         self._server: asyncio.Server | None = None
+        self._neo4j_driver = neo4j_driver
+        self._qdrant_client = qdrant_client
 
     async def _handle(
         self,
@@ -145,6 +173,8 @@ class HealthServer:
             if method == "GET" and path == "/health":
                 payload = await _build_health_payload(
                     self._cfg, self._queue, self._start_time,
+                    neo4j_driver=self._neo4j_driver,
+                    qdrant_client=self._qdrant_client,
                 )
                 status_line = (
                     _HTTP_200 if payload["status"] == "ok" else _HTTP_503

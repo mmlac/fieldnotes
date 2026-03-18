@@ -79,6 +79,45 @@ class TestNeo4jHealthCheck:
         assert result["status"] == "unhealthy"
         assert result["error"] == "ConnectionError"
 
+    @pytest.mark.asyncio
+    @patch("worker.health.asyncio.get_running_loop")
+    async def test_reuses_provided_driver(self, mock_loop) -> None:
+        """Provided driver is used directly — no new GraphDatabase.driver() call."""
+        mock_driver = MagicMock()
+        mock_driver.verify_connectivity.return_value = None
+
+        async def fake_executor(executor, fn):
+            return fn()
+
+        mock_loop.return_value.run_in_executor = fake_executor
+
+        with patch("neo4j.GraphDatabase.driver") as mock_factory:
+            result = await _check_neo4j_health(_cfg(), driver=mock_driver)
+
+        assert result["status"] == "ok"
+        mock_factory.assert_not_called()
+        mock_driver.verify_connectivity.assert_called_once()
+        mock_driver.close.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("worker.health.asyncio.get_running_loop")
+    async def test_reuses_provided_driver_on_failure(self, mock_loop) -> None:
+        mock_driver = MagicMock()
+        mock_driver.verify_connectivity.side_effect = ConnectionError("down")
+
+        async def fake_executor(executor, fn):
+            return fn()
+
+        mock_loop.return_value.run_in_executor = fake_executor
+
+        with patch("neo4j.GraphDatabase.driver") as mock_factory:
+            result = await _check_neo4j_health(_cfg(), driver=mock_driver)
+
+        assert result["status"] == "unhealthy"
+        assert result["error"] == "ConnectionError"
+        mock_factory.assert_not_called()
+        mock_driver.close.assert_not_called()
+
 
 class TestQdrantHealthCheck:
     @pytest.mark.asyncio
@@ -115,6 +154,45 @@ class TestQdrantHealthCheck:
 
         assert result["status"] == "unhealthy"
         assert result["error"] == "ConnectionError"
+
+    @pytest.mark.asyncio
+    @patch("worker.health.asyncio.get_running_loop")
+    async def test_reuses_provided_client(self, mock_loop) -> None:
+        """Provided client is used directly — no new QdrantClient() call."""
+        mock_client = MagicMock()
+        mock_client.get_collections.return_value = []
+
+        async def fake_executor(executor, fn):
+            return fn()
+
+        mock_loop.return_value.run_in_executor = fake_executor
+
+        with patch("qdrant_client.QdrantClient") as mock_factory:
+            result = await _check_qdrant_health(_cfg(), client=mock_client)
+
+        assert result["status"] == "ok"
+        mock_factory.assert_not_called()
+        mock_client.get_collections.assert_called_once()
+        mock_client.close.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("worker.health.asyncio.get_running_loop")
+    async def test_reuses_provided_client_on_failure(self, mock_loop) -> None:
+        mock_client = MagicMock()
+        mock_client.get_collections.side_effect = ConnectionError("down")
+
+        async def fake_executor(executor, fn):
+            return fn()
+
+        mock_loop.return_value.run_in_executor = fake_executor
+
+        with patch("qdrant_client.QdrantClient") as mock_factory:
+            result = await _check_qdrant_health(_cfg(), client=mock_client)
+
+        assert result["status"] == "unhealthy"
+        assert result["error"] == "ConnectionError"
+        mock_factory.assert_not_called()
+        mock_client.close.assert_not_called()
 
 
 # ------------------------------------------------------------------

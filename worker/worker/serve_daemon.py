@@ -74,7 +74,13 @@ async def _run_daemon(cfg: Config) -> None:
     if cfg.health.enabled:
         from worker.health import HealthServer
 
-        health_server = HealthServer(cfg, queue=queue, start_time=time.monotonic())
+        health_server = HealthServer(
+            cfg,
+            queue=queue,
+            start_time=time.monotonic(),
+            neo4j_driver=writer._neo4j_driver,
+            qdrant_client=writer._qdrant,
+        )
         health_task = asyncio.create_task(health_server.run(), name="health-server")
         background_tasks.append(health_task)
         logger.info("Health endpoint enabled on %s:%d", cfg.health.bind, cfg.health.port)
