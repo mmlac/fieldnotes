@@ -61,12 +61,23 @@ def _ensure_dir() -> Path:
 
 
 def _conversation_path(conv_id: str) -> Path:
-    return _ensure_dir() / f"{conv_id}.json"
+    """Return the path for *conv_id*, raising ValueError if it escapes the conversations dir."""
+    conv_dir = _ensure_dir().resolve()
+    candidate = (conv_dir / f"{conv_id}.json").resolve()
+    try:
+        candidate.relative_to(conv_dir)
+    except ValueError:
+        raise ValueError(f"Invalid conversation ID: {conv_id!r}")
+    return candidate
 
 
 def save_conversation(conv: Conversation) -> None:
     """Persist a conversation to disk as JSON."""
-    path = _conversation_path(conv.id)
+    try:
+        path = _conversation_path(conv.id)
+    except ValueError:
+        logger.warning("Refusing to save conversation with unsafe ID: %r", conv.id)
+        return
     data = _serialize(conv)
     tmp = path.with_suffix(".tmp")
     try:
@@ -81,8 +92,12 @@ def save_conversation(conv: Conversation) -> None:
 
 
 def load_conversation(conv_id: str) -> Conversation | None:
-    """Load a conversation by ID, or *None* if not found / corrupted."""
-    path = _conversation_path(conv_id)
+    """Load a conversation by ID, or *None* if not found / corrupted / unsafe ID."""
+    try:
+        path = _conversation_path(conv_id)
+    except ValueError:
+        logger.warning("Refusing to load conversation with unsafe ID: %r", conv_id)
+        return None
     return _load_from_path(path)
 
 
@@ -131,7 +146,11 @@ def prune_old_conversations(max_keep: int = _MAX_CONVERSATIONS) -> int:
     to_remove = all_convs[max_keep:]
     removed = 0
     for conv in to_remove:
-        path = _conversation_path(conv.id)
+        try:
+            path = _conversation_path(conv.id)
+        except ValueError:
+            logger.warning("Skipping prune of conversation with unsafe ID: %r", conv.id)
+            continue
         try:
             path.unlink(missing_ok=True)
             removed += 1
