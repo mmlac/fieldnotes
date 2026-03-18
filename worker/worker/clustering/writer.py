@@ -171,17 +171,22 @@ def _write_tx(
 
     1. Delete existing TAGGED edges where source='cluster'
     2. Delete orphaned cluster-derived Topic nodes
-    3. Create Topic nodes for each cluster
-    4. Create TAGGED edges from source nodes to Topics
+    3. Batch-create Topic nodes for all clusters (single UNWIND query)
+    4. Batch-create TAGGED edges for all source→topic pairs (single UNWIND query)
     """
     _delete_cluster_tagged_edges(tx)
     _delete_orphaned_cluster_topics(tx)
 
-    for cluster in clusters:
-        _upsert_topic_node(tx, cluster)
-        source_ids = source_map.get(cluster.cluster_id, set())
-        for source_id in source_ids:
-            _create_tagged_edge(tx, source_id, cluster.label)
+    if clusters:
+        _batch_upsert_topic_nodes(tx, clusters)
+
+    edge_data = [
+        {"sid": source_id, "name": cluster.label}
+        for cluster in clusters
+        for source_id in source_map.get(cluster.cluster_id, set())
+    ]
+    if edge_data:
+        _batch_create_tagged_edges(tx, edge_data)
 
 
 def _delete_cluster_tagged_edges(tx: Any) -> None:
@@ -206,6 +211,32 @@ def _delete_orphaned_cluster_topics(tx: Any) -> None:
         WHERE NOT EXISTS { (t)--() }
         DELETE t
         """
+    )
+
+
+def _batch_upsert_topic_nodes(tx: Any, clusters: list[LabeledCluster]) -> None:
+    """Batch MERGE Topic nodes for all clusters in a single UNWIND query."""
+    tx.run(
+        """
+        UNWIND $topics AS t
+        MERGE (topic:Topic {name: t.name, source: 'cluster'})
+        SET topic.description = t.description
+        """,
+        topics=[{"name": c.label, "description": c.description} for c in clusters],
+    )
+
+
+def _batch_create_tagged_edges(tx: Any, edge_data: list[dict]) -> None:
+    """Batch MERGE TAGGED edges for all (source_id, topic_name) pairs in a single UNWIND query."""
+    tx.run(
+        """
+        UNWIND $edges AS e
+        MATCH (s {source_id: e.sid})
+        WHERE s:File OR s:Email OR s:Commit OR s:Image
+        MATCH (t:Topic {name: e.name, source: 'cluster'})
+        MERGE (s)-[:TAGGED {source: 'cluster'}]->(t)
+        """,
+        edges=edge_data,
     )
 
 

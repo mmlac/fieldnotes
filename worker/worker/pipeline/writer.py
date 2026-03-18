@@ -583,28 +583,33 @@ class Writer:
             # Run cross-source matching
             matches = resolve_cross_source(entities_by_source)
 
-            # Create SAME_AS edges for matches
+            # Batch-create SAME_AS edges for all matches in a single UNWIND query
             created = 0
-            for match in matches:
+            if matches:
                 result = session.run(
                     """
-                    MATCH (a:Entity {name: $name_a})
-                    MATCH (b:Entity {name: $name_b})
+                    UNWIND $matches AS m
+                    MATCH (a:Entity {name: m.name_a})
+                    MATCH (b:Entity {name: m.name_b})
                     WHERE NOT (a)-[:SAME_AS]-(b)
                       AND id(a) <> id(b)
                     MERGE (a)-[r:SAME_AS]->(b)
-                    SET r.confidence = $confidence,
-                        r.match_type = $match_type,
+                    SET r.confidence = m.confidence,
+                        r.match_type = m.match_type,
                         r.cross_source = true
                     RETURN count(r) AS cnt
                     """,
-                    name_a=match.entity_a,
-                    name_b=match.entity_b,
-                    confidence=match.confidence,
-                    match_type=match.match_type,
+                    matches=[
+                        {
+                            "name_a": match.entity_a,
+                            "name_b": match.entity_b,
+                            "confidence": match.confidence,
+                            "match_type": match.match_type,
+                        }
+                        for match in matches
+                    ],
                 )
-                cnt = result.single()["cnt"]
-                created += cnt
+                created = result.single()["cnt"]
 
             if created > 0:
                 logger.info(
@@ -717,6 +722,9 @@ class Writer:
         Two-phase approach: write all new state first, then clean up stale
         data.  This ensures that if any write fails, stale edges are still
         intact and orphan cleanup won't incorrectly delete entity nodes.
+
+        Batch queries (UNWIND) are used for entity upserts, edge merges, and
+        chunk upserts to avoid N+1 query patterns.
         """
         doc = unit.doc
         is_modified = doc.operation == "modified"
@@ -726,21 +734,24 @@ class Writer:
         # 1. Upsert source node
         _upsert_source_node(tx, doc)
 
-        # 2. Upsert entity nodes and MENTIONS edges
-        for entity in unit.entities:
-            _upsert_entity(tx, entity)
-            _merge_mentions_edge(tx, doc.source_id, entity["name"])
+        # 2. Batch upsert entity nodes and MENTIONS edges
+        if unit.entities:
+            _batch_upsert_entities(tx, unit.entities)
+            _batch_merge_entity_edges(
+                tx, doc.source_id, [e["name"] for e in unit.entities], "MENTIONS"
+            )
 
         # 3. Create relationship triples between entities
         for triple in unit.triples:
             _merge_entity_edge(tx, triple)
 
-        # 4. Create Chunk nodes linked via HAS_CHUNK (MERGE is idempotent)
+        # 4. Batch create Chunk nodes linked via HAS_CHUNK
         new_chunk_ids: list[str] = []
-        for chunk in unit.chunks:
-            chunk_id = _chunk_node_id(doc.source_id, chunk.index)
-            new_chunk_ids.append(chunk_id)
-            _upsert_chunk(tx, chunk_id, doc.source_id, chunk)
+        if unit.chunks:
+            new_chunk_ids = [
+                _chunk_node_id(doc.source_id, chunk.index) for chunk in unit.chunks
+            ]
+            _batch_upsert_chunks(tx, doc.source_id, unit.chunks, new_chunk_ids)
 
         # 5. Write graph hints
         #    Stale hint edges are removed before writing because hint MERGE
@@ -755,10 +766,12 @@ class Writer:
         for hint in doc.graph_hints:
             _write_graph_hint(tx, hint)
 
-        # 6. Upsert DEPICTS edges (vision-extracted entities)
-        for entity in unit.depicts_entities:
-            _upsert_entity(tx, entity)
-            _merge_depicts_edge(tx, doc.source_id, entity["name"])
+        # 6. Batch upsert DEPICTS edges (vision-extracted entities)
+        if unit.depicts_entities:
+            _batch_upsert_entities(tx, unit.depicts_entities)
+            _batch_merge_entity_edges(
+                tx, doc.source_id, [e["name"] for e in unit.depicts_entities], "DEPICTS"
+            )
 
         # 7. Create ATTACHED_TO edge (Image→File for embedded images)
         parent_source_id = doc.node_props.get("parent_source_id")
@@ -1288,3 +1301,82 @@ def _write_graph_hint(tx: Any, hint: GraphHint) -> None:
 def _chunk_node_id(source_id: str, chunk_index: int) -> str:
     """Deterministic chunk node ID from source_id and index."""
     return f"{source_id}:chunk:{chunk_index}"
+
+
+def _batch_upsert_entities(tx: Any, entities: list[dict[str, Any]]) -> None:
+    """Batch MERGE Entity nodes via UNWIND, replacing N individual _upsert_entity calls.
+
+    Applies the same ON CREATE / ON MATCH confidence-guard logic as
+    :func:`_upsert_entity`, but in a single round-trip to Neo4j.
+    """
+    tx.run(
+        """
+        UNWIND $entities AS e
+        MERGE (ent:Entity {name: e.name})
+        ON CREATE SET ent.type = e.type,
+                      ent.confidence = e.confidence
+        ON MATCH SET ent.type = CASE WHEN e.confidence > ent.confidence
+                                     THEN e.type ELSE ent.type END,
+                     ent.confidence = CASE WHEN e.confidence > ent.confidence
+                                          THEN e.confidence ELSE ent.confidence END
+        """,
+        entities=[
+            {
+                "name": _truncate_entity_name(e["name"]),
+                "type": e.get("type", "Concept"),
+                "confidence": e.get("confidence", 0.75),
+            }
+            for e in entities
+        ],
+    )
+
+
+def _batch_merge_entity_edges(
+    tx: Any, source_id: str, entity_names: list[str], edge_type: str
+) -> None:
+    """Batch MERGE MENTIONS or DEPICTS edges via UNWIND.
+
+    Replaces N individual :func:`_merge_mentions_edge` or
+    :func:`_merge_depicts_edge` calls with a single round-trip.
+    Entity nodes must already exist before calling this function.
+    """
+    edge_type = _validate_cypher_identifier(edge_type, "edge_type")
+    tx.run(
+        f"MATCH (s {{source_id: $sid}}) "
+        f"WITH s "
+        f"UNWIND $names AS name "
+        f"MATCH (e:Entity {{name: name}}) "
+        f"MERGE (s)-[:{edge_type}]->(e)",
+        sid=source_id,
+        names=[_truncate_entity_name(n) for n in entity_names],
+    )
+
+
+def _batch_upsert_chunks(
+    tx: Any,
+    source_id: str,
+    chunks: list["Chunk"],
+    chunk_ids: list[str],
+) -> None:
+    """Batch MERGE Chunk nodes and HAS_CHUNK edges via UNWIND.
+
+    Replaces N individual :func:`_upsert_chunk` calls with a single
+    round-trip.  The source node must already exist before calling this.
+    """
+    tx.run(
+        """
+        MATCH (s {source_id: $sid})
+        WITH s
+        UNWIND $chunks AS c
+        MERGE (chunk:Chunk {id: c.id})
+        SET chunk.text = c.text,
+            chunk.source_id = $sid,
+            chunk.chunk_index = c.index
+        MERGE (s)-[:HAS_CHUNK]->(chunk)
+        """,
+        sid=source_id,
+        chunks=[
+            {"id": cid, "text": ch.text, "index": ch.index}
+            for cid, ch in zip(chunk_ids, chunks)
+        ],
+    )
