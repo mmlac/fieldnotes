@@ -768,18 +768,24 @@ class Writer:
         # ── Phase 2: Clean up stale data (modified only) ──────────
 
         if is_modified:
-            # 8. Remove MENTIONS edges not pointing to current entities
+            # 8. Remove MENTIONS edges not pointing to current entities;
+            #    collect removed entity names as orphan candidates.
             current_entity_names = [
                 _truncate_entity_name(e["name"]) for e in unit.entities
             ]
-            _clean_stale_edges(tx, doc.source_id, "MENTIONS", current_entity_names)
+            stale_mentions = _clean_stale_edges(
+                tx, doc.source_id, "MENTIONS", current_entity_names
+            )
 
-            # 9. Remove DEPICTS edges not pointing to current depicts entities
+            # 9. Remove DEPICTS edges not pointing to current depicts entities;
+            #    collect removed entity names as orphan candidates.
             current_depicts_names = [
                 _truncate_entity_name(e["name"])
                 for e in unit.depicts_entities
             ]
-            _clean_stale_edges(tx, doc.source_id, "DEPICTS", current_depicts_names)
+            stale_depicts = _clean_stale_edges(
+                tx, doc.source_id, "DEPICTS", current_depicts_names
+            )
 
             # 10. Remove Chunk nodes not in the current chunk set
             if new_chunk_ids:
@@ -797,9 +803,9 @@ class Writer:
                     sid=doc.source_id,
                 )
 
-            # 11. Clean up orphaned Entity nodes.  Now safe because new
-            #     edges were written before stale ones were removed.
-            _cleanup_orphan_entities(tx)
+            # 11. Clean up orphaned Entity nodes — scoped to the entities
+            #     whose edges were removed above (no full graph scan).
+            _cleanup_orphan_entities(tx, stale_mentions + stale_depicts)
 
     # ------------------------------------------------------------------
     # Qdrant writes
@@ -1062,44 +1068,53 @@ def _clean_stale_edges(
     source_id: str,
     edge_type: str,
     keep_names: list[str],
-) -> None:
+) -> list[str]:
     """Delete edges of a given type that point to entities NOT in *keep_names*.
 
     Unlike :func:`_clean_source_edges` which blanket-deletes all edges first,
     this function is safe to call *after* new edges have been written — it only
     removes edges that are no longer current.  When *keep_names* is empty every
     edge of the given type is removed (the source no longer mentions anything).
+
+    Returns the names of Entity nodes whose edges were deleted — these are
+    candidates for orphan cleanup.
     """
     edge_type = _validate_cypher_identifier(edge_type, "edge_type")
     if keep_names:
-        tx.run(
+        result = tx.run(
             f"MATCH (s {{source_id: $sid}})-[r:{edge_type}]->(e:Entity) "
             f"WHERE NOT e.name IN $keep "
-            f"DELETE r",
+            f"DELETE r "
+            f"RETURN e.name AS name",
             sid=source_id,
             keep=keep_names,
         )
     else:
-        tx.run(
-            f"MATCH (s {{source_id: $sid}})-[r:{edge_type}]->() DELETE r",
+        result = tx.run(
+            f"MATCH (s {{source_id: $sid}})-[r:{edge_type}]->(e:Entity) "
+            f"DELETE r "
+            f"RETURN e.name AS name",
             sid=source_id,
         )
+    return [record["name"] for record in result]
 
 
-def _cleanup_orphan_entities(tx: Any) -> int:
-    """Delete Entity nodes with no incoming edges from any source.
+def _cleanup_orphan_entities(tx: Any, candidate_names: list[str]) -> int:
+    """Delete orphaned Entity nodes from *candidate_names*.
 
-    After stale MENTIONS edges are removed and new ones written, some Entity
-    nodes may become orphaned — no MENTIONS, LINKS_TO, DEPICTS, or any other
-    incoming relationship.  These pollute query results and topic clustering.
+    Only checks the specific entities whose stale edges were removed in this
+    write cycle, avoiding a full graph scan on every write.
 
     Returns the number of orphaned Entity nodes deleted.
     """
+    if not candidate_names:
+        return 0
     result = tx.run(
         "MATCH (e:Entity) "
-        "WHERE NOT ()-[]->(e) "
+        "WHERE e.name IN $names AND NOT ()-[]->(e) "
         "DETACH DELETE e "
-        "RETURN count(e) AS removed"
+        "RETURN count(e) AS removed",
+        names=candidate_names,
     )
     removed = result.single()["removed"]
     if removed:
