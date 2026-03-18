@@ -48,6 +48,8 @@ _BLOCKED_NETWORKS = [
 
 _ALLOWED_SCHEMES = {"http", "https"}
 
+_DEFAULT_BASE_URL = "http://localhost:11434"
+
 
 def _validate_ollama_url(url: str) -> str:
     """Validate and return *url* or raise ``ValueError``.
@@ -120,7 +122,14 @@ class OllamaProvider(ModelProvider):
     def configure(self, cfg: dict[str, Any]) -> None:
         raw_url = cfg.get("base_url")
         if raw_url is not None:
-            self._base_url = _validate_ollama_url(raw_url.rstrip("/"))
+            normalized = raw_url.rstrip("/")
+            if normalized == _DEFAULT_BASE_URL:
+                # Explicitly supplying the default localhost URL is always
+                # trusted — no SSRF risk, and blocking it would prevent
+                # the most common Ollama configuration pattern.
+                self._base_url = normalized
+            else:
+                self._base_url = _validate_ollama_url(normalized)
         # When no base_url is provided the built-in default
         # (http://localhost:11434) is trusted and skips validation.
         self._completion_timeout = float(cfg.get("completion_timeout", self._completion_timeout))
@@ -203,22 +212,16 @@ class OllamaProvider(ModelProvider):
 
     @_ollama_retry
     def embed(self, model: str, req: EmbedRequest) -> EmbedResponse:
-        vectors: list[list[float]] = []
-        total_tokens = 0
-
-        for text in req.texts:
-            resp = httpx.post(
-                f"{self._base_url}/api/embeddings",
-                json={"model": model, "prompt": text},
-                timeout=req.timeout if req.timeout is not None else self._embed_timeout,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            vectors.append(data["embedding"])
-            total_tokens += data.get("prompt_eval_count", 0)
+        resp = httpx.post(
+            f"{self._base_url}/api/embed",
+            json={"model": model, "input": req.texts},
+            timeout=req.timeout if req.timeout is not None else self._embed_timeout,
+        )
+        resp.raise_for_status()
+        data = resp.json()
 
         return EmbedResponse(
-            vectors=vectors,
+            vectors=data["embeddings"],
             model=model,
-            input_tokens=total_tokens,
+            input_tokens=data.get("prompt_eval_count", 0),
         )

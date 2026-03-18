@@ -118,3 +118,15 @@ class TestOllamaProviderConfigure:
         provider = OllamaProvider()
         provider.configure({})
         assert provider._base_url == "http://localhost:11434"
+
+    def test_explicit_default_url_passes(self) -> None:
+        """Explicitly supplying the default localhost URL must not be rejected."""
+        provider = OllamaProvider()
+        provider.configure({"base_url": "http://localhost:11434"})
+        assert provider._base_url == "http://localhost:11434"
+
+    def test_explicit_default_url_with_trailing_slash_passes(self) -> None:
+        """Trailing slash on the default URL is stripped and accepted."""
+        provider = OllamaProvider()
+        provider.configure({"base_url": "http://localhost:11434/"})
+        assert provider._base_url == "http://localhost:11434"

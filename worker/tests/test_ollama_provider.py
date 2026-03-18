@@ -171,7 +171,7 @@ class TestOllamaEmbed:
     @patch("worker.models.providers.ollama.httpx.post")
     def test_single_text_embedding(self, mock_post, provider: OllamaProvider) -> None:
         mock_post.return_value = _mock_response({
-            "embedding": [0.1, 0.2, 0.3],
+            "embeddings": [[0.1, 0.2, 0.3]],
             "prompt_eval_count": 5,
         })
 
@@ -186,10 +186,10 @@ class TestOllamaEmbed:
 
     @patch("worker.models.providers.ollama.httpx.post")
     def test_multiple_texts_embedding(self, mock_post, provider: OllamaProvider) -> None:
-        mock_post.side_effect = [
-            _mock_response({"embedding": [0.1, 0.2], "prompt_eval_count": 3}),
-            _mock_response({"embedding": [0.3, 0.4], "prompt_eval_count": 4}),
-        ]
+        mock_post.return_value = _mock_response({
+            "embeddings": [[0.1, 0.2], [0.3, 0.4]],
+            "prompt_eval_count": 7,
+        })
 
         req = EmbedRequest(texts=["hello", "world"])
         resp = provider.embed("model", req)
@@ -198,12 +198,12 @@ class TestOllamaEmbed:
         assert resp.vectors[0] == [0.1, 0.2]
         assert resp.vectors[1] == [0.3, 0.4]
         assert resp.input_tokens == 7
-        assert mock_post.call_count == 2
+        assert mock_post.call_count == 1
 
     @patch("worker.models.providers.ollama.httpx.post")
-    def test_posts_to_embeddings_endpoint(self, mock_post, provider: OllamaProvider) -> None:
+    def test_posts_to_embed_endpoint(self, mock_post, provider: OllamaProvider) -> None:
         mock_post.return_value = _mock_response({
-            "embedding": [0.1],
+            "embeddings": [[0.1]],
             "prompt_eval_count": 1,
         })
 
@@ -211,12 +211,12 @@ class TestOllamaEmbed:
         provider.embed("m", req)
 
         url = mock_post.call_args[0][0] if mock_post.call_args[0] else mock_post.call_args.kwargs.get("url", "")
-        assert url == "http://localhost:11434/api/embeddings"
+        assert url == "http://localhost:11434/api/embed"
 
     @patch("worker.models.providers.ollama.httpx.post")
     def test_embed_payload_format(self, mock_post, provider: OllamaProvider) -> None:
         mock_post.return_value = _mock_response({
-            "embedding": [0.1],
+            "embeddings": [[0.1]],
             "prompt_eval_count": 1,
         })
 
@@ -225,7 +225,7 @@ class TestOllamaEmbed:
 
         payload = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
         assert payload["model"] == "nomic"
-        assert payload["prompt"] == "test text"
+        assert payload["input"] == ["test text"]
 
 
 class TestOllamaProviderRegistration:
