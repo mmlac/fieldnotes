@@ -454,6 +454,19 @@ class TestKeynoteExtraction:
         assert len(docs) == 1
         assert docs[0].text == "Slide 1\n\nSlide 2\n\nSlide 3"
 
+    def test_curly_braces_in_filename(self, parser: IWorkParser) -> None:
+        """Filenames with curly braces must not cause format-string errors."""
+        event = {
+            "mime_type": "application/x-iwork-keynote",
+            "source_id": "/slides/{2024-Q3}/deck.key",
+            "operation": "created",
+        }
+        with self._darwin_patches(stdout="slide content"):
+            docs = parser.parse(event)
+
+        assert len(docs) == 1
+        assert docs[0].source_id == "/slides/{2024-Q3}/deck.key"
+
     def test_metadata_propagation(self, parser: IWorkParser) -> None:
         event = {
             "mime_type": "application/x-iwork-keynote",

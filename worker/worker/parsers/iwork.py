@@ -214,9 +214,10 @@ class IWorkParser:
             log.error("Keynote file not found: %s", source_id)
             return []
 
-        script = _KEYNOTE_SCRIPT_TEMPLATE.format(
-            path=_escape_applescript_string(source_id)
-        )
+        safe_path = _escape_applescript_string(source_id)
+        # Use str.replace instead of .format() so curly braces in the
+        # filename are never misinterpreted as Python format placeholders.
+        script = _KEYNOTE_SCRIPT_TEMPLATE.replace("{path}", safe_path)
         timeout = int(
             event.get("meta", {}).get("keynote_timeout", _DEFAULT_KEYNOTE_TIMEOUT)
         )
