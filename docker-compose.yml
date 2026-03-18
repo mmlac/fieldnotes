@@ -4,11 +4,13 @@ services:
     ports: ["127.0.0.1:7687:7687"]
     environment:
       NEO4J_AUTH: ${NEO4J_USER:-neo4j}/${NEO4J_PASSWORD:?NEO4J_PASSWORD must be set}
+      NEO4J_USERNAME: ${NEO4J_USER:-neo4j}
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:?NEO4J_PASSWORD must be set}
     volumes:
       - ${FIELDNOTES_DATA:-~/.fieldnotes/data}/neo4j:/data
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "cypher-shell", "-u", "${NEO4J_USER:-neo4j}", "-p", "${NEO4J_PASSWORD}", "RETURN 1"]
+      test: ["CMD", "cypher-shell", "RETURN 1"]
       interval: 30s
       timeout: 10s
       retries: 5
@@ -73,9 +75,7 @@ services:
     image: grafana/grafana-oss:11.6.0
     ports: ["127.0.0.1:3000:3000"]
     environment:
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-fieldnotes}
-      GF_AUTH_ANONYMOUS_ENABLED: "true"
-      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:?GRAFANA_PASSWORD must be set}
     volumes:
       - ${FIELDNOTES_DATA:-~/.fieldnotes/data}/grafana:/var/lib/grafana
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
