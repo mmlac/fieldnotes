@@ -178,7 +178,7 @@ class ObsidianParser(BaseParser):
         ]
 
         # --- Handle ![[image.png]] embeds → separate image ParsedDocuments ----
-        vault_root = meta.get("vault_root", "")
+        vault_root = meta.get("vault_root") or meta.get("vault_name", "")
         vault_path = meta.get("vault_path", "")
         embed_matches = _EMBED_RE.findall(body)
         if len(embed_matches) > _MAX_EMBEDS_PER_NOTE:

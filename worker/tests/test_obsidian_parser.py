@@ -96,6 +96,22 @@ class TestObsidianParser:
         img = [d for d in docs if d.mime_type != "text/plain"][0]
         assert img.source_id == "vault/pic.png"
 
+    def test_image_embeds_with_vault_name_fallback(self):
+        """vault_name from the source should be used when vault_root is absent."""
+        note = "---\n---\n![[pic.png]]"
+        docs = self.parser.parse(_make_event(note, meta={"vault_name": "MyVault"}))
+        img = [d for d in docs if d.mime_type != "text/plain"][0]
+        assert img.source_id == "MyVault/pic.png"
+
+    def test_image_embeds_vault_root_takes_precedence_over_vault_name(self):
+        """Explicit vault_root overrides vault_name."""
+        note = "---\n---\n![[pic.png]]"
+        docs = self.parser.parse(
+            _make_event(note, meta={"vault_root": "root", "vault_name": "name"})
+        )
+        img = [d for d in docs if d.mime_type != "text/plain"][0]
+        assert img.source_id == "root/pic.png"
+
     def test_image_bytes_loaded_from_disk(self, tmp_path: Path):
         """When vault_path is set, image_bytes should be read from disk."""
         img_data = b"\x89PNG\r\n\x1a\nfake"
