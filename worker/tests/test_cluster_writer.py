@@ -8,10 +8,12 @@ from worker.clustering.cluster import ClusterResult
 from worker.clustering.labeler import LabeledCluster
 from worker.clustering.writer import (
     _create_tagged_edge,
+    _create_tagged_edges_batch,
     _delete_cluster_tagged_edges,
     _delete_orphaned_cluster_topics,
     _resolve_chunk_sources,
     _upsert_topic_node,
+    _upsert_topic_nodes_batch,
     _write_tx,
     write_clusters,
 )
@@ -181,8 +183,8 @@ class TestWriteTx:
 
         _write_tx(tx, clusters, source_map)
 
-        # Should have: 1 delete edges + 1 delete orphans + 2 topic upserts + 3 tagged edges = 7 calls
-        assert tx.run.call_count == 7
+        # 1 delete edges + 1 delete orphans + 1 batch topic upsert + 1 batch tagged edges = 4 calls
+        assert tx.run.call_count == 4
 
     def test_deletes_before_creates(self) -> None:
         tx = MagicMock()
@@ -195,7 +197,7 @@ class TestWriteTx:
         # First two calls should be deletes
         assert "DELETE r" in queries[0]
         assert "DELETE t" in queries[1]
-        # Then creates
+        # Then batch topic upsert
         assert "MERGE" in queries[2]
 
     def test_handles_empty_source_map(self) -> None:
@@ -205,7 +207,8 @@ class TestWriteTx:
 
         _write_tx(tx, clusters, source_map)
 
-        # 1 delete edges + 1 delete orphans + 1 topic upsert = 3 calls
+        # 1 delete edges + 1 delete orphans + 1 batch topic upsert = 3 calls
+        # (no tagged edges batch since there are no source_ids)
         assert tx.run.call_count == 3
 
     def test_handles_missing_cluster_in_source_map(self) -> None:
@@ -215,7 +218,7 @@ class TestWriteTx:
 
         _write_tx(tx, clusters, source_map)
 
-        # 1 delete edges + 1 delete orphans + 1 topic upsert = 3 calls
+        # 1 delete edges + 1 delete orphans + 1 batch topic upsert = 3 calls
         assert tx.run.call_count == 3
 
 
@@ -240,6 +243,7 @@ class TestResolveChunkSources:
             ]
 
             from worker.config import QdrantConfig
+
             result = _resolve_chunk_sources(chunk_ids_by_cluster, QdrantConfig())
 
         assert result[0] == {"notes/a.md"}
@@ -257,6 +261,7 @@ class TestResolveChunkSources:
             ]
 
             from worker.config import QdrantConfig
+
             result = _resolve_chunk_sources(chunk_ids_by_cluster, QdrantConfig())
 
         assert result[0] == {"notes/a.md", "notes/b.md"}
@@ -268,6 +273,7 @@ class TestResolveChunkSources:
             client = MockClient.return_value
 
             from worker.config import QdrantConfig
+
             result = _resolve_chunk_sources(chunk_ids_by_cluster, QdrantConfig())
 
         assert result[0] == set()
@@ -283,6 +289,7 @@ class TestResolveChunkSources:
             ]
 
             from worker.config import QdrantConfig
+
             _resolve_chunk_sources(chunk_ids_by_cluster, QdrantConfig())
 
             client.close.assert_called_once()
@@ -295,6 +302,7 @@ class TestResolveChunkSources:
             client.retrieve.side_effect = RuntimeError("connection failed")
 
             from worker.config import QdrantConfig
+
             with pytest.raises(RuntimeError):
                 _resolve_chunk_sources(chunk_ids_by_cluster, QdrantConfig())
 
@@ -314,6 +322,7 @@ class TestResolveChunkSources:
             ]
 
             from worker.config import QdrantConfig
+
             result = _resolve_chunk_sources(chunk_ids_by_cluster, QdrantConfig())
 
         assert result[0] == {"notes/a.md"}
@@ -438,3 +447,69 @@ class TestWriteClusters:
             source_map = tx_args[0][2]
             assert source_map[0] == {"notes/a.md", "notes/b.md"}
             assert source_map[1] == {"notes/b.md", "notes/c.md"}
+
+
+# ---------------------------------------------------------------------------
+# _upsert_topic_nodes_batch
+# ---------------------------------------------------------------------------
+
+
+class TestUpsertTopicNodesBatch:
+    def test_single_call_for_multiple_clusters(self) -> None:
+        tx = MagicMock()
+        clusters = [
+            _labeled(cluster_id=0, label="ML", description="Machine learning"),
+            _labeled(cluster_id=1, label="Cooking", description="Cooking notes"),
+        ]
+        _upsert_topic_nodes_batch(tx, clusters)
+
+        tx.run.assert_called_once()
+        query = tx.run.call_args[0][0]
+        kwargs = tx.run.call_args[1]
+        assert "UNWIND" in query
+        assert "MERGE" in query
+        assert "Topic" in query
+        assert "source: 'cluster'" in query
+        topics = kwargs["topics"]
+        assert len(topics) == 2
+        assert topics[0]["name"] == "ML"
+        assert topics[1]["name"] == "Cooking"
+
+    def test_no_op_for_empty_clusters(self) -> None:
+        tx = MagicMock()
+        _upsert_topic_nodes_batch(tx, [])
+        tx.run.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _create_tagged_edges_batch
+# ---------------------------------------------------------------------------
+
+
+class TestCreateTaggedEdgesBatch:
+    def test_single_call_for_multiple_pairs(self) -> None:
+        tx = MagicMock()
+        pairs = [
+            {"sid": "notes/a.md", "name": "ML"},
+            {"sid": "notes/b.md", "name": "ML"},
+            {"sid": "email/x@y.com", "name": "Cooking"},
+        ]
+        _create_tagged_edges_batch(tx, pairs)
+
+        tx.run.assert_called_once()
+        query = tx.run.call_args[0][0]
+        kwargs = tx.run.call_args[1]
+        assert "UNWIND" in query
+        assert "TAGGED" in query
+        assert "source: 'cluster'" in query
+        assert "MERGE" in query
+        assert kwargs["pairs"] == pairs
+
+    def test_constrains_source_node_labels(self) -> None:
+        tx = MagicMock()
+        _create_tagged_edges_batch(tx, [{"sid": "f.md", "name": "T"}])
+        query = tx.run.call_args[0][0]
+        assert "s:File" in query
+        assert "s:Email" in query
+        assert "s:Commit" in query
+        assert "s:Image" in query

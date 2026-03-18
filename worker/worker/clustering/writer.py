@@ -171,17 +171,20 @@ def _write_tx(
 
     1. Delete existing TAGGED edges where source='cluster'
     2. Delete orphaned cluster-derived Topic nodes
-    3. Create Topic nodes for each cluster
-    4. Create TAGGED edges from source nodes to Topics
+    3. Create Topic nodes for all clusters (batched via UNWIND)
+    4. Create TAGGED edges from source nodes to Topics (batched via UNWIND)
     """
     _delete_cluster_tagged_edges(tx)
     _delete_orphaned_cluster_topics(tx)
+    _upsert_topic_nodes_batch(tx, clusters)
 
-    for cluster in clusters:
-        _upsert_topic_node(tx, cluster)
-        source_ids = source_map.get(cluster.cluster_id, set())
-        for source_id in source_ids:
-            _create_tagged_edge(tx, source_id, cluster.label)
+    tagged_pairs = [
+        {"sid": source_id, "name": cluster.label}
+        for cluster in clusters
+        for source_id in source_map.get(cluster.cluster_id, set())
+    ]
+    if tagged_pairs:
+        _create_tagged_edges_batch(tx, tagged_pairs)
 
 
 def _delete_cluster_tagged_edges(tx: Any) -> None:
@@ -236,4 +239,40 @@ def _create_tagged_edge(tx: Any, source_id: str, topic_name: str) -> None:
         """,
         sid=source_id,
         name=topic_name,
+    )
+
+
+def _upsert_topic_nodes_batch(tx: Any, clusters: list[LabeledCluster]) -> None:
+    """Batch upsert Topic nodes for all clusters via a single UNWIND query.
+
+    Replaces the per-cluster loop of _upsert_topic_node with one round-trip,
+    eliminating the N+1 pattern for topic writes.
+    """
+    if not clusters:
+        return
+    tx.run(
+        """
+        UNWIND $topics AS t
+        MERGE (topic:Topic {name: t.name, source: 'cluster'})
+        SET topic.description = t.description
+        """,
+        topics=[{"name": c.label, "description": c.description} for c in clusters],
+    )
+
+
+def _create_tagged_edges_batch(tx: Any, tagged_pairs: list[dict[str, str]]) -> None:
+    """Batch create TAGGED edges for all (source_id, topic_name) pairs via UNWIND.
+
+    Replaces the per-source_id loop of _create_tagged_edge with one
+    round-trip, eliminating the O(clusters × sources) N+1 pattern.
+    """
+    tx.run(
+        """
+        UNWIND $pairs AS pair
+        MATCH (s {source_id: pair.sid})
+        WHERE s:File OR s:Email OR s:Commit OR s:Image
+        MATCH (t:Topic {name: pair.name, source: 'cluster'})
+        MERGE (s)-[:TAGGED {source: 'cluster'}]->(t)
+        """,
+        pairs=tagged_pairs,
     )
