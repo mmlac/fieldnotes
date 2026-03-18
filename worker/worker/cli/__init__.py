@@ -266,6 +266,7 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.WARNING,
         format="%(name)s %(levelname)s: %(message)s",
+        stream=sys.stderr,
     )
 
     if args.command is None:

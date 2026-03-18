@@ -1,12 +1,16 @@
-"""Combined daemon mode: ingest pipeline + MCP server.
+"""Daemon mode: background ingest pipeline.
 
-``fieldnotes serve --daemon`` starts both the source-watching ingest pipeline
-(from ``worker.main``) and the MCP server (from ``worker.mcp_server``) in a
-single process.  The MCP server listens on a Unix domain socket so it can be
-reached programmatically while stdio remains free for logging.
+``fieldnotes serve --daemon`` runs the source-watching ingest pipeline as a
+long-running background service.  It consumes source events and writes to
+Neo4j/Qdrant.  All log output goes to stderr so it can be captured by the
+platform service manager (launchd, systemd) without conflicting with other
+I/O channels.
 
-The ingest pipeline consumes source events and writes to Neo4j/Qdrant.
-The MCP server answers tool calls from Claude Desktop or other MCP clients.
+The MCP server (``fieldnotes serve --mcp``) must be run as a separate process.
+Running MCP over stdio inside the daemon is intentionally unsupported: when the
+daemon is managed by launchd or systemd both stdout and stderr are redirected to
+a log file, so any JSON-RPC output written to stdout by ``stdio_server`` would
+corrupt that log file and no MCP client can connect via stdin anyway.
 """
 
 from __future__ import annotations
@@ -30,7 +34,7 @@ logger = logging.getLogger(__name__)
 
 
 async def _run_daemon(cfg: Config) -> None:
-    """Run ingest pipeline and MCP server concurrently."""
+    """Run the ingest pipeline as a background service."""
     from typing import Any
 
     from worker.clustering.scheduler import clustering_loop
@@ -49,7 +53,7 @@ async def _run_daemon(cfg: Config) -> None:
 
     sources = _build_sources(cfg)
     if not sources:
-        logger.warning("No sources configured — running MCP server only")
+        logger.warning("No sources configured — ingest pipeline will be idle")
 
     # Background tasks
     background_tasks: list[asyncio.Task[None]] = []
@@ -84,16 +88,6 @@ async def _run_daemon(cfg: Config) -> None:
         health_task = asyncio.create_task(health_server.run(), name="health-server")
         background_tasks.append(health_task)
         logger.info("Health endpoint enabled on %s:%d", cfg.health.bind, cfg.health.port)
-
-    # MCP server on Unix socket
-    async def _run_mcp() -> None:
-        from worker.mcp_server import FieldnotesServer
-
-        server = FieldnotesServer(cfg)
-        await server.run()
-
-    mcp_task = asyncio.create_task(_run_mcp(), name="mcp-server")
-    logger.info("MCP server started (stdio transport)")
 
     # Graceful shutdown
     stop_event = asyncio.Event()
@@ -131,7 +125,6 @@ async def _run_daemon(cfg: Config) -> None:
     finally:
         _DRAIN_TIMEOUT = 10  # seconds to wait for in-progress work
 
-        mcp_task.cancel()
         for task in background_tasks:
             task.cancel()
         for task in source_tasks:
@@ -139,7 +132,7 @@ async def _run_daemon(cfg: Config) -> None:
         try:
             await asyncio.wait_for(
                 asyncio.gather(
-                    mcp_task, *background_tasks, *source_tasks,
+                    *background_tasks, *source_tasks,
                     return_exceptions=True,
                 ),
                 timeout=_DRAIN_TIMEOUT,

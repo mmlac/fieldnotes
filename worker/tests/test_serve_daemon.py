@@ -1,4 +1,4 @@
-"""Tests for worker.serve_daemon — combined daemon mode."""
+"""Tests for worker.serve_daemon — background ingest daemon."""
 
 from __future__ import annotations
 
@@ -41,21 +41,7 @@ _P_PIPELINE = "worker.pipeline.Pipeline"
 _P_WRITER = "worker.pipeline.writer.Writer"
 _P_REGISTRY = "worker.models.resolver.ModelRegistry"
 _P_BUILD = "worker.serve_daemon._build_sources"
-_P_SERVER = "worker.mcp_server.FieldnotesServer"
 _P_CLUSTER = "worker.clustering.scheduler.clustering_loop"
-
-
-def _mock_mcp_server():
-    """Return a mock FieldnotesServer with an async run method."""
-    mock_server_cls = MagicMock()
-    mock_server = MagicMock()
-
-    async def fake_run():
-        await asyncio.sleep(999)
-
-    mock_server.run = fake_run
-    mock_server_cls.return_value = mock_server
-    return mock_server_cls
 
 
 # ------------------------------------------------------------------
@@ -70,24 +56,16 @@ class TestRunDaemon:
     @patch(_P_WRITER)
     @patch(_P_REGISTRY)
     @patch(_P_BUILD)
-    @patch(_P_SERVER)
-    async def test_no_sources_runs_mcp_only(
+    async def test_no_sources_runs_idle(
         self,
-        mock_server_cls,
         mock_build,
         mock_reg,
         mock_writer,
         mock_pipeline,
         mock_parser,
     ) -> None:
+        """Daemon with no sources configured stays alive (idle ingest loop)."""
         mock_build.return_value = []
-        mock_server = MagicMock()
-
-        async def fake_run():
-            await asyncio.sleep(999)
-
-        mock_server.run = fake_run
-        mock_server_cls.return_value = mock_server
 
         pipeline_inst = mock_pipeline.return_value
 
@@ -105,10 +83,8 @@ class TestRunDaemon:
     @patch(_P_WRITER)
     @patch(_P_REGISTRY)
     @patch(_P_BUILD)
-    @patch(_P_SERVER)
     async def test_processes_events_through_pipeline(
         self,
-        mock_server_cls,
         mock_build,
         mock_reg,
         mock_writer,
@@ -133,14 +109,6 @@ class TestRunDaemon:
         parser.parse.return_value = [MagicMock()]
         mock_parser.return_value = parser
 
-        mock_server = MagicMock()
-
-        async def fake_run():
-            await asyncio.sleep(999)
-
-        mock_server.run = fake_run
-        mock_server_cls.return_value = mock_server
-
         pipeline_inst = mock_pipeline.return_value
 
         task = asyncio.create_task(_run_daemon(_cfg()))
@@ -159,10 +127,8 @@ class TestRunDaemon:
     @patch(_P_WRITER)
     @patch(_P_REGISTRY)
     @patch(_P_BUILD)
-    @patch(_P_SERVER)
     async def test_shutdown_cancels_all_tasks(
         self,
-        mock_server_cls,
         mock_build,
         mock_reg,
         mock_writer,
@@ -177,14 +143,6 @@ class TestRunDaemon:
 
         fake_source.start = fake_start
         mock_build.return_value = [fake_source]
-
-        mock_server = MagicMock()
-
-        async def fake_run():
-            await asyncio.sleep(999)
-
-        mock_server.run = fake_run
-        mock_server_cls.return_value = mock_server
 
         pipeline_inst = mock_pipeline.return_value
 
@@ -203,10 +161,8 @@ class TestRunDaemon:
     @patch(_P_WRITER)
     @patch(_P_REGISTRY)
     @patch(_P_BUILD)
-    @patch(_P_SERVER)
     async def test_clustering_enabled_starts_task(
         self,
-        mock_server_cls,
         mock_build,
         mock_reg,
         mock_writer,
@@ -215,13 +171,6 @@ class TestRunDaemon:
         mock_cluster,
     ) -> None:
         mock_build.return_value = []
-        mock_server = MagicMock()
-
-        async def fake_run():
-            await asyncio.sleep(999)
-
-        mock_server.run = fake_run
-        mock_server_cls.return_value = mock_server
 
         async def fake_clustering(*args):
             await asyncio.sleep(999)
@@ -244,10 +193,8 @@ class TestRunDaemon:
     @patch(_P_WRITER)
     @patch(_P_REGISTRY)
     @patch(_P_BUILD)
-    @patch(_P_SERVER)
     async def test_parser_error_does_not_crash(
         self,
-        mock_server_cls,
         mock_build,
         mock_reg,
         mock_writer,
@@ -277,14 +224,6 @@ class TestRunDaemon:
         parser.parse.side_effect = [ValueError("bad"), [MagicMock()]]
         mock_parser.return_value = parser
 
-        mock_server = MagicMock()
-
-        async def fake_run():
-            await asyncio.sleep(999)
-
-        mock_server.run = fake_run
-        mock_server_cls.return_value = mock_server
-
         pipeline_inst = mock_pipeline.return_value
 
         task = asyncio.create_task(_run_daemon(_cfg()))
@@ -295,6 +234,38 @@ class TestRunDaemon:
 
         assert parser.parse.call_count == 2
         pipeline_inst.process.assert_called_once()
+
+    @pytest.mark.asyncio
+    @patch(_P_PARSER)
+    @patch(_P_PIPELINE)
+    @patch(_P_WRITER)
+    @patch(_P_REGISTRY)
+    @patch(_P_BUILD)
+    async def test_mcp_server_not_started_in_daemon_mode(
+        self,
+        mock_build,
+        mock_reg,
+        mock_writer,
+        mock_pipeline,
+        mock_parser,
+    ) -> None:
+        """Daemon mode must NOT start the MCP stdio server.
+
+        The MCP server uses stdio transport which conflicts with service
+        managers (launchd, systemd) that redirect stdout to log files.
+        JSON-RPC output would corrupt the log file and stdin is /dev/null
+        so no client can connect anyway.
+        """
+        mock_build.return_value = []
+
+        with patch("worker.mcp_server.FieldnotesServer") as mock_server_cls:
+            task = asyncio.create_task(_run_daemon(_cfg()))
+            await asyncio.sleep(0.05)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        mock_server_cls.assert_not_called()
 
 
 # ------------------------------------------------------------------

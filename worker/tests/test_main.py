@@ -77,6 +77,45 @@ class TestSetupLogging:
             _setup_logging("WARNING")
             root.setLevel.assert_called_once_with(logging.WARNING)
 
+    def test_clears_existing_handlers_to_prevent_duplicates(self):
+        """_setup_logging must replace existing handlers, not accumulate them.
+
+        When the CLI calls logging.basicConfig() before run_daemon() calls
+        _setup_logging(), the root logger already has a handler.  Without the
+        clear step every log message would be emitted twice.
+        """
+        with patch("logging.getLogger") as mock_get:
+            root = MagicMock()
+            mock_get.return_value = root
+            _setup_logging("info")
+            root.handlers.clear.assert_called_once()
+
+    def test_handler_uses_stderr(self, capsys):
+        """All log output must go to stderr — never stdout.
+
+        stdout is reserved for the MCP stdio transport (``fieldnotes serve
+        --mcp``).  Any log line written to stdout would corrupt the
+        JSON-RPC stream consumed by the MCP client.
+        """
+        import sys
+        import logging as _logging
+
+        # Use a real root logger isolated to this test.
+        real_root = _logging.getLogger()
+        original_handlers = real_root.handlers[:]
+        original_level = real_root.level
+        try:
+            real_root.handlers.clear()
+            _setup_logging("warning")
+            real_root.warning("test-stderr-routing")
+            captured = capsys.readouterr()
+            assert "test-stderr-routing" in captured.err
+            assert "test-stderr-routing" not in captured.out
+        finally:
+            real_root.handlers.clear()
+            real_root.handlers.extend(original_handlers)
+            real_root.setLevel(original_level)
+
 
 # ------------------------------------------------------------------
 # _check_neo4j

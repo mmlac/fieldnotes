@@ -67,7 +67,12 @@ SOURCE_CLASSES: dict[str, type[PythonSource]] = {
 
 
 def _setup_logging(level: str) -> None:
-    """Configure root logger from config.core.log_level."""
+    """Configure root logger from config.core.log_level.
+
+    Always writes to stderr.  Replaces any handlers already installed by
+    ``logging.basicConfig`` so that daemon mode does not end up with
+    duplicate log lines when the CLI's ``basicConfig`` call runs first.
+    """
     numeric = getattr(logging, level.upper(), logging.INFO)
     production = numeric > logging.DEBUG
     formatter = SanitizingFormatter(
@@ -75,9 +80,10 @@ def _setup_logging(level: str) -> None:
         datefmt="%Y-%m-%dT%H:%M:%S",
         production=production,
     )
-    handler = logging.StreamHandler()
+    handler = logging.StreamHandler(sys.stderr)
     handler.setFormatter(formatter)
     root = logging.getLogger()
+    root.handlers.clear()
     root.setLevel(numeric)
     root.addHandler(handler)
 
