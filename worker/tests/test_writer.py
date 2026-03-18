@@ -173,6 +173,26 @@ class TestNeo4jHelpers:
         assert kwargs["type"] == "Concept"
         assert kwargs["confidence"] == 0.75
 
+    def test_upsert_entity_uses_on_create_on_match(self):
+        """Cypher must use ON CREATE / ON MATCH to guard against lower-confidence overwrites."""
+        tx = MagicMock()
+        _upsert_entity(tx, {"name": "Neo4j", "type": "Technology", "confidence": 0.9})
+        args, _ = tx.run.call_args
+        cypher = args[0]
+        assert "ON CREATE" in cypher
+        assert "ON MATCH" in cypher
+
+    def test_upsert_entity_confidence_guard_in_cypher(self):
+        """ON MATCH SET should only update when incoming confidence is higher."""
+        tx = MagicMock()
+        _upsert_entity(tx, {"name": "Alice", "type": "Person", "confidence": 0.5})
+        args, kwargs = tx.run.call_args
+        cypher = args[0]
+        # The Cypher CASE expression must compare $confidence against e.confidence
+        assert "$confidence > e.confidence" in cypher
+        assert kwargs["confidence"] == 0.5
+        assert kwargs["type"] == "Person"
+
     def test_merge_mentions_edge(self):
         tx = MagicMock()
         _merge_mentions_edge(tx, "notes/test.md", "Neo4j")

@@ -931,13 +931,21 @@ def _truncate_entity_name(name: str) -> str:
 
 
 def _upsert_entity(tx: Any, entity: dict[str, Any]) -> None:
-    """MERGE an Entity node on name, setting type and confidence."""
+    """MERGE an Entity node on name, setting type and confidence.
+
+    On first creation, type and confidence are set unconditionally.
+    On subsequent merges, type and confidence are only updated when the
+    incoming confidence is strictly higher than the stored value, preventing
+    lower-confidence extractions from overwriting higher-confidence ones.
+    """
     name = _truncate_entity_name(entity["name"])
     tx.run(
         """
         MERGE (e:Entity {name: $name})
-        SET e.type = $type,
-            e.confidence = $confidence
+        ON CREATE SET e.type = $type,
+                      e.confidence = $confidence
+        ON MATCH SET e.type = CASE WHEN $confidence > e.confidence THEN $type ELSE e.type END,
+                     e.confidence = CASE WHEN $confidence > e.confidence THEN $confidence ELSE e.confidence END
         """,
         name=name,
         type=entity.get("type", "Concept"),
