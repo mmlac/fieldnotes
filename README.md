@@ -3,7 +3,7 @@
 
 # Fieldnotes
 
-Fieldnotes is a personal knowledge graph that continuously indexes your digital life — local files, Obsidian vaults, email threads, git repositories, and installed applications — and exposes that knowledge as structured context for LLM agents. It combines a property graph (Neo4j) for relationship traversal with a vector store (Qdrant) for semantic retrieval, connected by a hybrid query layer and served over the Model Context Protocol (MCP) so any compatible AI assistant can query everything you know.
+Fieldnotes is a personal knowledge graph that continuously indexes your digital life — local files, Obsidian vaults, email threads, git repositories, OmniFocus tasks, and installed applications — and exposes that knowledge as structured context for LLM agents. It combines a property graph (Neo4j) for relationship traversal with a vector store (Qdrant) for semantic retrieval, connected by a hybrid query layer and served over the Model Context Protocol (MCP) so any compatible AI assistant can query everything you know.
 
 ## Table of Contents
 
@@ -25,7 +25,7 @@ Fieldnotes is a personal knowledge graph that continuously indexes your digital 
 Fieldnotes watches your configured sources for changes in real time. When a file is saved, an email arrives, or a commit is pushed, the pipeline picks it up and runs it through a sequence of stages:
 
 ```
-Source Event (file / email / commit / app)
+Source Event (file / email / commit / task / app)
         │
         ▼
    ┌─────────┐
@@ -208,6 +208,15 @@ poll_interval_seconds = 300
 max_file_size = 104857600
 ```
 
+OmniFocus support is auto-detected on macOS and indexes tasks, projects, tags, and parent-child relationships via JXA (JavaScript for Automation):
+
+```toml
+[sources.omnifocus]
+# enabled = true             # auto-detected on macOS
+# poll_interval_seconds = 300
+# state_path = "~/.fieldnotes/state/omnifocus.json"
+```
+
 macOS apps and Homebrew sources auto-discover installed software and rescan on a configurable interval:
 
 ```toml
@@ -256,6 +265,7 @@ port = 3456
 | **Obsidian** | Initial scan + real-time (watchdog) | Notes with frontmatter, wikilinks, and #tags |
 | **Gmail** | Backfill + polling (configurable interval) | Email threads — subjects, bodies, metadata |
 | **Git Repositories** | Initial scan + polling (configurable interval) | READMEs, changelogs, docs, commit messages |
+| **OmniFocus** | Polling (default: every 5 minutes) | Tasks, projects, tags, due dates, and subtask hierarchy (macOS only) |
 | **macOS Apps** | Polling (default: every 6 hours) | Installed application bundles (Info.plist) |
 | **Homebrew** | Polling (default: every 6 hours) | Installed formulae and casks with descriptions |
 
@@ -273,6 +283,7 @@ On subsequent startups, the cursor is loaded and diffed against the current file
 | **Obsidian** | `~/.fieldnotes/data/obsidian_cursor.json` | Per-file SHA256 + mtime |
 | **Gmail** | `~/.fieldnotes/data/gmail_cursor.json` | Gmail History API ID |
 | **Git Repos** | `~/.fieldnotes/data/repo_cursor.json` | Per-repo HEAD commit SHA |
+| **OmniFocus** | `~/.fieldnotes/state/omnifocus.json` | Per-task content hash |
 
 Cursors are checkpointed every 5 minutes during operation and saved on graceful shutdown, so a restart only re-processes files that changed since the last checkpoint.
 
@@ -485,6 +496,7 @@ worker/
 │   ├── obsidian.py         # Obsidian vault watcher
 │   ├── gmail.py            # Gmail polling with cursor sync
 │   ├── repositories.py     # Git repository scanner
+│   ├── omnifocus.py        # OmniFocus task polling via JXA (macOS)
 │   ├── macos_apps.py       # macOS app discovery (polling)
 │   └── homebrew.py         # Homebrew package listing (polling)
 ├── parsers/                # Document type parsers
@@ -493,6 +505,7 @@ worker/
 │   ├── obsidian.py         # Obsidian notes (wikilinks, frontmatter)
 │   ├── gmail.py            # Email messages
 │   ├── repositories.py     # Git commits and READMEs
+│   ├── omnifocus.py        # OmniFocus tasks (projects, tags, subtasks)
 │   └── apps.py             # Application metadata
 ├── pipeline/               # Ingest pipeline stages
 │   ├── chunker.py          # Sentence-aware text splitter
