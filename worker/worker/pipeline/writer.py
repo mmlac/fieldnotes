@@ -417,13 +417,18 @@ class Writer:
             )
             updated = result.single()["updated"]
 
-            # Create SAME_AS edges between Person nodes with the same email
+            # Create SAME_AS edges between Person nodes with the same email.
+            # Group by email first to avoid a cartesian product across all Person nodes.
             session.run(
                 """
-                MATCH (a:Person), (b:Person)
-                WHERE a.email IS NOT NULL AND b.email IS NOT NULL
-                  AND toLower(trim(a.email)) = toLower(trim(b.email))
-                  AND id(a) < id(b)
+                MATCH (p:Person)
+                WHERE p.email IS NOT NULL
+                WITH toLower(trim(p.email)) AS norm_email, collect(p) AS persons
+                WHERE size(persons) > 1
+                UNWIND persons AS a
+                UNWIND persons AS b
+                WITH a, b
+                WHERE id(a) < id(b)
                 MERGE (a)-[:SAME_AS]->(b)
                 """
             )
