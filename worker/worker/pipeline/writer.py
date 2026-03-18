@@ -232,7 +232,7 @@ class Writer:
             )
 
             self._ensure_qdrant_collection()
-            self._ensure_entity_fulltext_index()
+            self._ensure_neo4j_schema()
         except Exception:
             self._neo4j_driver.close()
             raise
@@ -370,8 +370,68 @@ class Writer:
             return self.fetch_existing_entities()
 
     @_neo4j_retry
+    def _ensure_neo4j_schema(self) -> None:
+        """Create all required Neo4j indexes and uniqueness constraints.
+
+        Idempotent — uses IF NOT EXISTS throughout.  Failures are logged at
+        WARNING level and swallowed so a single unsupported statement does not
+        prevent startup; each statement is executed independently so a failure
+        on one does not block the rest.
+
+        Indexes created:
+        - Uniqueness constraint on Entity.name (also serves as B-tree index)
+        - Uniqueness constraint on Chunk.id
+        - B-tree index on source_id for all source node labels
+        - B-tree index on Person.email (reconcile_persons and hint MERGE)
+        - B-tree index on Thread.thread_id (hint MERGE/MATCH)
+        - Fulltext index on Entity.name (fuzzy candidate lookup)
+        """
+        ddl_statements = [
+            # Uniqueness constraints (implicitly create B-tree indexes)
+            (
+                "CREATE CONSTRAINT entity_name_unique IF NOT EXISTS "
+                "FOR (e:Entity) REQUIRE e.name IS UNIQUE"
+            ),
+            (
+                "CREATE CONSTRAINT chunk_id_unique IF NOT EXISTS "
+                "FOR (c:Chunk) REQUIRE c.id IS UNIQUE"
+            ),
+            # B-tree indexes on source_id for all source node labels
+            "CREATE INDEX file_source_id IF NOT EXISTS FOR (n:File) ON (n.source_id)",
+            "CREATE INDEX email_source_id IF NOT EXISTS FOR (n:Email) ON (n.source_id)",
+            "CREATE INDEX image_source_id IF NOT EXISTS FOR (n:Image) ON (n.source_id)",
+            "CREATE INDEX application_source_id IF NOT EXISTS FOR (n:Application) ON (n.source_id)",
+            "CREATE INDEX tool_source_id IF NOT EXISTS FOR (n:Tool) ON (n.source_id)",
+            "CREATE INDEX task_source_id IF NOT EXISTS FOR (n:Task) ON (n.source_id)",
+            "CREATE INDEX commit_source_id IF NOT EXISTS FOR (n:Commit) ON (n.source_id)",
+            # Indexes for hint-based node lookups
+            "CREATE INDEX person_email IF NOT EXISTS FOR (n:Person) ON (n.email)",
+            "CREATE INDEX thread_thread_id IF NOT EXISTS FOR (n:Thread) ON (n.thread_id)",
+            # Fulltext index for fuzzy entity candidate lookup
+            (
+                "CREATE FULLTEXT INDEX entity_name_fulltext IF NOT EXISTS "
+                "FOR (e:Entity) ON EACH [e.name]"
+            ),
+        ]
+        with self._neo4j_driver.session() as session:
+            for stmt in ddl_statements:
+                try:
+                    session.run(stmt)
+                except Exception:
+                    logger.warning(
+                        "Could not apply Neo4j schema statement (skipping): %s",
+                        stmt,
+                        exc_info=True,
+                    )
+
+    @_neo4j_retry
     def _ensure_entity_fulltext_index(self) -> None:
-        """Create full-text index on Entity.name if it doesn't exist."""
+        """Create full-text index on Entity.name if it doesn't exist.
+
+        .. deprecated::
+            Superseded by :meth:`_ensure_neo4j_schema`.  Kept for callers
+            that reference it directly (e.g. tests and CLI tools).
+        """
         try:
             with self._neo4j_driver.session() as session:
                 session.run(
