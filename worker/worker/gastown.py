@@ -113,7 +113,7 @@ def validate_connectivity(
         finally:
             driver.close()
     except Exception as exc:
-        health["neo4j"] = f"error: {exc}"
+        health["neo4j"] = f"error: {type(exc).__name__}"
 
     # Qdrant
     try:
@@ -124,7 +124,7 @@ def validate_connectivity(
         finally:
             client.close()
     except Exception as exc:
-        health["qdrant"] = f"error: {exc}"
+        health["qdrant"] = f"error: {type(exc).__name__}"
 
     return health
 

@@ -678,7 +678,7 @@ class FieldnotesServer:
                 }
         except Exception as exc:
             logger.exception("ingest_status: Neo4j query failed")
-            neo4j_health = f"error: {exc}"
+            neo4j_health = f"error: {type(exc).__name__}"
             sources = {}
             entities_by_type = {}
             entity_total = 0
@@ -705,7 +705,7 @@ class FieldnotesServer:
             }
         except Exception as exc:
             logger.exception("ingest_status: Qdrant query failed")
-            qdrant_health = f"error: {exc}"
+            qdrant_health = f"error: {type(exc).__name__}"
             result["vectors"] = {"count": 0, "collection": qdrant_cfg.collection}
 
         result["health"] = {

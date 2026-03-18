@@ -275,6 +275,37 @@ class TestValidateConnectivity:
         assert "error" in health["qdrant"]
         client.close.assert_called_once()
 
+    @patch("worker.gastown.QdrantClient")
+    @patch("worker.gastown.GraphDatabase")
+    def test_error_does_not_leak_exception_message(
+        self,
+        mock_gdb: MagicMock,
+        mock_qdrant_cls: MagicMock,
+    ) -> None:
+        """Raw exception messages must not appear in health output."""
+        from worker.config import Config, Neo4jConfig, QdrantConfig
+
+        mock_gdb.driver.side_effect = ConnectionError(
+            "bolt://admin:secret-pw@internal-neo4j:7687"
+        )
+        mock_qdrant_cls.return_value = MagicMock(
+            get_collection=MagicMock(
+                side_effect=ConnectionError("http://internal-qdrant:6333 refused")
+            )
+        )
+
+        cfg = Config(
+            neo4j=Neo4jConfig(uri="bolt://test:7687", user="neo4j", password="pw"),
+            qdrant=QdrantConfig(host="localhost", port=6333),
+        )
+        health = validate_connectivity(cfg)
+
+        assert "secret-pw" not in health["neo4j"]
+        assert "internal-neo4j" not in health["neo4j"]
+        assert "internal-qdrant" not in health["qdrant"]
+        assert health["neo4j"] == "error: ConnectionError"
+        assert health["qdrant"] == "error: ConnectionError"
+
 
 # ------------------------------------------------------------------
 # setup_gastown

@@ -170,3 +170,37 @@ class TestIngestStatus:
         assert "error" in data["health"]["neo4j"]
         # Qdrant should still work
         assert data["health"]["qdrant"] == "ok"
+
+    @pytest.mark.asyncio
+    async def test_error_does_not_leak_exception_message(self) -> None:
+        """Raw exception messages must not appear in ingest_status output."""
+        # Simulate Neo4j session raising with a sensitive connection string
+        mock_session = MagicMock()
+        mock_session.run.side_effect = ConnectionError(
+            "bolt://admin:secret-password@internal-db-host:7687"
+        )
+
+        # Simulate Qdrant raising with a sensitive URL
+        mock_collection = MagicMock()
+        mock_collection.points_count = 0
+        mock_qdrant = MagicMock()
+        mock_qdrant.get_collection.side_effect = ConnectionError(
+            "http://internal-qdrant-host:6333 connection refused"
+        )
+        mock_vq = MagicMock()
+        mock_vq._qdrant = mock_qdrant
+
+        server = _setup_server_with_mocks(mock_session=mock_session)
+        server._vector_querier = mock_vq
+
+        result = await server._call_tool("ingest_status", {})
+        text = result[0].text
+
+        # Sensitive details must not appear in the response
+        assert "secret-password" not in text
+        assert "internal-db-host" not in text
+        assert "internal-qdrant-host" not in text
+        # Error type name should appear instead
+        data = json.loads(text)
+        assert data["health"]["neo4j"] == "error: ConnectionError"
+        assert data["health"]["qdrant"] == "error: ConnectionError"
