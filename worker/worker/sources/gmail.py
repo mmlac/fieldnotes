@@ -16,6 +16,7 @@ Config section ``[sources.gmail]``::
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import uuid
@@ -101,9 +102,38 @@ def _header_value(headers: list[dict[str, str]], name: str) -> str:
     return ""
 
 
+def _extract_body(payload: dict[str, Any]) -> tuple[str, str]:
+    """Extract body text from a Gmail full-format message payload.
+
+    Returns ``(text, mime_type)``.  Prefers *text/plain* over *text/html*;
+    recurses into multipart payloads.  Returns ``("", "")`` when no body
+    is found.
+    """
+    mime = payload.get("mimeType", "")
+    if mime in ("text/plain", "text/html"):
+        data = payload.get("body", {}).get("data", "")
+        if data:
+            decoded = base64.urlsafe_b64decode(data + "==").decode("utf-8", errors="replace")
+            return decoded, mime
+        return "", mime
+
+    # Recurse into multipart payloads, preferring text/plain over text/html
+    parts = payload.get("parts", [])
+    for part in parts:
+        text, found_mime = _extract_body(part)
+        if found_mime == "text/plain" and text:
+            return text, "text/plain"
+    for part in parts:
+        text, found_mime = _extract_body(part)
+        if found_mime == "text/html" and text:
+            return text, "text/html"
+    return "", mime
+
+
 def _build_ingest_event(msg: dict[str, Any]) -> dict[str, Any]:
     """Build an IngestEvent dict from a Gmail API message resource."""
-    headers = msg.get("payload", {}).get("headers", [])
+    payload = msg.get("payload", {})
+    headers = payload.get("headers", [])
     subject = _header_value(headers, "Subject")
     sender = _header_value(headers, "From")
     date_str = _header_value(headers, "Date")
@@ -113,6 +143,8 @@ def _build_ingest_event(msg: dict[str, Any]) -> dict[str, Any]:
     source_modified = datetime.fromtimestamp(
         internal_ts / 1000, tz=timezone.utc
     ).isoformat()
+
+    body_text, body_mime = _extract_body(payload)
 
     meta: dict[str, Any] = {
         "message_id": msg["id"],
@@ -128,7 +160,8 @@ def _build_ingest_event(msg: dict[str, Any]) -> dict[str, Any]:
         "source_type": "gmail",
         "source_id": f"gmail:{msg['id']}",
         "operation": "created",
-        "mime_type": "message/rfc822",
+        "text": body_text,
+        "mime_type": body_mime or "message/rfc822",
         "meta": meta,
         "enqueued_at": datetime.now(timezone.utc).isoformat(),
         "source_modified_at": source_modified,
@@ -298,8 +331,7 @@ class GmailSource(PythonSource):
                 msg = await self._api_call_with_retry(
                     loop,
                     lambda mid=stub["id"]: messages_api.get(
-                        userId="me", id=mid, format="metadata",
-                        metadataHeaders=["From", "To", "Cc", "Subject", "Date"],
+                        userId="me", id=mid, format="full",
                     ).execute(),
                 )
                 event = _build_ingest_event(msg)
@@ -456,10 +488,7 @@ class GmailSource(PythonSource):
                         loop.run_in_executor(
                             None,
                             lambda m=mid: messages_api.get(
-                                userId="me", id=m, format="metadata",
-                                metadataHeaders=[
-                                    "From", "To", "Cc", "Subject", "Date",
-                                ],
+                                userId="me", id=m, format="full",
                             ).execute(),
                         ),
                         timeout=API_CALL_TIMEOUT,

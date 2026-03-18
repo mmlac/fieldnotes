@@ -7,6 +7,7 @@ _poll_incremental, and rate-limiting/backoff in backfill.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,7 @@ from httplib2 import Response
 from worker.sources.gmail import (
     BACKFILL_PAGE_DELAY,
     GmailSource,
+    _extract_body,
     _extract_recipients,
     _load_cursor,
     _save_cursor,
@@ -37,20 +39,26 @@ def _gmail_message(
     sender: str = "a@b.com",
     to: str = "c@d.com",
     internal_date: str = "1700000000000",
+    body_text: str = "",
 ) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "mimeType": "text/plain" if body_text else "multipart/mixed",
+        "headers": [
+            {"name": "Subject", "value": subject},
+            {"name": "From", "value": sender},
+            {"name": "To", "value": to},
+            {"name": "Date", "value": "Mon, 1 Jan 2024 00:00:00 +0000"},
+        ],
+        "body": {},
+    }
+    if body_text:
+        payload["body"]["data"] = base64.urlsafe_b64encode(body_text.encode()).decode().rstrip("=")
     return {
         "id": msg_id,
         "threadId": thread_id,
         "historyId": history_id,
         "internalDate": internal_date,
-        "payload": {
-            "headers": [
-                {"name": "Subject", "value": subject},
-                {"name": "From", "value": sender},
-                {"name": "To", "value": to},
-                {"name": "Date", "value": "Mon, 1 Jan 2024 00:00:00 +0000"},
-            ],
-        },
+        "payload": payload,
     }
 
 
@@ -153,6 +161,76 @@ class TestExtractRecipients:
 
 
 # ---------------------------------------------------------------------------
+# _extract_body
+# ---------------------------------------------------------------------------
+
+class TestExtractBody:
+    def _encode(self, text: str) -> str:
+        return base64.urlsafe_b64encode(text.encode()).decode().rstrip("=")
+
+    def test_plain_text_payload(self) -> None:
+        payload = {"mimeType": "text/plain", "body": {"data": self._encode("Hello world")}}
+        text, mime = _extract_body(payload)
+        assert text == "Hello world"
+        assert mime == "text/plain"
+
+    def test_html_payload(self) -> None:
+        payload = {"mimeType": "text/html", "body": {"data": self._encode("<p>Hi</p>")}}
+        text, mime = _extract_body(payload)
+        assert text == "<p>Hi</p>"
+        assert mime == "text/html"
+
+    def test_prefers_plain_over_html_in_multipart(self) -> None:
+        payload = {
+            "mimeType": "multipart/alternative",
+            "body": {},
+            "parts": [
+                {"mimeType": "text/html", "body": {"data": self._encode("<p>HTML</p>")}},
+                {"mimeType": "text/plain", "body": {"data": self._encode("Plain")}},
+            ],
+        }
+        text, mime = _extract_body(payload)
+        assert text == "Plain"
+        assert mime == "text/plain"
+
+    def test_falls_back_to_html_when_no_plain(self) -> None:
+        payload = {
+            "mimeType": "multipart/alternative",
+            "body": {},
+            "parts": [
+                {"mimeType": "text/html", "body": {"data": self._encode("<p>HTML</p>")}},
+            ],
+        }
+        text, mime = _extract_body(payload)
+        assert text == "<p>HTML</p>"
+        assert mime == "text/html"
+
+    def test_empty_payload_returns_empty(self) -> None:
+        text, mime = _extract_body({})
+        assert text == ""
+
+    def test_no_body_data_returns_empty(self) -> None:
+        payload = {"mimeType": "text/plain", "body": {}}
+        text, mime = _extract_body(payload)
+        assert text == ""
+        assert mime == "text/plain"
+
+    def test_nested_multipart(self) -> None:
+        """Nested multipart/mixed containing multipart/alternative."""
+        inner = {
+            "mimeType": "multipart/alternative",
+            "body": {},
+            "parts": [
+                {"mimeType": "text/plain", "body": {"data": self._encode("Nested plain")}},
+            ],
+        }
+        payload = {"mimeType": "multipart/mixed", "body": {}, "parts": [inner]}
+        text, mime = _extract_body(payload)
+        assert text == "Nested plain"
+        assert mime == "text/plain"
+
+
+# ---------------------------------------------------------------------------
 # GmailSource._backfill
 # ---------------------------------------------------------------------------
 
@@ -174,6 +252,40 @@ class TestBackfill:
 
         assert history_id == "20"  # highest
         assert queue.qsize() == 2
+
+    @pytest.mark.asyncio
+    async def test_backfill_populates_text_field(self) -> None:
+        """Events emitted by backfill must include the email body in 'text'."""
+        msgs = [_gmail_message("m1", history_id="10", body_text="Email body content")]
+        api = _mock_messages_api(msgs)
+
+        source = GmailSource()
+        source._max_initial_threads = 100
+        source._label_filter = "INBOX"
+
+        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        await source._backfill(api, queue)
+
+        event = queue.get_nowait()
+        assert event["text"] == "Email body content"
+        assert event["mime_type"] == "text/plain"
+
+    @pytest.mark.asyncio
+    async def test_backfill_uses_full_format(self) -> None:
+        """API calls must use format='full' (not 'metadata') to fetch body content."""
+        msgs = [_gmail_message("m1", history_id="10")]
+        api = _mock_messages_api(msgs)
+
+        source = GmailSource()
+        source._max_initial_threads = 100
+        source._label_filter = "INBOX"
+
+        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        await source._backfill(api, queue)
+
+        _, call_kwargs = api.get.call_args
+        assert call_kwargs.get("format") == "full"
+        assert "metadataHeaders" not in call_kwargs
 
     @pytest.mark.asyncio
     async def test_backfill_respects_max_limit(self) -> None:
@@ -260,6 +372,66 @@ class TestPollIncremental:
 
         assert new_cursor == "200"
         assert queue.qsize() == 1
+
+    @pytest.mark.asyncio
+    async def test_incremental_poll_populates_text_field(self, tmp_path: Path) -> None:
+        """Events from incremental poll must include the email body in 'text'."""
+        new_msg = _gmail_message("m-new", history_id="200", body_text="Incremental body")
+        messages_api = MagicMock()
+        get_req = MagicMock()
+        get_req.execute.return_value = new_msg
+        messages_api.get.return_value = get_req
+
+        service = MagicMock()
+        history_api = MagicMock()
+        history_list_req = MagicMock()
+        history_list_req.execute.return_value = {
+            "historyId": "200",
+            "history": [{"messagesAdded": [{"message": {"id": "m-new"}}]}],
+        }
+        history_api.list.return_value = history_list_req
+        service.users.return_value.history.return_value = history_api
+
+        source = GmailSource()
+        source._cursor_path = tmp_path / "cursor.json"
+        source._label_filter = "INBOX"
+
+        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        await source._poll_incremental(service, messages_api, queue, "100")
+
+        event = queue.get_nowait()
+        assert event["text"] == "Incremental body"
+        assert event["mime_type"] == "text/plain"
+
+    @pytest.mark.asyncio
+    async def test_incremental_poll_uses_full_format(self, tmp_path: Path) -> None:
+        """Incremental poll must use format='full' (not 'metadata')."""
+        new_msg = _gmail_message("m-new", history_id="200")
+        messages_api = MagicMock()
+        get_req = MagicMock()
+        get_req.execute.return_value = new_msg
+        messages_api.get.return_value = get_req
+
+        service = MagicMock()
+        history_api = MagicMock()
+        history_list_req = MagicMock()
+        history_list_req.execute.return_value = {
+            "historyId": "200",
+            "history": [{"messagesAdded": [{"message": {"id": "m-new"}}]}],
+        }
+        history_api.list.return_value = history_list_req
+        service.users.return_value.history.return_value = history_api
+
+        source = GmailSource()
+        source._cursor_path = tmp_path / "cursor.json"
+        source._label_filter = "INBOX"
+
+        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        await source._poll_incremental(service, messages_api, queue, "100")
+
+        _, call_kwargs = messages_api.get.call_args
+        assert call_kwargs.get("format") == "full"
+        assert "metadataHeaders" not in call_kwargs
 
     @pytest.mark.asyncio
     async def test_returns_old_cursor_on_no_cursor(self, tmp_path: Path) -> None:
