@@ -47,6 +47,7 @@ from worker.query.topics import (
     format_topics_list,
 )
 from worker.query.timeline import TimelineQuerier, VALID_SOURCE_TYPES as _TIMELINE_SOURCE_TYPES
+from worker.query.digest import DigestQuerier
 
 logger = logging.getLogger(__name__)
 
@@ -271,6 +272,40 @@ TOOLS: list[Tool] = [
             },
         },
     ),
+    Tool(
+        name="digest",
+        description=(
+            "Summarize recent activity across all indexed sources in a time window. "
+            "Returns aggregate counts (new, modified) per source type with top "
+            "highlights, plus cross-source connection and topic discovery counts. "
+            "Use this for a daily or weekly overview: 'what changed today?', "
+            "'show me a digest of the last 7 days'."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "since": {
+                    "type": "string",
+                    "description": (
+                        "Start of the time window. ISO 8601 or relative: "
+                        "'24h', '7d', '2w', '3m', 'yesterday', 'last week'. "
+                        "Default: '24h'"
+                    ),
+                    "default": "24h",
+                },
+                "until": {
+                    "type": "string",
+                    "description": "End of the time window. Default: 'now'",
+                    "default": "now",
+                },
+                "summarize": {
+                    "type": "boolean",
+                    "description": "Include an LLM-generated summary paragraph. Default: false",
+                    "default": False,
+                },
+            },
+        },
+    ),
 ]
 
 
@@ -427,6 +462,8 @@ class FieldnotesServer:
                 return await self._handle_timeline(arguments)
             if name == "suggest_connections":
                 return self._handle_suggest_connections(arguments)
+            if name == "digest":
+                return await self._handle_digest(arguments)
             raise ValueError(f"Unknown tool: {name}")
         except Exception:
             logger.exception("Tool %s failed", name)
@@ -862,6 +899,51 @@ class FieldnotesServer:
                         for e in result.entries
                     ],
                     "count": len(result.entries),
+                },
+                indent=2,
+                default=str,
+            )
+
+        text = await loop.run_in_executor(self._executor, _run)
+        return [TextContent(type="text", text=text)]
+
+    async def _handle_digest(self, arguments: dict) -> list[TextContent]:
+        """Execute a digest query and return results as JSON."""
+        since = arguments.get("since", "24h")
+        until = arguments.get("until", "now")
+
+        if not isinstance(since, str) or not since:
+            since = "24h"
+        if not isinstance(until, str) or not until:
+            until = "now"
+
+        loop = asyncio.get_running_loop()
+
+        def _run() -> str:
+            with DigestQuerier(self._cfg.neo4j) as querier:
+                result = querier.query(since=since, until=until)
+            if result.error:
+                return json.dumps({"error": result.error}, indent=2)
+            sources = []
+            for a in result.sources:
+                completed = getattr(a, "_completed", 0)
+                entry: dict = {
+                    "source_type": a.source_type,
+                    "created": a.created,
+                    "modified": a.modified,
+                    "highlights": a.highlights,
+                }
+                if completed:
+                    entry["completed"] = completed
+                sources.append(entry)
+            return json.dumps(
+                {
+                    "since": result.since,
+                    "until": result.until,
+                    "sources": sources,
+                    "new_connections": result.new_connections,
+                    "new_topics": result.new_topics,
+                    "summary": result.summary,
                 },
                 indent=2,
                 default=str,

@@ -226,6 +226,33 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Machine-readable JSON output",
     )
 
+    # ── digest ──────────────────────────────────────────────────────
+    digest_p = sub.add_parser(
+        "digest",
+        help="Summarize recent activity across all indexed sources",
+    )
+    digest_p.add_argument(
+        "--since",
+        default="24h",
+        help="Start time (ISO 8601 or relative: '24h', '7d', '2w'). Default: 24h",
+    )
+    digest_p.add_argument(
+        "--until",
+        default="now",
+        help="End time (ISO 8601 or relative). Default: now",
+    )
+    digest_p.add_argument(
+        "--summarize",
+        action="store_true",
+        help="Generate an LLM summary paragraph",
+    )
+    digest_p.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="Machine-readable JSON output",
+    )
+
     # ── cluster ─────────────────────────────────────────────────────
     cluster_p = sub.add_parser(
         "cluster",
@@ -505,6 +532,21 @@ def main(argv: list[str] | None = None) -> int:
                 limit=args.limit,
                 cross_source=args.cross_source,
                 json_output=args.json_output,
+            )
+        except Exception as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+
+    if args.command == "digest":
+        from worker.cli.digest import run_digest
+
+        try:
+            return run_digest(
+                since=args.since,
+                until=args.until,
+                summarize=args.summarize,
+                json_output=args.json_output,
+                config_path=args.config,
             )
         except Exception as exc:
             print(f"error: {exc}", file=sys.stderr)

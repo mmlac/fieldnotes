@@ -987,7 +987,7 @@ def _upsert_source_node(tx: Any, doc: ParsedDocument) -> None:
     set_parts = ", ".join(f"s.{k} = ${k}" for k in props)
     query = (
         f"MERGE (s:{label} {{source_id: $source_id}}) "
-        f"SET {set_parts}"
+        f"SET {set_parts}, s.indexed_at = datetime()"
     )
     tx.run(query, **props)
 
@@ -1043,7 +1043,8 @@ def _merge_mentions_edge(tx: Any, source_id: str, entity_name: str) -> None:
         """
         MATCH (s {source_id: $sid})
         MATCH (e:Entity {name: $name})
-        MERGE (s)-[:MENTIONS]->(e)
+        MERGE (s)-[r:MENTIONS]->(e)
+        ON CREATE SET r.created_at = datetime()
         """,
         sid=source_id,
         name=_truncate_entity_name(entity_name),
@@ -1056,7 +1057,8 @@ def _merge_depicts_edge(tx: Any, source_id: str, entity_name: str) -> None:
         """
         MATCH (s {source_id: $sid})
         MATCH (e:Entity {name: $name})
-        MERGE (s)-[:DEPICTS]->(e)
+        MERGE (s)-[r:DEPICTS]->(e)
+        ON CREATE SET r.created_at = datetime()
         """,
         sid=source_id,
         name=_truncate_entity_name(entity_name),
@@ -1292,6 +1294,7 @@ def _write_graph_hint(tx: Any, hint: GraphHint) -> None:
         f"MATCH (s:{subject_label} {{{subj_merge_key}: $s_merge}}) "
         f"MATCH (o:{object_label} {{{obj_merge_key}: $o_merge}}) "
         f"MERGE (s)-[r:{predicate}]->(o) "
+        f"ON CREATE SET r.created_at = datetime() "
         f"SET r.hint = true",
         s_merge=subj_merge_val,
         o_merge=obj_merge_val,
