@@ -271,6 +271,52 @@ port = 3456
 
 Each source emits `IngestEvent` dicts into the pipeline queue. Modified files trigger a delete-before-rewrite cycle that cleans stale graph data (edges, chunks, orphan entities) in a single Neo4j transaction before writing the updated version.
 
+### Cross-Source Tag Unification (OmniFocus + Obsidian)
+
+Fieldnotes automatically merges tags across OmniFocus and Obsidian so that a single Tag node in the knowledge graph connects both your tasks and your notes. This means a query like "what do I know about ProjectX/Deploy" returns OmniFocus tasks *and* Obsidian notes in one result — no manual linking required.
+
+**How it works:** OmniFocus uses hierarchical tags (e.g., `ProjectX/Deploy`). When an Obsidian note has a `category` frontmatter field and a title, the Obsidian parser synthesizes a matching hierarchical tag that targets the same graph node OmniFocus created. Both sources MERGE onto one `Tag` node keyed by `omnifocus-tag:{category}/{name}`.
+
+**Setup:**
+
+1. **In OmniFocus**, organize your tags hierarchically — the format is `Category/Name`:
+
+   ```
+   Tags
+   ├── Work
+   │   ├── Work/Deploy          ← tag applied to a task
+   │   └── Work/CodeReview
+   └── Personal
+       └── Personal/Taxes
+   ```
+
+2. **In Obsidian**, add a `category` field to your note's frontmatter. The note's `title` field (or filename if no title) becomes the second part of the hierarchy:
+
+   ```yaml
+   ---
+   title: Deploy
+   category: Work
+   ---
+   Notes about the deployment process...
+   ```
+
+   This note will be linked to the same `Work/Deploy` tag as your OmniFocus tasks.
+
+3. **If your note has no `title` frontmatter**, the filename stem is used instead. A file named `Deploy.md` with `category: Work` also merges onto `Work/Deploy`.
+
+**What gets unified:**
+
+| OmniFocus tag | Obsidian frontmatter | Merged Tag node |
+|---|---|---|
+| `Work/Deploy` | `category: Work`, `title: Deploy` | `omnifocus-tag:Work/Deploy` |
+| `Research/LLMs` | `category: Research`, filename `LLMs.md` | `omnifocus-tag:Research/LLMs` |
+| `Personal/Taxes` | `category: Personal`, `title: Taxes` | `omnifocus-tag:Personal/Taxes` |
+
+**Notes:**
+- Regular Obsidian `#tags` and frontmatter `tags: [...]` still create their own Tag nodes (prefixed `tag:`) — this unification only applies to the `category` frontmatter field.
+- If an Obsidian note has a `category` but no title and no filename that can serve as a name, no synthesized tag is emitted.
+- The `category` value must match the OmniFocus parent tag name exactly (case-sensitive).
+
 ### Initial Scan and Cursor Persistence
 
 On first startup, file and obsidian sources walk all configured directories and index every matching file. A SHA256-based cursor is saved to disk after the scan completes, recording the hash and mtime of every indexed file.
