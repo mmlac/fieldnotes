@@ -151,6 +151,41 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Output structured JSON (question, answer, sources, timing)",
     )
 
+    # ── timeline ────────────────────────────────────────────────────
+    timeline_p = sub.add_parser(
+        "timeline",
+        help="Show activity across all indexed sources within a time range",
+    )
+    timeline_p.add_argument(
+        "--since",
+        default="24h",
+        help="Start time (ISO 8601 or relative: '24h', '7d', '2w'). Default: 24h",
+    )
+    timeline_p.add_argument(
+        "--until",
+        default="now",
+        help="End time (ISO 8601 or relative). Default: now",
+    )
+    timeline_p.add_argument(
+        "--source",
+        default=None,
+        dest="source_type",
+        metavar="SOURCE",
+        help="Filter to one source: obsidian, omnifocus, gmail, file, repositories, apps",
+    )
+    timeline_p.add_argument(
+        "--limit",
+        type=int,
+        default=50,
+        help="Maximum entries to return (default: 50)",
+    )
+    timeline_p.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="Machine-readable JSON output",
+    )
+
     # ── cluster ─────────────────────────────────────────────────────
     cluster_p = sub.add_parser(
         "cluster",
@@ -398,6 +433,22 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "topics":
         try:
             return _run_topics(args, config_path=args.config)
+        except Exception as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+
+    if args.command == "timeline":
+        from worker.cli.timeline import run_timeline
+
+        try:
+            return run_timeline(
+                since=args.since,
+                until=args.until,
+                source_type=args.source_type,
+                limit=args.limit,
+                json_output=args.json_output,
+                config_path=args.config,
+            )
         except Exception as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1

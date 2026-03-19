@@ -45,6 +45,7 @@ from worker.query.topics import (
     format_topic_gaps,
     format_topics_list,
 )
+from worker.query.timeline import TimelineQuerier, VALID_SOURCE_TYPES as _TIMELINE_SOURCE_TYPES
 
 logger = logging.getLogger(__name__)
 
@@ -180,6 +181,57 @@ TOOLS: list[Tool] = [
             "and any errors."
         ),
         inputSchema={"type": "object", "properties": {}},
+    ),
+    Tool(
+        name="timeline",
+        description=(
+            "Show a chronological timeline of activity across all indexed sources "
+            "within a time range. Answers 'what was I working on?' by listing "
+            "File modifications, Task completions, Emails, and Commits ordered by "
+            "time. Use this to get a quick overview of recent activity or to "
+            "recall what happened during a specific period. "
+            "Examples: 'what did I work on yesterday?', "
+            "'show activity from last week in my notes'."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "since": {
+                    "type": "string",
+                    "description": (
+                        "Start of the time window. ISO 8601 or relative: "
+                        "'24h', '7d', '2w', '3m', 'yesterday', 'last week'. "
+                        "Default: '24h'"
+                    ),
+                    "default": "24h",
+                },
+                "until": {
+                    "type": "string",
+                    "description": "End of the time window. Default: 'now'",
+                    "default": "now",
+                },
+                "source_type": {
+                    "type": "string",
+                    "description": (
+                        "Filter to one source type: "
+                        "obsidian, omnifocus, gmail, file, repositories, apps"
+                    ),
+                    "enum": [
+                        "obsidian",
+                        "omnifocus",
+                        "gmail",
+                        "file",
+                        "repositories",
+                        "apps",
+                    ],
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum entries to return (default: 50)",
+                    "default": 50,
+                },
+            },
+        },
     ),
 ]
 
@@ -333,6 +385,8 @@ class FieldnotesServer:
                 return self._handle_topic_gaps()
             if name == "ingest_status":
                 return self._handle_ingest_status()
+            if name == "timeline":
+                return await self._handle_timeline(arguments)
             raise ValueError(f"Unknown tool: {name}")
         except Exception:
             logger.exception("Tool %s failed", name)
@@ -721,6 +775,60 @@ class FieldnotesServer:
             }
 
         return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+
+    async def _handle_timeline(self, arguments: dict) -> list[TextContent]:
+        """Execute a timeline query and return results as JSON."""
+        since = arguments.get("since", "24h")
+        until = arguments.get("until", "now")
+        source_type: str | None = arguments.get("source_type")
+        limit = max(1, min(int(arguments.get("limit", 50)), 500))
+
+        if not isinstance(since, str) or not since:
+            since = "24h"
+        if not isinstance(until, str) or not until:
+            until = "now"
+        if source_type is not None and source_type not in _TIMELINE_SOURCE_TYPES:
+            return [TextContent(
+                type="text",
+                text=f"error: 'source_type' must be one of {sorted(_TIMELINE_SOURCE_TYPES)}",
+            )]
+
+        loop = asyncio.get_running_loop()
+
+        def _run() -> str:
+            with TimelineQuerier(self._cfg.neo4j, self._cfg.qdrant) as querier:
+                result = querier.query(
+                    since=since,
+                    until=until,
+                    source_type=source_type,
+                    limit=limit,
+                )
+            if result.error:
+                return json.dumps({"error": result.error}, indent=2)
+            return json.dumps(
+                {
+                    "since": result.since,
+                    "until": result.until,
+                    "entries": [
+                        {
+                            "source_type": e.source_type,
+                            "source_id": e.source_id,
+                            "label": e.label,
+                            "title": e.title,
+                            "timestamp": e.timestamp,
+                            "event_type": e.event_type,
+                            "snippet": e.snippet,
+                        }
+                        for e in result.entries
+                    ],
+                    "count": len(result.entries),
+                },
+                indent=2,
+                default=str,
+            )
+
+        text = await loop.run_in_executor(self._executor, _run)
+        return [TextContent(type="text", text=text)]
 
     # -- run ----------------------------------------------------------------
 
