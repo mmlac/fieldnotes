@@ -161,6 +161,26 @@ class ObsidianParser(BaseParser):
                 )
             )
 
+        # --- Synthesize category/name hierarchical tag hint ------------------
+        # Merges onto the same Tag node that OmniFocus creates for this item,
+        # so queries against that Tag return both OmniFocus tasks and this file.
+        category = fm.get("category")
+        name = node_props.get("title") or (
+            Path(meta["relative_path"]).stem if meta.get("relative_path") else None
+        )
+        if category and name:
+            graph_hints.append(
+                GraphHint(
+                    subject_id=source_id,
+                    subject_label="File",
+                    predicate="TAGGED_BY_USER",
+                    object_id=f"omnifocus-tag:{category}/{name}",
+                    object_label="Tag",
+                    object_props={"name": f"{category}/{name}", "source": "omnifocus"},
+                    confidence=1.0,
+                )
+            )
+
         # --- Build the main text ParsedDocument -------------------------------
         docs: list[ParsedDocument] = [
             ParsedDocument(
