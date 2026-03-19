@@ -13,6 +13,7 @@ Fieldnotes is a personal knowledge graph that continuously indexes your digital 
 - [Quick Start](#quick-start)
 - [Configuration](#configuration)
 - [Data Sources](#data-sources)
+- [Interacting With Your Data](#interacting-with-your-data)
 - [CLI Reference](#cli-reference)
 - [MCP Server](#mcp-server)
 - [Pipeline Architecture](#pipeline-architecture)
@@ -335,6 +336,93 @@ Cursors are checkpointed every 5 minutes during operation and saved on graceful 
 
 To prevent duplicate events between the initial scan and the watchdog starting, a short dedup window (default 5 seconds) filters out watchdog events for files already processed during the scan. The watchdog starts only after the scan completes.
 
+## Interacting With Your Data
+
+Beyond search and Q&A, fieldnotes provides three tools for staying on top of your indexed knowledge.
+
+### Timeline — "What was I working on?"
+
+View a chronological feed of activity across all your sources:
+
+```bash
+# What happened in the last 24 hours (default)
+fieldnotes timeline
+
+# What was I doing last week?
+fieldnotes timeline --since 7d
+
+# Just OmniFocus tasks from Monday to Wednesday
+fieldnotes timeline --since 2026-03-16 --until 2026-03-18 --source omnifocus
+```
+
+Output groups entries by day and shows the source type, title, and a text snippet:
+
+```
+Timeline: 2026-03-18 → 2026-03-19
+
+  2026-03-19 14:32  [File]    Deploy.md (modified)
+                              Notes about the deployment process...
+  2026-03-19 13:15  [Task]    Review auth middleware (completed)
+                              Check the token refresh logic against...
+  2026-03-19 10:04  [Email]   Re: Q1 Planning (created)
+                              Hey team, here's the updated timeline...
+```
+
+### Connection Suggestions — "What's related that I haven't linked?"
+
+Discover documents that are semantically similar but not explicitly connected in the graph. This surfaces latent relationships you might not notice manually:
+
+```bash
+# Find unlinked similar documents across all sources
+fieldnotes connections
+
+# Only show cross-source connections (notes ↔ tasks, emails ↔ commits, etc.)
+fieldnotes connections --cross-source
+
+# What's related to a specific document?
+fieldnotes connections --source-id "obsidian://vault/Deploy.md"
+
+# Tighten the similarity threshold
+fieldnotes connections --threshold 0.90 --limit 10
+```
+
+The `--cross-source` flag is the high-value mode — it finds relationships *between* different tools in your workflow (e.g., an Obsidian note that covers the same topic as an OmniFocus task or a Gmail thread).
+
+### Daily Digest — "What changed recently?"
+
+Get an aggregate summary of activity across all sources:
+
+```bash
+# What changed today?
+fieldnotes digest
+
+# Weekly summary with LLM-generated narrative
+fieldnotes digest --since 7d --summarize
+
+# Machine-readable output
+fieldnotes digest --json
+```
+
+The digest shows per-source counts, top highlights, newly discovered cross-source connections, and new topics:
+
+```
+Digest: last 24 hours (2026-03-18 → 2026-03-19)
+
+  Obsidian       3 modified
+                 Deploy.md, auth-notes.md, meeting-2026-03-19.md
+
+  OmniFocus      1 completed, 2 modified
+                 Review auth middleware, Update CI pipeline, Fix deploy script
+
+  Gmail          4 new emails
+                 Re: Q1 Planning, Auth migration thread, ...
+
+  Cross-source   5 new connections discovered
+  Topics         1 new topic: "Deployment Infrastructure"
+```
+
+With `--summarize`, an LLM reads the digest and generates a narrative summary of your day or week.
+
 ## CLI Reference
 
 ```
@@ -362,6 +450,26 @@ fieldnotes [-c CONFIG] [-v] <command>
 
 **`topics gaps`** — Topics discovered by clustering that aren't in your manual taxonomy.
 
+**`timeline [--since SINCE] [--until UNTIL] [--source SOURCE] [--limit N] [--json]`** — Show a chronological timeline of activity across all indexed sources. Answers "what was I working on?" by listing file modifications, task completions, emails, and commits ordered by time.
+  - `--since` — Start of the time range. Accepts relative values (`24h`, `7d`, `2w`) or ISO 8601 timestamps. Default: `24h`.
+  - `--until` — End of the time range. Default: now.
+  - `--source` — Filter to a single source type (`obsidian`, `omnifocus`, `gmail`, `file`, `repositories`).
+  - `--limit` — Maximum entries. Default: 50.
+  - `--json` — Structured JSON output.
+
+**`connections [--source-id ID] [--source SOURCE] [--threshold F] [--limit N] [--cross-source] [--json]`** — Surface documents that are semantically similar but not explicitly linked in the knowledge graph. Useful for discovering latent relationships — for example, Obsidian notes related to OmniFocus tasks, or emails related to code commits.
+  - `--source-id` — Focus on connections for a specific document.
+  - `--source` — Focus on a specific source type as seeds.
+  - `--threshold` — Minimum cosine similarity score (0–1). Default: 0.82.
+  - `--cross-source` — Only show connections between different source types (e.g., notes ↔ tasks). This is the high-value mode.
+  - `--limit` — Maximum suggestions. Default: 20.
+  - `--json` — Structured JSON output.
+
+**`digest [--since SINCE] [--summarize] [--json]`** — Summarize recent activity across all indexed sources. Returns aggregate counts per source type with top highlights, cross-source connections discovered, and new topics.
+  - `--since` — Time range start. Default: `24h`. Same relative format as `timeline`.
+  - `--summarize` — Generate an LLM-powered summary paragraph of the activity.
+  - `--json` — Structured JSON output.
+
 **`serve --daemon`** — Run the ingest pipeline and MCP server together.
 
 **`serve --mcp`** — Run only the MCP server (stdio transport, for Claude Desktop).
@@ -380,6 +488,9 @@ Fieldnotes exposes tools over the [Model Context Protocol](https://modelcontextp
 |---|---|
 | `search(query, top_k?, source_type?)` | Hybrid graph + vector search with optional source filtering |
 | `ask(question, source_type?)` | RAG + LLM synthesis — retrieves context and generates an answer |
+| `timeline(since?, until?, source_type?, limit?)` | Chronological activity feed across all sources within a time range |
+| `suggest_connections(source_id?, source_type?, threshold?, limit?, cross_source?)` | Find semantically similar but unlinked documents across the knowledge graph |
+| `digest(since?, summarize?)` | Aggregate activity summary with per-source counts, highlights, and new connections |
 | `list_topics(source?)` | List topics (`all`, `cluster`, or `user`) with document counts |
 | `show_topic(name)` | Topic details: description, documents, related entities and topics |
 | `topic_gaps()` | Cluster-discovered topics missing from your manual taxonomy |
