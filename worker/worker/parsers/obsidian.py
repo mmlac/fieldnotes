@@ -103,6 +103,8 @@ class ObsidianParser(BaseParser):
             node_props["created"] = str(fm["created"])
         if fm.get("updated"):
             node_props["updated"] = str(fm["updated"])
+        if fm.get("category"):
+            node_props["category"] = fm["category"]
 
         # --- Extract wikilinks → LINKS_TO GraphHints -------------------------
         graph_hints: list[GraphHint] = []

@@ -224,6 +224,16 @@ class TestObsidianParser:
         assert len(docs) == 1
         assert docs[0].mime_type == "text/plain"
 
+    def test_category_frontmatter(self):
+        note = "---\ncategory: books\n---\nSome content."
+        docs = self.parser.parse(_make_event(note))
+        assert docs[0].node_props["category"] == "books"
+
+    def test_category_absent_when_not_set(self):
+        note = "---\ntitle: No Category\n---\nContent."
+        docs = self.parser.parse(_make_event(note))
+        assert "category" not in docs[0].node_props
+
     def test_registry_registration(self):
         from worker.parsers.registry import get
 
