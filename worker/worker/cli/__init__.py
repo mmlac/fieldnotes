@@ -186,6 +186,46 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Machine-readable JSON output",
     )
 
+    # ── connections ──────────────────────────────────────────────────
+    connections_p = sub.add_parser(
+        "connections",
+        help="Surface semantically similar but unlinked documents",
+    )
+    connections_p.add_argument(
+        "--source-id",
+        default=None,
+        help="Focus on a specific document by source_id",
+    )
+    connections_p.add_argument(
+        "--source",
+        dest="source_type",
+        default=None,
+        help="Seed from a specific source type (e.g. file, obsidian)",
+    )
+    connections_p.add_argument(
+        "--threshold",
+        type=float,
+        default=0.82,
+        help="Minimum cosine similarity (default: 0.82)",
+    )
+    connections_p.add_argument(
+        "--limit",
+        type=int,
+        default=20,
+        help="Max suggestions (default: 20)",
+    )
+    connections_p.add_argument(
+        "--cross-source",
+        action="store_true",
+        help="Only show connections between different source types",
+    )
+    connections_p.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="Machine-readable JSON output",
+    )
+
     # ── cluster ─────────────────────────────────────────────────────
     cluster_p = sub.add_parser(
         "cluster",
@@ -448,6 +488,23 @@ def main(argv: list[str] | None = None) -> int:
                 limit=args.limit,
                 json_output=args.json_output,
                 config_path=args.config,
+            )
+        except Exception as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+
+    if args.command == "connections":
+        from worker.cli.connections import run_connections
+
+        try:
+            return run_connections(
+                config_path=args.config,
+                source_id=args.source_id,
+                source_type=args.source_type,
+                threshold=args.threshold,
+                limit=args.limit,
+                cross_source=args.cross_source,
+                json_output=args.json_output,
             )
         except Exception as exc:
             print(f"error: {exc}", file=sys.stderr)

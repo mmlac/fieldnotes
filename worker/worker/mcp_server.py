@@ -39,6 +39,7 @@ from worker.query import EMPTY_CORPUS_MESSAGE, is_corpus_empty
 from worker.query.graph import GraphQuerier, GraphQueryResult
 from worker.query.hybrid import merge
 from worker.query.vector import VectorQuerier, VectorQueryResult
+from worker.query.connections import ConnectionQuerier
 from worker.query.topics import (
     TopicQuerier,
     format_topic_detail,
@@ -171,6 +172,43 @@ TOOLS: list[Tool] = [
             "themes in the knowledge graph."
         ),
         inputSchema={"type": "object", "properties": {}},
+    ),
+    Tool(
+        name="suggest_connections",
+        description=(
+            "Find documents that are semantically similar but not explicitly "
+            "linked in the knowledge graph. Useful for discovering latent "
+            "relationships across note types — for example, Obsidian notes "
+            "related to OmniFocus tasks, or emails related to code commits."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "source_id": {
+                    "type": "string",
+                    "description": "Focus on a specific document by its source_id",
+                },
+                "source_type": {
+                    "type": "string",
+                    "description": "Focus seeds on a specific source type (e.g. 'file', 'obsidian')",
+                },
+                "threshold": {
+                    "type": "number",
+                    "description": "Minimum cosine similarity score (0–1). Default: 0.82",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of suggestions to return. Default: 20",
+                },
+                "cross_source": {
+                    "type": "boolean",
+                    "description": (
+                        "If true, only show connections between different source types "
+                        "(high-value mode). Default: false"
+                    ),
+                },
+            },
+        },
     ),
     Tool(
         name="ingest_status",
@@ -387,6 +425,8 @@ class FieldnotesServer:
                 return self._handle_ingest_status()
             if name == "timeline":
                 return await self._handle_timeline(arguments)
+            if name == "suggest_connections":
+                return self._handle_suggest_connections(arguments)
             raise ValueError(f"Unknown tool: {name}")
         except Exception:
             logger.exception("Tool %s failed", name)
@@ -829,6 +869,49 @@ class FieldnotesServer:
 
         text = await loop.run_in_executor(self._executor, _run)
         return [TextContent(type="text", text=text)]
+
+    def _handle_suggest_connections(self, arguments: dict) -> list[TextContent]:
+        source_id: str | None = arguments.get("source_id") or None
+        source_type: str | None = arguments.get("source_type") or None
+        threshold = float(arguments.get("threshold", 0.82))
+        limit = int(arguments.get("limit", 20))
+        cross_source = bool(arguments.get("cross_source", False))
+
+        threshold = max(0.0, min(1.0, threshold))
+        limit = max(1, min(limit, 200))
+
+        with ConnectionQuerier(self._cfg.neo4j, self._cfg.qdrant) as querier:
+            result = querier.suggest(
+                source_id=source_id,
+                source_type=source_type,
+                threshold=threshold,
+                limit=limit,
+                cross_source=cross_source,
+            )
+
+        if result.error:
+            return [TextContent(type="text", text=f"error: {result.error}")]
+
+        import json as _json
+        data = {
+            "checked": result.checked,
+            "suggestions": [
+                {
+                    "similarity": s.similarity,
+                    "source_a": s.source_a,
+                    "source_b": s.source_b,
+                    "label_a": s.label_a,
+                    "label_b": s.label_b,
+                    "title_a": s.title_a,
+                    "title_b": s.title_b,
+                    "source_type_a": s.source_type_a,
+                    "source_type_b": s.source_type_b,
+                    "reason": s.reason,
+                }
+                for s in result.suggestions
+            ],
+        }
+        return [TextContent(type="text", text=_json.dumps(data, indent=2))]
 
     # -- run ----------------------------------------------------------------
 

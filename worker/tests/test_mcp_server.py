@@ -29,7 +29,7 @@ class TestToolDefinitions:
 
     def test_all_tools_present(self) -> None:
         names = {t.name for t in TOOLS}
-        assert names == {"search", "ask", "list_topics", "show_topic", "topic_gaps", "ingest_status", "timeline"}
+        assert names == {"search", "ask", "list_topics", "show_topic", "topic_gaps", "ingest_status", "timeline", "suggest_connections"}
 
     def test_search_schema_requires_query(self) -> None:
         search = next(t for t in TOOLS if t.name == "search")
