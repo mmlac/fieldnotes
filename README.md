@@ -13,6 +13,10 @@ Fieldnotes is a personal knowledge graph that continuously indexes your digital 
 - [Quick Start](#quick-start)
 - [Configuration](#configuration)
 - [Data Sources](#data-sources)
+  - [Cross-Source Tag Unification](#cross-source-tag-unification-omnifocus--obsidian)
+  - [Cross-Source Person Linking](#cross-source-person-linking-gmail--google-calendar--obsidian)
+  - [Person Extraction from Text and Tasks](#person-extraction-from-text-and-tasks)
+  - [Entity Resolution Pipeline](#entity-resolution-pipeline)
 - [Interacting With Your Data](#interacting-with-your-data)
 - [CLI Reference](#cli-reference)
 - [Backup & Restore](#backup--restore)
@@ -335,7 +339,7 @@ max_concurrency = 0              # max parallel LLM calls (0 = unlimited)
 | **Obsidian** | Initial scan + real-time (watchdog) | Notes with frontmatter, wikilinks, and #tags |
 | **Gmail** | Backfill + polling (configurable interval) | Email threads — subjects, bodies, metadata |
 | **Git Repositories** | Initial scan + polling (configurable interval) | READMEs, changelogs, docs, commit messages |
-| **OmniFocus** | Polling (default: every 5 minutes) | Tasks, projects, tags, due dates, and subtask hierarchy (macOS only) |
+| **OmniFocus** | Polling (default: every 5 minutes) | Tasks, projects, tags, due dates, subtask hierarchy, and person mentions (macOS only) |
 | **macOS Apps** | Polling (default: every 6 hours) | Installed application bundles (Info.plist) |
 | **Homebrew** | Polling (default: every 6 hours) | Installed formulae and casks with descriptions |
 | **Google Calendar** | Backfill + polling (configurable interval) | Events, attendees, organizers, locations |
@@ -434,6 +438,38 @@ Each email creates a `MENTIONS` edge from the File node to a Person node. Becaus
 - "Show me all interactions with alice@example.com" — returns emails, meetings, *and* Obsidian notes via a single Person node
 - "What was discussed before and after the design review?" — links meeting context to email follow-ups and your notes through shared Person nodes
 - "What do I know about Bob?" — finds the Person node by email and traverses all `SENT`, `TO`, `ATTENDED_BY`, and `MENTIONS` edges across every source
+
+### Person Extraction from Text and Tasks
+
+Beyond structured sources like Gmail and Google Calendar, Fieldnotes discovers person mentions in unstructured text and task metadata:
+
+**Email extraction from document text:** During pipeline processing, all document text is scanned for email addresses using a regex before chunking. Each discovered email creates a `MENTIONS` edge from the document to a `Person` node keyed by that (canonicalized) email. This means a Markdown file or PDF that mentions `alice@example.com` in its body automatically links to the same Person node created by Gmail or Calendar — no frontmatter required.
+
+**OmniFocus person extraction:** The OmniFocus parser extracts person mentions from tasks using three strategies:
+
+| Strategy | Example | Confidence |
+|---|---|---|
+| Email addresses in task name or note | `alice@example.com` | 1.0 |
+| @Mentions (uppercase-first names) | `@Alice`, `@Bob Smith` | 0.9 |
+| Tags under `People/` hierarchy | `People/Alice` | 0.95 |
+
+Lowercase @mentions like `@home` or `@work` are ignored (treated as context tags, not people). Extracted Person nodes merge with existing persons by email or name.
+
+### Entity Resolution Pipeline
+
+After each ingest batch, a five-step reconciliation chain runs to unify person identities across all sources:
+
+| Step | What It Does |
+|---|---|
+| **1. Email-based reconciliation** | Creates `SAME_AS` edges between Person nodes that share an email address across different sources. Keeps the longest display name. |
+| **2. Fuzzy name matching** | Uses RapidFuzz `token_sort_ratio` to find Person nodes with near-identical names (threshold ≥ 95). Creates `SAME_AS` edges with `match_type='fuzzy_name'`. |
+| **3. Entity→Person bridging** | Links `Entity` nodes of type Person (extracted by the LLM) to structured `Person` nodes (from Gmail, Calendar, etc.) using fuzzy matching (threshold ≥ 93). Creates `SAME_AS` edges with `match_type='entity_person_bridge'`. |
+| **4. Cross-source entity resolution** | Deduplicates entities with the same label appearing across different sources using a 3-strategy cascade: exact match → fuzzy string match → embedding cosine similarity. |
+| **5. Transitive SAME_AS closure** | If A↔B and B↔C have `SAME_AS` edges but A↔C does not, creates the missing A↔C edge (up to 4 hops). Ensures the full identity cluster is fully connected. |
+
+Each step is fault-tolerant — a failure in one step logs a warning and proceeds to the next. All `SAME_AS` edges carry metadata: `confidence`, `match_type`, and `cross_source` flag.
+
+> **Details:** See [docs/similarity.md](docs/similarity.md) for the full entity resolution analysis including thresholds, match strategies, and architecture notes.
 
 ### Initial Scan and Cursor Persistence
 
@@ -748,8 +784,8 @@ This registers fieldnotes as an MCP server in Claude Desktop's configuration. Af
 2. **Chunker** — Sentence-aware splitter produces ~512-token chunks with 64-token overlap. Short chunks are merged to avoid fragmentation.
 3. **Embedder** — Generates 768-dim vectors via the `embed` role model. Batches 64 texts per call.
 4. **Extractor** — LLM extracts named entities (typed: Person, Technology, etc.) and relationship triples from each chunk. Falls back to `extract_fallback` role on JSON parse errors.
-5. **Resolver** — Deduplicates entities across chunks using fuzzy string matching (rapidfuzz). Resolves references to canonical names.
-6. **Writer** — Persists everything in a single Neo4j transaction per document: upsert source node, write entities, write chunks, write graph hint edges, clean orphans. Upserts chunk vectors to Qdrant.
+5. **Resolver** — Deduplicates entities across chunks using a 3-strategy cascade: exact string match → fuzzy match (rapidfuzz `token_sort_ratio` with length-aware thresholds) → embedding cosine similarity. Resolves references to canonical names.
+6. **Writer** — Persists everything in a single Neo4j transaction per document: upsert source node, write entities, write chunks, write graph hint edges, clean orphans. Upserts chunk vectors to Qdrant. After each batch, runs the [entity resolution pipeline](#entity-resolution-pipeline) to unify person identities across sources.
 
 ### Vision Pipeline
 
@@ -895,20 +931,22 @@ worker/
 │   ├── macos_apps.py       # macOS app discovery (polling)
 │   └── homebrew.py         # Homebrew package listing (polling)
 ├── parsers/                # Document type parsers
+│   ├── base.py             # Shared utilities (canonicalize_email, email extraction, GraphHint)
 │   ├── files.py            # Text, PDF, image, iWork, and metadata-only
 │   ├── iwork.py            # Apple Pages and Keynote (osascript)
-│   ├── obsidian.py         # Obsidian notes (wikilinks, frontmatter)
+│   ├── obsidian.py         # Obsidian notes (wikilinks, frontmatter, emails)
 │   ├── gmail.py            # Email messages
 │   ├── calendar.py         # Calendar events (attendees, organizer, location)
 │   ├── repositories.py     # Git commits and READMEs
-│   ├── omnifocus.py        # OmniFocus tasks (projects, tags, subtasks)
+│   ├── omnifocus.py        # OmniFocus tasks (projects, tags, subtasks, person mentions)
 │   └── apps.py             # Application metadata
 ├── pipeline/               # Ingest pipeline stages
+│   ├── __init__.py         # Pipeline orchestration and reconciliation chain
 │   ├── chunker.py          # Sentence-aware text splitter
 │   ├── embedder.py         # Vector embedding
 │   ├── extractor.py        # LLM entity/triple extraction
 │   ├── resolver.py         # Entity deduplication
-│   ├── writer.py           # Neo4j + Qdrant persistence
+│   ├── writer.py           # Neo4j + Qdrant persistence + entity reconciliation
 │   ├── vision.py           # Image analysis
 │   └── app_describer.py    # LLM app descriptions
 ├── clustering/             # Topic discovery
@@ -942,6 +980,9 @@ worker/
 ├── metrics.py              # Prometheus metrics
 ├── circuit_breaker.py      # Fault tolerance
 └── config.toml.example     # Default configuration template
+
+docs/
+└── similarity.md           # Entity resolution analysis and improvement roadmap
 ```
 
 ## License

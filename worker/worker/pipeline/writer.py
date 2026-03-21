@@ -62,8 +62,11 @@ from worker.metrics import (
 from worker.parsers.base import GraphHint, ParsedDocument
 from worker.pipeline.chunker import Chunk
 from worker.pipeline.resolver import (
+    _fuzzy_threshold_for_length,
     resolve_cross_source,
 )
+
+from rapidfuzz import fuzz, process as rfprocess
 
 logger = logging.getLogger(__name__)
 
@@ -498,6 +501,192 @@ class Writer:
                 logger.info("Reconciled %d Person nodes by email", updated)
             return updated
 
+    # ------------------------------------------------------------------
+    # Fuzzy Person name reconciliation (technique #1)
+    # ------------------------------------------------------------------
+
+    def reconcile_persons_by_name(self) -> int:
+        """Link Person nodes with similar names via SAME_AS edges.
+
+        Uses RapidFuzz ``token_sort_ratio`` with a conservative threshold
+        (95 for names >= 6 chars) to avoid false positives.  Only creates
+        ``SAME_AS`` edges — never destructively merges nodes.
+
+        Runs *after* :meth:`reconcile_persons` (email-based) to catch
+        name variants that share no common email address.
+        """
+        return self._reconcile_persons_by_name_neo4j()
+
+    @_neo4j_retry
+    def _reconcile_persons_by_name_neo4j(self) -> int:
+        """Fetch Person node names from Neo4j and fuzzy-match them."""
+        with self._neo4j_driver.session() as session:
+            result = session.run(
+                """
+                MATCH (p:Person)
+                WHERE p.name IS NOT NULL AND trim(p.name) <> ''
+                RETURN DISTINCT p.name AS name
+                """
+            )
+            names: list[str] = [r["name"] for r in result]
+
+        if len(names) < 2:
+            return 0
+
+        # Build pairs using RapidFuzz — O(n²) but Person node count is
+        # typically small (hundreds, not millions) in a personal knowledge graph.
+        pairs: list[tuple[str, str, float]] = []
+        names_lower = [n.lower() for n in names]
+
+        for i, name in enumerate(names):
+            # Use a higher threshold for person name matching (95 baseline)
+            threshold = max(_fuzzy_threshold_for_length(name), 95)
+            # Only check names we haven't already paired (j > i)
+            candidates = names_lower[i + 1 :]
+            if not candidates:
+                continue
+            matches = rfprocess.extract(
+                names_lower[i],
+                candidates,
+                scorer=fuzz.token_sort_ratio,
+                score_cutoff=threshold,
+                limit=None,
+            )
+            for _match_str, score, idx in matches:
+                actual_idx = i + 1 + idx
+                confidence = score / 100.0
+                pairs.append((names[i], names[actual_idx], confidence))
+
+        if not pairs:
+            return 0
+
+        # Batch-create SAME_AS edges
+        with self._neo4j_driver.session() as session:
+            result = session.run(
+                """
+                UNWIND $pairs AS pair
+                MATCH (a:Person {name: pair.name_a})
+                MATCH (b:Person {name: pair.name_b})
+                WHERE NOT (a)-[:SAME_AS]-(b)
+                  AND id(a) <> id(b)
+                MERGE (a)-[r:SAME_AS]->(b)
+                SET r.confidence = pair.confidence,
+                    r.match_type = 'fuzzy_name',
+                    r.cross_source = true
+                RETURN count(r) AS cnt
+                """,
+                pairs=[
+                    {"name_a": a, "name_b": b, "confidence": c}
+                    for a, b, c in pairs
+                ],
+            )
+            created = result.single()["cnt"]
+
+        if created > 0:
+            logger.info(
+                "Person name reconciliation: created %d SAME_AS edges from %d candidates",
+                created,
+                len(pairs),
+            )
+        return created
+
+    # ------------------------------------------------------------------
+    # Entity(Person) → Person node bridging (technique #3)
+    # ------------------------------------------------------------------
+
+    def bridge_entity_persons(self) -> int:
+        """Link LLM-extracted Entity nodes (type=Person) to structured Person nodes.
+
+        The extractor creates Entity nodes with ``type='Person'`` and a name
+        but no email.  This method fuzzy-matches those names against existing
+        Person nodes (which have emails from parsers) and creates ``SAME_AS``
+        edges to bridge them.
+        """
+        return self._bridge_entity_persons_neo4j()
+
+    @_neo4j_retry
+    def _bridge_entity_persons_neo4j(self) -> int:
+        """Query Entity(Person) and Person nodes, fuzzy-match, create SAME_AS."""
+        with self._neo4j_driver.session() as session:
+            # Get Entity nodes of type Person that don't already have a SAME_AS
+            # link to a structured Person node
+            entity_result = session.run(
+                """
+                MATCH (e:Entity)
+                WHERE e.type = 'Person'
+                  AND e.name IS NOT NULL
+                  AND NOT (e)-[:SAME_AS]-(:Person)
+                RETURN DISTINCT e.name AS name
+                """
+            )
+            entity_names: list[str] = [r["name"] for r in entity_result]
+
+            # Get Person nodes (from parsers — have email)
+            person_result = session.run(
+                """
+                MATCH (p:Person)
+                WHERE p.name IS NOT NULL AND trim(p.name) <> ''
+                RETURN DISTINCT p.name AS name
+                """
+            )
+            person_names: list[str] = [r["name"] for r in person_result]
+
+        if not entity_names or not person_names:
+            return 0
+
+        # Fuzzy-match each Entity(Person) name against Person node names
+        person_names_lower = [n.lower() for n in person_names]
+        pairs: list[tuple[str, str, float]] = []
+
+        for entity_name in entity_names:
+            # Use a slightly stricter threshold than standard entity resolution
+            threshold = max(_fuzzy_threshold_for_length(entity_name), 93)
+            match = rfprocess.extractOne(
+                entity_name.lower(),
+                person_names_lower,
+                scorer=fuzz.token_sort_ratio,
+                score_cutoff=threshold,
+            )
+            if match is not None:
+                _, score, idx = match
+                pairs.append((entity_name, person_names[idx], score / 100.0))
+
+        if not pairs:
+            return 0
+
+        # Batch-create SAME_AS edges from Entity to Person
+        with self._neo4j_driver.session() as session:
+            result = session.run(
+                """
+                UNWIND $pairs AS pair
+                MATCH (e:Entity {name: pair.entity_name})
+                MATCH (p:Person {name: pair.person_name})
+                WHERE NOT (e)-[:SAME_AS]-(p)
+                MERGE (e)-[r:SAME_AS]->(p)
+                SET r.confidence = pair.confidence,
+                    r.match_type = 'entity_person_bridge',
+                    r.cross_source = true
+                RETURN count(r) AS cnt
+                """,
+                pairs=[
+                    {
+                        "entity_name": ent,
+                        "person_name": per,
+                        "confidence": conf,
+                    }
+                    for ent, per, conf in pairs
+                ],
+            )
+            created = result.single()["cnt"]
+
+        if created > 0:
+            logger.info(
+                "Entity→Person bridging: created %d SAME_AS edges from %d matches",
+                created,
+                len(pairs),
+            )
+        return created
+
     def resolve_cross_source_entities(self) -> int:
         """Find and link Entity nodes mentioned across different source types.
 
@@ -619,6 +808,47 @@ class Writer:
                     len(matches),
                 )
             return created
+
+    def close_same_as_transitive(self) -> int:
+        """Compute transitive closure over SAME_AS edges.
+
+        If A-[:SAME_AS]-B and B-[:SAME_AS]-C exist but A-[:SAME_AS]-C does
+        not, this method infers and creates the missing edge.  Traverses up
+        to 4 hops (configurable via the Cypher path length) to keep query
+        cost bounded.
+
+        Runs *after* all other reconciliation steps so it can close gaps
+        introduced by name matching, entity bridging, and cross-source
+        resolution in a single pass.
+
+        Returns the number of new SAME_AS edges created.
+        """
+        return self._close_same_as_transitive_neo4j()
+
+    @_neo4j_retry
+    def _close_same_as_transitive_neo4j(self) -> int:
+        """Run transitive closure in Neo4j via variable-length SAME_AS paths."""
+        with self._neo4j_driver.session() as session:
+            result = session.run(
+                """
+                MATCH (a)-[:SAME_AS*2..4]-(b)
+                WHERE id(a) < id(b)
+                  AND NOT (a)-[:SAME_AS]-(b)
+                WITH DISTINCT a, b
+                MERGE (a)-[r:SAME_AS]->(b)
+                SET r.match_type = 'transitive_closure',
+                    r.cross_source = true
+                RETURN count(r) AS cnt
+                """
+            )
+            created = result.single()["cnt"]
+
+        if created > 0:
+            logger.info(
+                "Transitive SAME_AS closure: created %d new edges",
+                created,
+            )
+        return created
 
     def write(self, unit: WriteUnit) -> None:
         """Write a single processed document to both stores.

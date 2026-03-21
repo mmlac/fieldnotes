@@ -28,7 +28,7 @@ from worker.metrics import (
     observe_duration,
 )
 from worker.models.resolver import ModelRegistry
-from worker.parsers.base import ParsedDocument
+from worker.parsers.base import ParsedDocument, extract_email_person_hints
 from worker.pipeline.chunker import Chunk, chunk_text
 from worker.pipeline.embedder import embed_chunks
 from worker.pipeline.extractor import (
@@ -215,6 +215,24 @@ class Pipeline:
                 exc_info=True,
             )
 
+        # Fuzzy name matching for Person nodes (catches name variants)
+        try:
+            self._writer.reconcile_persons_by_name()
+        except Exception:
+            logger.warning(
+                "Person name reconciliation failed — will retry on next batch",
+                exc_info=True,
+            )
+
+        # Bridge LLM-extracted Entity(Person) nodes to structured Person nodes
+        try:
+            self._writer.bridge_entity_persons()
+        except Exception:
+            logger.warning(
+                "Entity→Person bridging failed — will retry on next batch",
+                exc_info=True,
+            )
+
         # Cross-source entity resolution: link entities mentioned in
         # different source types (email, git, obsidian) via SAME_AS edges
         try:
@@ -222,6 +240,15 @@ class Pipeline:
         except Exception:
             logger.warning(
                 "Cross-source entity resolution failed — will retry on next batch",
+                exc_info=True,
+            )
+
+        # Transitive SAME_AS closure: if A↔B and B↔C, infer A↔C
+        try:
+            self._writer.close_same_as_transitive()
+        except Exception:
+            logger.warning(
+                "Transitive SAME_AS closure failed — will retry on next batch",
                 exc_info=True,
             )
 
@@ -244,6 +271,13 @@ class Pipeline:
 
     def _process_text(self, doc: ParsedDocument) -> None:
         """Run the full text pipeline for a document with text content."""
+        # 0. Extract email addresses from text → Person MENTIONS hints
+        email_hints = extract_email_person_hints(
+            doc.text, doc.source_id, doc.node_label
+        )
+        if email_hints:
+            doc.graph_hints.extend(email_hints)
+
         # 1. Chunk
         with observe_duration(PIPELINE_DURATION, stage="chunk"):
             chunks = chunk_text(doc.text)

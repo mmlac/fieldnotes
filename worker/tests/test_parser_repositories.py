@@ -215,3 +215,13 @@ class TestCommitEventParsing:
         doc = docs[0]
         assert doc.source_metadata["sha"] == "deadbeef"
         assert doc.source_metadata["repo_name"] == "myproject"
+
+    def test_googlemail_canonicalized(self) -> None:
+        """@googlemail.com should normalise to @gmail.com for cross-source bridging."""
+        parser = RepositoryParser()
+        docs = parser.parse(_commit_event(author_email="alice@googlemail.com"))
+        doc = docs[0]
+
+        authored = [h for h in doc.graph_hints if h.predicate == "AUTHORED"]
+        assert authored[0].subject_props["email"] == "alice@gmail.com"
+        assert authored[0].subject_id == "alice@gmail.com"

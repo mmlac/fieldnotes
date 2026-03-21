@@ -293,3 +293,122 @@ class TestParserRegistration:
 
         parser = get("omnifocus")
         assert parser.source_type == "omnifocus"
+
+
+# ── Person extraction (emails, @mentions, People/ tags) ──────────
+
+
+class TestPersonExtraction:
+    def setup_method(self) -> None:
+        self.parser = OmniFocusParser()
+
+    def _mentions(self, docs):
+        return [h for h in docs[0].graph_hints if h.predicate == "MENTIONS"]
+
+    # -- email extraction --
+
+    def test_email_in_note(self) -> None:
+        event = _make_event(note="Contact alice@example.com about this")
+        hints = self._mentions(self.parser.parse(event))
+        assert len(hints) == 1
+        assert hints[0].object_label == "Person"
+        assert hints[0].object_props["email"] == "alice@example.com"
+        assert hints[0].object_merge_key == "email"
+        assert hints[0].object_id == "person:alice@example.com"
+        assert hints[0].confidence == 1.0
+
+    def test_multiple_emails_in_note(self) -> None:
+        event = _make_event(note="CC alice@a.com and bob@b.com")
+        hints = self._mentions(self.parser.parse(event))
+        emails = {h.object_props["email"] for h in hints}
+        assert emails == {"alice@a.com", "bob@b.com"}
+
+    def test_email_canonicalized(self) -> None:
+        event = _make_event(note="user@googlemail.com")
+        hints = self._mentions(self.parser.parse(event))
+        assert hints[0].object_props["email"] == "user@gmail.com"
+
+    def test_no_email_no_mention_hints(self) -> None:
+        event = _make_event(name="Plain task", note="Nothing special")
+        hints = self._mentions(self.parser.parse(event))
+        assert len(hints) == 0
+
+    # -- @mention extraction --
+
+    def test_at_mention_in_name(self) -> None:
+        event = _make_event(name="Review PR with @Alice")
+        hints = self._mentions(self.parser.parse(event))
+        assert len(hints) == 1
+        assert hints[0].object_label == "Person"
+        assert hints[0].object_props["name"] == "Alice"
+        assert hints[0].confidence == 0.9
+
+    def test_at_mention_two_words(self) -> None:
+        event = _make_event(name="Call @Bob Smith tomorrow")
+        hints = self._mentions(self.parser.parse(event))
+        assert any(h.object_props.get("name") == "Bob Smith" for h in hints)
+
+    def test_at_mention_in_note(self) -> None:
+        event = _make_event(note="Ask @Carol about the deadline")
+        hints = self._mentions(self.parser.parse(event))
+        assert len(hints) == 1
+        assert hints[0].object_props["name"] == "Carol"
+
+    def test_at_mention_lowercase_ignored(self) -> None:
+        """@mentions must start with uppercase to avoid false positives like @home."""
+        event = _make_event(note="working @home today")
+        hints = self._mentions(self.parser.parse(event))
+        assert len(hints) == 0
+
+    # -- People/ tag extraction --
+
+    def test_people_tag_creates_person_hint(self) -> None:
+        event = _make_event(tags=["People/Alice"])
+        hints = self._mentions(self.parser.parse(event))
+        assert len(hints) == 1
+        assert hints[0].object_label == "Person"
+        assert hints[0].object_props["name"] == "Alice"
+        assert hints[0].confidence == 0.95
+
+    def test_people_tag_nested(self) -> None:
+        """Deeper hierarchy like People/Work/Boss keeps everything after People/."""
+        event = _make_event(tags=["People/Work/Boss"])
+        hints = self._mentions(self.parser.parse(event))
+        assert len(hints) == 1
+        assert hints[0].object_props["name"] == "Work/Boss"
+
+    def test_non_people_tag_no_person(self) -> None:
+        event = _make_event(tags=["Work", "Urgent"])
+        hints = self._mentions(self.parser.parse(event))
+        assert len(hints) == 0
+
+    def test_people_tag_still_creates_tag_hint(self) -> None:
+        """People/ tags should still create TAGGED hints alongside MENTIONS."""
+        event = _make_event(tags=["People/Alice"])
+        docs = self.parser.parse(event)
+        tag_hints = [h for h in docs[0].graph_hints if h.predicate == "TAGGED"]
+        mention_hints = [h for h in docs[0].graph_hints if h.predicate == "MENTIONS"]
+        assert len(tag_hints) == 1
+        assert len(mention_hints) == 1
+
+    # -- deduplication --
+
+    def test_email_and_at_mention_same_name_deduped(self) -> None:
+        """If an email and @mention produce the same key, don't duplicate."""
+        event = _make_event(note="@Alice alice@example.com")
+        hints = self._mentions(self.parser.parse(event))
+        # Email hint uses email key, @mention uses name key — both should appear
+        # since they track different merge keys
+        assert len(hints) == 2
+
+    def test_people_tag_deduped_with_at_mention(self) -> None:
+        """If @Alice appears and tag People/Alice exists, produce only one Person."""
+        event = _make_event(name="Talk to @Alice", tags=["People/Alice"])
+        hints = self._mentions(self.parser.parse(event))
+        names = [h.object_props.get("name") for h in hints]
+        assert names.count("Alice") == 1
+
+    def test_deleted_task_no_person_hints(self) -> None:
+        event = _make_event(operation="deleted")
+        docs = self.parser.parse(event)
+        assert docs[0].graph_hints == []

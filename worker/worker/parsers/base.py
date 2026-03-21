@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+import re
 from typing import Any
 
 # ---------------------------------------------------------------------------
@@ -9,6 +10,11 @@ from typing import Any
 # Domains that are aliases for gmail.com.  Google treats these as the same
 # mailbox, so normalising them avoids duplicate Person nodes.
 _GMAIL_ALIASES = frozenset({"googlemail.com"})
+
+# Matches email addresses in free text.
+_EMAIL_RE = re.compile(
+    r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}",
+)
 
 
 def canonicalize_email(raw: str) -> str:
@@ -24,6 +30,40 @@ def canonicalize_email(raw: str) -> str:
     if domain in _GMAIL_ALIASES:
         domain = "gmail.com"
     return f"{local}@{domain}"
+
+
+def extract_email_person_hints(
+    text: str,
+    source_id: str,
+    subject_label: str = "File",
+) -> list["GraphHint"]:
+    """Extract email addresses from free text and return MENTIONS Person hints.
+
+    Creates a ``subject -[MENTIONS]-> Person`` GraphHint for every unique
+    email address found.  Person nodes use the ``email`` merge key so they
+    bridge automatically with Gmail, Calendar, and Git Person nodes.
+    """
+    seen: set[str] = set()
+    hints: list[GraphHint] = []
+    for match in _EMAIL_RE.finditer(text):
+        email = canonicalize_email(match.group(0))
+        if email in seen:
+            continue
+        seen.add(email)
+        hints.append(
+            GraphHint(
+                subject_id=source_id,
+                subject_label=subject_label,
+                predicate="MENTIONS",
+                object_id=f"person:{email}",
+                object_label="Person",
+                object_props={"email": email},
+                subject_merge_key="source_id",
+                object_merge_key="email",
+                confidence=1.0,
+            )
+        )
+    return hints
 
 
 @dataclass

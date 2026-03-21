@@ -21,7 +21,7 @@ import defusedxml
 import defusedxml.ElementTree as ET
 from typing import Any
 
-from .base import BaseParser, GraphHint, ParsedDocument
+from .base import BaseParser, GraphHint, ParsedDocument, canonicalize_email
 from .registry import register
 
 logger = logging.getLogger(__name__)
@@ -88,7 +88,7 @@ class RepositoryParser(BaseParser):
 
         # Person → Commit via AUTHORED
         if author_email:
-            norm_email = author_email.strip().lower()
+            norm_email = canonicalize_email(author_email)
             graph_hints.append(
                 GraphHint(
                     subject_id=norm_email,
