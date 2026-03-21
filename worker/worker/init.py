@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import getpass
+import logging
 import os
 import secrets
 import shutil
@@ -35,6 +36,61 @@ def _prompt(prompt: str, default: str = "") -> str:
     return response or default
 
 
+def _prompt_path(prompt: str, default: str = "") -> str:
+    """Prompt for a filesystem path with Tab completion.
+
+    Enables ``readline`` filename completion while the prompt is active,
+    then restores the previous completer so other prompts are unaffected.
+    Handles ``~`` expansion for completion but returns the raw user input
+    (with ``~`` preserved) so it can be written to config as-is.
+    """
+    try:
+        import readline
+    except ImportError:
+        # readline unavailable (rare) — fall back to plain prompt
+        return _prompt(prompt, default)
+
+    # Save current readline state
+    prev_completer = readline.get_completer()
+    prev_delims = readline.get_completer_delims()
+
+    def _path_completer(text: str, state: int) -> str | None:
+        # Expand ~ for matching but keep it in the output
+        expanded = os.path.expanduser(text)
+        if os.path.isdir(expanded) and not expanded.endswith(os.sep):
+            expanded += os.sep
+        import glob
+
+        matches = glob.glob(expanded + "*")
+        # Re-insert ~ prefix if the user typed it
+        if text.startswith("~") and not expanded.startswith("~"):
+            home = os.path.expanduser("~")
+            matches = [
+                "~" + m[len(home):] if m.startswith(home) else m
+                for m in matches
+            ]
+        # Append / to directories so the user can keep tabbing deeper
+        matches = [
+            m + os.sep if os.path.isdir(os.path.expanduser(m)) and not m.endswith(os.sep) else m
+            for m in matches
+        ]
+        return matches[state] if state < len(matches) else None
+
+    readline.set_completer(_path_completer)
+    readline.set_completer_delims(" \t\n")
+    # macOS ships libedit disguised as readline
+    if "libedit" in (getattr(readline, "__doc__", None) or ""):
+        readline.parse_and_bind("bind ^I rl_complete")
+    else:
+        readline.parse_and_bind("tab: complete")
+
+    try:
+        return _prompt(prompt, default)
+    finally:
+        readline.set_completer(prev_completer)
+        readline.set_completer_delims(prev_delims)
+
+
 def _prompt_choice(prompt: str, choices: list[str], default: str) -> str:
     """Prompt the user to pick from a list."""
     print(f"{prompt} ({'/'.join(choices)}) [{default}]: ", end="", flush=True)
@@ -44,9 +100,157 @@ def _prompt_choice(prompt: str, choices: list[str], default: str) -> str:
     return default
 
 
+def _prompt_yes_no(prompt: str, default: bool = False) -> bool:
+    """Prompt with a yes/no question."""
+    suffix = "[Y/n]" if default else "[y/N]"
+    response = input(f"{prompt} {suffix}: ").strip().lower()
+    if response in ("y", "yes"):
+        return True
+    if response in ("n", "no"):
+        return False
+    return default
+
+
+def _prompt_multi_select(
+    prompt: str,
+    items: list[dict[str, str]],
+    id_key: str,
+    label_key: str,
+    defaults: list[int] | None = None,
+) -> list[str]:
+    """Present numbered items and let the user pick by comma-separated numbers.
+
+    *defaults* is a list of 1-based indices pre-selected when the user
+    presses Enter without typing anything.
+    """
+    print(f"\n{prompt}")
+    default_set = set(defaults or [])
+    for i, item in enumerate(items, 1):
+        marker = " *" if i in default_set else ""
+        label = item[label_key]
+        item_id = item[id_key]
+        if label != item_id:
+            print(f"  {i:>3}. {label} ({item_id}){marker}")
+        else:
+            print(f"  {i:>3}. {label}{marker}")
+
+    if default_set:
+        default_str = ",".join(str(i) for i in sorted(default_set))
+        print("  (* = default)")
+    else:
+        default_str = "1"
+
+    response = _prompt("Enter numbers (comma-separated)", default_str)
+    selected: list[str] = []
+    for part in response.split(","):
+        part = part.strip()
+        if part.isdigit():
+            idx = int(part) - 1
+            if 0 <= idx < len(items):
+                item_id = items[idx][id_key]
+                if item_id not in selected:
+                    selected.append(item_id)
+    return selected or [items[i - 1][id_key] for i in sorted(default_set) if 0 < i <= len(items)]
+
+
 def _prompt_password(prompt: str) -> str:
     """Prompt for a password without echoing."""
     return getpass.getpass(f"{prompt}: ")
+
+
+logger = logging.getLogger(__name__)
+
+# Well-known Gmail system labels in a sensible display order.
+_GMAIL_SYSTEM_LABELS = [
+    ("INBOX", "Inbox"),
+    ("SENT", "Sent"),
+    ("DRAFT", "Drafts"),
+    ("SPAM", "Spam"),
+    ("TRASH", "Trash"),
+    ("STARRED", "Starred"),
+    ("IMPORTANT", "Important"),
+    ("CATEGORY_PERSONAL", "Category: Personal"),
+    ("CATEGORY_SOCIAL", "Category: Social"),
+    ("CATEGORY_PROMOTIONS", "Category: Promotions"),
+    ("CATEGORY_UPDATES", "Category: Updates"),
+    ("CATEGORY_FORUMS", "Category: Forums"),
+]
+
+# System label IDs we skip (internal UI labels, not useful for filtering).
+_GMAIL_SKIP_LABELS = frozenset({
+    "UNREAD", "CHAT", "CATEGORY_PERSONAL",
+})
+
+
+def _list_gmail_labels(client_secrets_path: Path) -> list[dict[str, str]]:
+    """Authenticate with Gmail and return available labels.
+
+    Returns a list of ``{"id": ..., "name": ...}`` dicts sorted with
+    well-known system labels first, then user labels alphabetically.
+    """
+    from googleapiclient.discovery import build
+
+    from worker.sources.gmail_auth import get_credentials
+
+    creds = get_credentials(client_secrets_path)
+    service = build("gmail", "v1", credentials=creds)
+    result = service.users().labels().list(userId="me").execute()
+    raw_labels = result.get("labels", [])
+
+    system_order = {lid: i for i, (lid, _) in enumerate(_GMAIL_SYSTEM_LABELS)}
+    system_names = dict(_GMAIL_SYSTEM_LABELS)
+
+    system: list[dict[str, str]] = []
+    user: list[dict[str, str]] = []
+
+    for lb in raw_labels:
+        lid = lb.get("id", "")
+        if lid in _GMAIL_SKIP_LABELS:
+            continue
+        name = system_names.get(lid) or lb.get("name", lid)
+        entry = {"id": lid, "name": name}
+        if lb.get("type") == "system" and lid in system_order:
+            system.append(entry)
+        elif lb.get("type") != "system":
+            user.append(entry)
+        # skip unknown system labels
+
+    system.sort(key=lambda e: system_order.get(e["id"], 999))
+    user.sort(key=lambda e: e["name"].lower())
+    return system + user
+
+
+def _list_calendars(client_secrets_path: Path) -> list[dict[str, str]]:
+    """Authenticate with Google Calendar and return available calendars.
+
+    Returns a list of ``{"id": ..., "name": ...}`` dicts with the
+    primary calendar first, then others sorted alphabetically.
+    """
+    from googleapiclient.discovery import build
+
+    from worker.sources.calendar_auth import get_credentials
+
+    creds = get_credentials(client_secrets_path)
+    service = build("calendar", "v3", credentials=creds)
+    result = service.calendarList().list().execute()
+    raw = result.get("items", [])
+
+    primary: list[dict[str, str]] = []
+    others: list[dict[str, str]] = []
+    for cal in raw:
+        cal_id = cal.get("id", "")
+        summary = cal.get("summary") or cal.get("summaryOverride") or cal_id
+        entry = {"id": cal_id, "name": summary}
+        if cal.get("primary"):
+            # Show "primary" as the id for the primary calendar since
+            # the Calendar API accepts both the real id and "primary".
+            entry["id"] = "primary"
+            primary.append(entry)
+        else:
+            others.append(entry)
+
+    others.sort(key=lambda e: e["name"].lower())
+    return primary + others
 
 
 def _interactive_config(config_text: str) -> str:
@@ -105,7 +309,7 @@ def _interactive_config(config_text: str) -> str:
 
     # 3. Source watch paths
     print()
-    watch = _prompt(
+    watch = _prompt_path(
         "Documents directory to index",
         "~/Documents",
     )
@@ -116,14 +320,167 @@ def _interactive_config(config_text: str) -> str:
 
     # 4. Obsidian vault
     default_vault = "~/obsidian-vault"
-    vault = _prompt("Obsidian vault path (leave empty to skip)", default_vault)
+    vault = _prompt_path("Obsidian vault path (leave empty to skip)", default_vault)
     config_text = config_text.replace(
         f'vault_path = "{default_vault}"',
         f'vault_path = "{vault}"',
     )
 
+    # 5. Gmail
+    print()
+    gmail_secrets_path: Path | None = None
+    if _prompt_yes_no("Set up Gmail indexing?"):
+        secrets_path = _prompt_path(
+            "Path to Google Cloud OAuth credentials JSON",
+            "~/.fieldnotes/credentials.json",
+        )
+        gmail_secrets_path = Path(secrets_path).expanduser().resolve()
+        if not gmail_secrets_path.exists():
+            print(
+                f"  Credentials file not found at {gmail_secrets_path}\n"
+                "  Download it from the Google Cloud Console (OAuth client ID → Desktop app).\n"
+                "  See README → Gmail OAuth Setup for details.\n"
+                "  Gmail will be configured but label selection will be skipped.",
+            )
+            config_text = _append_gmail_config(
+                config_text, secrets_path, ["INBOX"],
+            )
+        else:
+            print("  Authenticating with Gmail (this will open your browser)...")
+            try:
+                labels = _list_gmail_labels(gmail_secrets_path)
+                if not labels:
+                    print("  No labels found — defaulting to INBOX.")
+                    config_text = _append_gmail_config(
+                        config_text, secrets_path, ["INBOX"],
+                    )
+                else:
+                    # Find the index of INBOX for the default selection
+                    inbox_indices = [
+                        i + 1
+                        for i, lb in enumerate(labels)
+                        if lb["id"] == "INBOX"
+                    ]
+                    selected = _prompt_multi_select(
+                        "Select Gmail labels to index:",
+                        labels,
+                        id_key="id",
+                        label_key="name",
+                        defaults=inbox_indices or [1],
+                    )
+                    config_text = _append_gmail_config(
+                        config_text, secrets_path, selected,
+                    )
+                    print(f"  ✓ Gmail configured with labels: {', '.join(selected)}")
+            except Exception as exc:
+                logger.debug("Gmail label listing failed", exc_info=True)
+                print(f"  Could not list labels: {exc}")
+                print("  Gmail will be configured with default label INBOX.")
+                config_text = _append_gmail_config(
+                    config_text, secrets_path, ["INBOX"],
+                )
+
+    # 6. Google Calendar
+    print()
+    if _prompt_yes_no("Set up Google Calendar indexing?"):
+        if gmail_secrets_path is not None:
+            secrets_path = str(gmail_secrets_path).replace(
+                str(Path.home()), "~"
+            )
+        else:
+            secrets_path = _prompt_path(
+                "Path to Google Cloud OAuth credentials JSON",
+                "~/.fieldnotes/credentials.json",
+            )
+        cal_secrets = Path(secrets_path).expanduser().resolve()
+        if not cal_secrets.exists():
+            print(
+                f"  Credentials file not found at {cal_secrets}\n"
+                "  Calendar will be configured but calendar selection will be skipped.",
+            )
+            config_text = _append_calendar_config(
+                config_text, secrets_path, ["primary"],
+            )
+        else:
+            print(
+                "  Authenticating with Google Calendar (this will open your browser)..."
+            )
+            try:
+                calendars = _list_calendars(cal_secrets)
+                if not calendars:
+                    print("  No calendars found — defaulting to primary.")
+                    config_text = _append_calendar_config(
+                        config_text, secrets_path, ["primary"],
+                    )
+                else:
+                    primary_indices = [
+                        i + 1
+                        for i, c in enumerate(calendars)
+                        if c["id"] == "primary"
+                    ]
+                    selected = _prompt_multi_select(
+                        "Select calendars to index:",
+                        calendars,
+                        id_key="id",
+                        label_key="name",
+                        defaults=primary_indices or [1],
+                    )
+                    config_text = _append_calendar_config(
+                        config_text, secrets_path, selected,
+                    )
+                    names = [
+                        next(
+                            (c["name"] for c in calendars if c["id"] == s), s
+                        )
+                        for s in selected
+                    ]
+                    print(f"  ✓ Calendar configured: {', '.join(names)}")
+            except Exception as exc:
+                logger.debug("Calendar listing failed", exc_info=True)
+                print(f"  Could not list calendars: {exc}")
+                print(
+                    "  Calendar will be configured with default calendar (primary)."
+                )
+                config_text = _append_calendar_config(
+                    config_text, secrets_path, ["primary"],
+                )
+
     print()
     return config_text
+
+
+def _append_gmail_config(
+    config_text: str,
+    credentials_path: str,
+    labels: list[str],
+) -> str:
+    """Append a ``[sources.gmail]`` TOML section to *config_text*."""
+    labels_toml = ", ".join(f'"{_escape_toml_string(lb)}"' for lb in labels)
+    section = (
+        "\n[sources.gmail]\n"
+        f'client_secrets_path = "{_escape_toml_string(credentials_path)}"\n'
+        f"label_filter = [{labels_toml}]\n"
+        "poll_interval_seconds = 300\n"
+        "max_initial_threads = 500\n"
+    )
+    return config_text + section
+
+
+def _append_calendar_config(
+    config_text: str,
+    credentials_path: str,
+    calendar_ids: list[str],
+) -> str:
+    """Append a ``[sources.google_calendar]`` TOML section to *config_text*."""
+    ids_toml = ", ".join(f'"{_escape_toml_string(c)}"' for c in calendar_ids)
+    section = (
+        "\n[sources.google_calendar]\n"
+        f'client_secrets_path = "{_escape_toml_string(credentials_path)}"\n'
+        f"calendar_ids = [{ids_toml}]\n"
+        "poll_interval_seconds = 300\n"
+        "max_initial_days = 90\n"
+    )
+    return config_text + section
 
 
 def _generate_env_file(neo4j_pw: str, env_dir: Path) -> Path:

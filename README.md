@@ -69,9 +69,24 @@ Topic discovery runs on a schedule (default: weekly) or on demand via `fieldnote
 
 ## Requirements
 
-- Python 3.11+
-- Docker and Docker Compose (for Neo4j, Qdrant, and observability stack)
-- [Ollama](https://ollama.ai) (default local LLM provider) — or API keys for OpenAI / Anthropic
+| Dependency | Version | Purpose | Notes |
+|------------|---------|---------|-------|
+| **Python** | 3.11+ | Worker runtime (pipeline, CLI, MCP server) | macOS ships 3.x; also via Homebrew, pyenv, or system package manager |
+| **Docker & Docker Compose** | — | Infrastructure services | Runs Neo4j, Qdrant, Prometheus, Grafana, Pushgateway |
+| **Git** | — | Repository source scanning | Needed if `[sources.repositories]` is enabled (default) |
+| **Ollama** | — | Default local LLM provider | Not required if using OpenAI or Anthropic API keys instead. Install from [ollama.ai](https://ollama.ai) |
+
+### Services managed by Docker Compose
+
+These are started automatically by `fieldnotes init --with-docker` or `docker compose up -d`:
+
+| Service | Image | Default Port | Purpose |
+|---------|-------|--------------|---------|
+| Neo4j | `neo4j:2026.02.3-community` | 7687 | Property graph (entities, relationships, triples) |
+| Qdrant | `qdrant/qdrant:v1.17.0` | 6333 | Vector database (semantic search) |
+| Prometheus | `prom/prometheus:v3.10.0` | 9090 | Metrics collection |
+| Pushgateway | `prom/pushgateway:v1.11.2` | 9091 | Metrics aggregation for batch jobs |
+| Grafana | `grafana/grafana-oss:12.4.1` | 3000 | Observability dashboards |
 
 ## Installation
 
