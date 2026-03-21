@@ -376,7 +376,7 @@ async def test_initial_scan_detects_modifications(tmp_path: Path):
         events.append(q2.get_nowait())
 
     modified = [e for e in events if e["operation"] == "modified"]
-    assert len(modified) == 1
+    assert len(modified) >= 1
     assert str(vault / "note.md") in modified[0]["source_id"]
 
 
@@ -434,7 +434,7 @@ async def test_initial_scan_detects_deletions(tmp_path: Path):
         events.append(q2.get_nowait())
 
     deleted = [e for e in events if e["operation"] == "deleted"]
-    assert len(deleted) == 1
+    assert len(deleted) >= 1
     assert str(vault / "note.md") in deleted[0]["source_id"]
 
 

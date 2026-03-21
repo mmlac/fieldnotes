@@ -15,7 +15,47 @@ password = ""
 host = "localhost"
 port = 6333
 collection = "fieldnotes"
-vector_size = 768
+vector_size = 768                 # must match your embedding model
+
+# --- Model Providers ---
+# Configure at least one provider. Ollama runs locally with no API key.
+
+[modelproviders.ollama]
+type = "ollama"
+base_url = "http://localhost:11434"
+
+# Uncomment to use OpenAI (requires OPENAI_API_KEY env var or api_key below):
+# [modelproviders.openai]
+# type = "openai"
+# api_key = ""
+
+# Uncomment to use Anthropic (requires ANTHROPIC_API_KEY env var or api_key below):
+# [modelproviders.anthropic]
+# type = "anthropic"
+# api_key = ""
+
+# --- Named Models ---
+# Bind specific model names to providers.
+
+[models.local_embed]
+provider = "ollama"
+model = "nomic-embed-text"
+
+[models.local_chat]
+provider = "ollama"
+model = "llama3.2"
+
+# --- Role Bindings ---
+# Which model handles each pipeline stage.
+
+[models.roles]
+embed = "local_embed"             # vector embeddings
+extract = "local_chat"            # entity/triple extraction
+extract_fallback = "local_chat"   # retry on malformed JSON
+query = "local_chat"              # NL → Cypher translation
+vision = "local_chat"             # image analysis
+clustering = "local_chat"         # topic naming
+completion = "local_chat"         # ask tool synthesis
 
 # --- Sources ---
 
@@ -41,7 +81,7 @@ max_file_size = 104857600
 
 [clustering]
 enabled = true
-cron = "0 3 * * 0"
+cron = "0 3 * * 0"               # Sunday 3 AM
 min_corpus_size = 100
 
 # --- Vision ---
@@ -49,9 +89,17 @@ min_corpus_size = 100
 [vision]
 enabled = true
 concurrency = 2
+max_file_size_mb = 20
 
 # --- MCP ---
 
 [mcp]
 enabled = true
 port = 3456
+
+# --- Health Check (optional) ---
+
+# [health]
+# enabled = false
+# port = 9100
+# bind = "127.0.0.1"

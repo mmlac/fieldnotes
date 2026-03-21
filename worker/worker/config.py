@@ -204,6 +204,12 @@ class Config:
         # -- Hard errors --
 
         # (a) Validate cron expression
+        cron_fields = self.clustering.cron.strip().split()
+        if len(cron_fields) > 5:
+            raise ValueError(
+                f"[clustering] cron: {self.clustering.cron!r} has too many "
+                f"fields (expected at most 5)"
+            )
         if not croniter.is_valid(self.clustering.cron):
             raise ValueError(
                 f"[clustering] cron: {self.clustering.cron!r} is not a valid "
@@ -222,7 +228,23 @@ class Config:
 
         # -- Warnings --
 
-        # (b) Check vector_size against expected embedding dimensions
+        # (b) Check role → model → provider references
+        for role, model_alias in self.roles.mapping.items():
+            if model_alias not in self.models:
+                warnings.append(
+                    f"[models.roles] role {role!r} references model "
+                    f"{model_alias!r} which is not defined in [models.*]"
+                )
+            else:
+                provider_name = self.models[model_alias].provider
+                if provider_name not in self.providers:
+                    warnings.append(
+                        f"[models.{model_alias}] references provider "
+                        f"{provider_name!r} which is not defined in "
+                        f"[modelproviders.*]"
+                    )
+
+        # (c) Check vector_size against expected embedding dimensions
         if self.qdrant.vector_size != self._EXPECTED_VECTOR_SIZE:
             warnings.append(
                 f"[qdrant] vector_size is {self.qdrant.vector_size}, but the "

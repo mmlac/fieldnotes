@@ -181,8 +181,8 @@ class TestWriteTx:
 
         _write_tx(tx, clusters, source_map)
 
-        # Should have: 1 delete edges + 1 delete orphans + 2 topic upserts + 3 tagged edges = 7 calls
-        assert tx.run.call_count == 7
+        # Should have: 1 delete edges + 1 delete orphans + 1 batch topic upsert + 1 batch tagged edges = 4 calls
+        assert tx.run.call_count == 4
 
     def test_deletes_before_creates(self) -> None:
         tx = MagicMock()

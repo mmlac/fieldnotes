@@ -88,9 +88,27 @@ def _build_parser() -> argparse.ArgumentParser:
     daemon_sub.add_parser("stop", help="Stop the daemon service")
 
     # ── init ───────────────────────────────────────────────────────
-    sub.add_parser(
+    init_p = sub.add_parser(
         "init",
         help="Create ~/.fieldnotes/ directory and generate default config",
+    )
+    init_p.add_argument(
+        "--with-docker",
+        action="store_true",
+        dest="with_docker",
+        help="Generate .env file and start Docker infrastructure",
+    )
+    init_p.add_argument(
+        "--non-interactive",
+        action="store_true",
+        dest="non_interactive",
+        help="Skip interactive prompts (use defaults)",
+    )
+
+    # ── doctor ─────────────────────────────────────────────────────
+    sub.add_parser(
+        "doctor",
+        help="Run pre-flight checks on config, infrastructure, and models",
     )
 
     # ── setup-claude ─────────────────────────────────────────────────
@@ -382,7 +400,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "init":
         from worker.init import init
 
-        return init()
+        return init(
+            with_docker=args.with_docker,
+            non_interactive=args.non_interactive,
+        )
+
+    if args.command == "doctor":
+        from worker.doctor import doctor
+
+        return doctor(config_path=args.config)
 
     if args.command == "setup-claude":
         from worker.setup import setup_claude

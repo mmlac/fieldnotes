@@ -383,7 +383,7 @@ class TestCleanupOrphanEntities:
         record = MagicMock()
         record.__getitem__ = lambda self, key: 3 if key == "removed" else None
         tx.run.return_value.single.return_value = record
-        removed = _cleanup_orphan_entities(tx)
+        removed = _cleanup_orphan_entities(tx, ["Alice", "Bob"])
         assert removed == 3
         args, _ = tx.run.call_args
         assert "Entity" in args[0]
@@ -395,7 +395,7 @@ class TestCleanupOrphanEntities:
         record = MagicMock()
         record.__getitem__ = lambda self, key: 0 if key == "removed" else None
         tx.run.return_value.single.return_value = record
-        removed = _cleanup_orphan_entities(tx)
+        removed = _cleanup_orphan_entities(tx, ["Alice"])
         assert removed == 0
 
     def test_modified_operation_triggers_orphan_cleanup(self):
@@ -406,9 +406,20 @@ class TestCleanupOrphanEntities:
             entities=[{"name": "NewEntity", "type": "Concept"}],
         )
         tx = MagicMock()
-        record = MagicMock()
-        record.__getitem__ = lambda self, key: 0 if key == "removed" else None
-        tx.run.return_value.single.return_value = record
+        # Set up tx.run to return iterable results with a stale entity name
+        # for the _clean_stale_edges calls, and a proper record for orphan cleanup.
+        stale_record = MagicMock()
+        stale_record.__getitem__ = lambda self, key: (
+            "OldEntity" if key == "name" else None
+        )
+        removed_record = MagicMock()
+        removed_record.__getitem__ = lambda self, key: 1 if key == "removed" else None
+
+        stale_result = MagicMock()
+        stale_result.__iter__ = lambda self: iter([stale_record])
+        stale_result.single.return_value = removed_record
+
+        tx.run.return_value = stale_result
         Writer._write_neo4j_tx(tx, unit)
 
         queries = [c[0][0] for c in tx.run.call_args_list]
@@ -1008,9 +1019,13 @@ class TestImageNodeWriter:
         tx = MagicMock()
         Writer._write_neo4j_tx(tx, unit)
 
-        # Should have DEPICTS edges for each entity
+        # Should have DEPICTS edges (batched into a single UNWIND query)
         depicts_calls = [c for c in tx.run.call_args_list if "DEPICTS" in str(c)]
-        assert len(depicts_calls) == 2
+        assert len(depicts_calls) == 1
+        # The single call should reference both entity names
+        depicts_query_str = str(depicts_calls[0])
+        assert "Alice" in depicts_query_str
+        assert "Whiteboard" in depicts_query_str
 
         # Should also have ATTACHED_TO
         attached_calls = [c for c in tx.run.call_args_list if "ATTACHED_TO" in str(c)]

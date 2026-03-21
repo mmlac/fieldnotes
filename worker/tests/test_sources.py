@@ -25,12 +25,21 @@ async def _collect_events(
     *,
     min_events: int = 1,
     timeout: float = 5.0,
+    path_prefix: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Collect at least *min_events* from the queue, with a hard timeout."""
+    """Collect at least *min_events* from the queue, with a hard timeout.
+
+    When *path_prefix* is given, only events whose ``source_id`` starts
+    with the prefix count towards *min_events*.  Events outside the
+    prefix are silently discarded so that stale filesystem notifications
+    from earlier test runs never pollute the result.
+    """
     events: list[dict[str, Any]] = []
     try:
         while len(events) < min_events:
             ev = await asyncio.wait_for(q.get(), timeout=timeout)
+            if path_prefix and not ev.get("source_id", "").startswith(path_prefix):
+                continue
             events.append(ev)
     except asyncio.TimeoutError:
         pass
@@ -42,8 +51,13 @@ async def _collect_until(
     predicate,
     *,
     timeout: float = 5.0,
+    path_prefix: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Collect events until *predicate(events)* is true or timeout."""
+    """Collect events until *predicate(events)* is true or timeout.
+
+    Events whose ``source_id`` does not start with *path_prefix* (when
+    given) are silently dropped.
+    """
     events: list[dict[str, Any]] = []
     deadline = asyncio.get_event_loop().time() + timeout
     try:
@@ -52,6 +66,8 @@ async def _collect_until(
             if remaining <= 0:
                 break
             ev = await asyncio.wait_for(q.get(), timeout=remaining)
+            if path_prefix and not ev.get("source_id", "").startswith(path_prefix):
+                continue
             events.append(ev)
     except asyncio.TimeoutError:
         pass
@@ -152,6 +168,7 @@ def test_file_source_configure_excludes(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_file_source_detects_create(tmp_path: Path):
+    prefix = str(tmp_path.resolve())
     fs = FileSource()
     fs.configure({"watch_paths": [str(tmp_path)]})
     q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
@@ -163,7 +180,7 @@ async def test_file_source_detects_create(tmp_path: Path):
     test_file = tmp_path / "hello.md"
     test_file.write_text("hello world")
 
-    events = await _collect_events(q, min_events=1, timeout=5.0)
+    events = await _collect_events(q, min_events=1, timeout=5.0, path_prefix=prefix)
 
     task.cancel()
     try:
@@ -174,7 +191,7 @@ async def test_file_source_detects_create(tmp_path: Path):
     assert len(events) >= 1
     ev = events[0]
     assert ev["source_type"] == "files"
-    assert ev["source_id"] == str(test_file)
+    assert ev["source_id"] == str(test_file.resolve())
     assert ev["operation"] in ("created", "modified")
     assert ev["mime_type"] == "text/markdown"
     assert "id" in ev
@@ -184,6 +201,7 @@ async def test_file_source_detects_create(tmp_path: Path):
 @pytest.mark.asyncio
 async def test_file_source_populates_text_for_text_files(tmp_path: Path):
     """Text MIME type files must have their content loaded into event['text']."""
+    prefix = str(tmp_path.resolve())
     fs = FileSource()
     fs.configure({"watch_paths": [str(tmp_path)]})
     q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
@@ -194,7 +212,7 @@ async def test_file_source_populates_text_for_text_files(tmp_path: Path):
     test_file = tmp_path / "note.md"
     test_file.write_text("# Hello\n\nSome content here.")
 
-    events = await _collect_events(q, min_events=1, timeout=5.0)
+    events = await _collect_events(q, min_events=1, timeout=5.0, path_prefix=prefix)
 
     task.cancel()
     try:
@@ -211,6 +229,7 @@ async def test_file_source_populates_text_for_text_files(tmp_path: Path):
 @pytest.mark.asyncio
 async def test_file_source_no_text_for_binary_files(tmp_path: Path):
     """Binary files should not have a 'text' key in the event."""
+    prefix = str(tmp_path.resolve())
     fs = FileSource()
     fs.configure({"watch_paths": [str(tmp_path)], "include_extensions": [".png"]})
     q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
@@ -221,7 +240,7 @@ async def test_file_source_no_text_for_binary_files(tmp_path: Path):
     test_file = tmp_path / "image.png"
     test_file.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 20)
 
-    events = await _collect_events(q, min_events=1, timeout=5.0)
+    events = await _collect_events(q, min_events=1, timeout=5.0, path_prefix=prefix)
 
     task.cancel()
     try:
@@ -236,6 +255,7 @@ async def test_file_source_no_text_for_binary_files(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_file_source_respects_extension_filter(tmp_path: Path):
+    prefix = str(tmp_path.resolve())
     fs = FileSource()
     fs.configure(
         {
@@ -257,6 +277,7 @@ async def test_file_source_respects_extension_filter(tmp_path: Path):
         q,
         lambda evs: any(e["source_id"].endswith("keep.md") for e in evs),
         timeout=5.0,
+        path_prefix=prefix,
     )
 
     task.cancel()
@@ -272,6 +293,7 @@ async def test_file_source_respects_extension_filter(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_file_source_respects_exclude_pattern(tmp_path: Path):
+    prefix = str(tmp_path.resolve())
     fs = FileSource()
     fs.configure(
         {
@@ -291,6 +313,7 @@ async def test_file_source_respects_exclude_pattern(tmp_path: Path):
         q,
         lambda evs: any(e["source_id"].endswith("good.py") for e in evs),
         timeout=5.0,
+        path_prefix=prefix,
     )
 
     task.cancel()
@@ -306,6 +329,7 @@ async def test_file_source_respects_exclude_pattern(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_file_source_delete_event(tmp_path: Path):
+    prefix = str(tmp_path.resolve())
     # Pre-create a file before watching
     target = tmp_path / "doomed.txt"
     target.write_text("goodbye")
@@ -323,6 +347,7 @@ async def test_file_source_delete_event(tmp_path: Path):
         q,
         lambda evs: any(e["operation"] == "deleted" for e in evs),
         timeout=5.0,
+        path_prefix=prefix,
     )
 
     task.cancel()
@@ -361,6 +386,7 @@ def test_streaming_sha256_exceeds_max_size(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_file_source_skips_oversized_file(tmp_path: Path):
+    prefix = str(tmp_path.resolve())
     fs = FileSource()
     fs.configure(
         {
@@ -382,6 +408,7 @@ async def test_file_source_skips_oversized_file(tmp_path: Path):
         q,
         lambda evs: any("small.md" in e["source_id"] for e in evs),
         timeout=5.0,
+        path_prefix=prefix,
     )
 
     task.cancel()

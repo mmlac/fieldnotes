@@ -71,14 +71,19 @@ Topic discovery runs on a schedule (default: weekly) or on demand via `fieldnote
 ## Installation
 
 ```bash
+
+# With pipx
+pipx install fieldnotes
+
+# Also available but not recommended:
+
 # With pip
 pip install fieldnotes
 
 # With uv
 uv tool install fieldnotes
 
-# With pipx
-pipx install fieldnotes
+
 
 # From source
 git clone https://github.com/mmlac/fieldnotes.git
@@ -89,30 +94,43 @@ pip install -e ".[dev]"
 ## Quick Start
 
 ```bash
-# 1. Bootstrap configuration
+# 1. Bootstrap configuration (interactive wizard)
 fieldnotes init
-# Creates ~/.fieldnotes/config.toml with sensible defaults
+# Prompts for Neo4j password, model provider, watch paths.
+# Creates ~/.fieldnotes/config.toml with your choices.
 
-# 2. Set the Neo4j password and start infrastructure
+# 2. Start infrastructure (option A: automatic)
+fieldnotes init --with-docker
+# Generates .env with passwords, runs docker compose up -d.
+
+# 2. Start infrastructure (option B: manual)
 export NEO4J_PASSWORD=changeme
+export GRAFANA_PASSWORD=changeme
 docker compose up -d
 
-# 3. Pull the default embedding model
-ollama pull nomic-embed-text
+# 3. Wait for services to be healthy
+docker compose ps          # all services should show "healthy"
 
-# 4. Start the daemon (pipeline + MCP server)
+# 4. Pull the default models (if using Ollama)
+ollama pull nomic-embed-text   # embedding model
+ollama pull llama3.2           # chat model (extraction, queries, completions)
+
+# 5. Verify everything is ready
+fieldnotes doctor
+
+# 6. Start the daemon (pipeline + MCP server)
 fieldnotes serve --daemon
 
-# 5. Search your knowledge graph
+# 7. Search your knowledge graph
 fieldnotes search "what do I know about kubernetes"
 
-# 6. Ask a question (RAG + LLM synthesis)
+# 8. Ask a question (RAG + LLM synthesis)
 fieldnotes ask "summarize my recent project decisions"
 ```
 
 ## Configuration
 
-Fieldnotes reads `~/.fieldnotes/config.toml` (override with `fieldnotes -c /path/to/config.toml`). Run `fieldnotes init` to generate the default config, or copy `config.toml.example` from this repository.
+Fieldnotes reads `~/.fieldnotes/config.toml` (override with `fieldnotes -c /path/to/config.toml`). Run `fieldnotes init` to generate a default config pre-configured with an Ollama provider, embedding + chat model bindings, and all role assignments. If `NEO4J_PASSWORD` is set in your environment when you run `init`, it will be injected into the config automatically.
 
 ### Core
 
@@ -136,6 +154,8 @@ port = 6333
 collection = "fieldnotes"
 vector_size = 768                 # must match your embedding model
 ```
+
+> **Note:** If `vector_size` doesn't match your embedding model's output dimensions, fieldnotes will log a warning at startup. The default `768` matches `nomic-embed-text`.
 
 ### Model Providers
 
@@ -162,7 +182,7 @@ model = "nomic-embed-text"
 
 [models.local_chat]
 provider = "ollama"
-model = "llama2"
+model = "llama3.2"
 
 # Layer 3: Role bindings (which model does what)
 [models.roles]
@@ -200,8 +220,21 @@ poll_interval_seconds = 300
 max_initial_threads = 500
 label_filter = "INBOX"
 client_secrets_path = "~/.fieldnotes/credentials.json"
+```
 
-[sources.repositories]
+#### Gmail OAuth Setup
+
+Gmail indexing requires a Google Cloud OAuth2 credential. This is a one-time setup:
+
+1. **Create a Google Cloud project** at [console.cloud.google.com](https://console.cloud.google.com).
+2. **Enable the Gmail API**: Navigate to *APIs & Services → Library*, search for "Gmail API", and click *Enable*.
+3. **Create OAuth credentials**: Go to *APIs & Services → Credentials → Create Credentials → OAuth client ID*. Select **Desktop application** as the application type.
+4. **Download the credentials**: Click *Download JSON* and save it as `~/.fieldnotes/credentials.json` (or the path you set in `client_secrets_path`).
+5. **First run**: When the daemon starts with Gmail enabled, it will open your browser for a one-time consent screen. Approve read-only access (`gmail.readonly` scope). The resulting token is saved to `~/.fieldnotes/data/gmail_token.json` (mode `0600`) and refreshed automatically from then on.
+
+> **Note:** If you're running fieldnotes as a system service (headless), complete the first OAuth flow manually with `fieldnotes serve --daemon` in a terminal before installing the service. The saved token will be reused.
+
+```toml
 repo_roots = ["~/projects"]
 include_patterns = ["README*", "CHANGELOG*", "CONTRIBUTING*", "docs/**/*.md", "*.toml", "ADR/**/*.md"]
 exclude_patterns = ["node_modules/", ".git/", "vendor/", "target/", "__pycache__/"]
@@ -235,16 +268,32 @@ poll_interval_seconds = 21600   # default: 6 hours
 enabled = true
 cron = "0 3 * * 0"               # Sunday 3 AM
 min_corpus_size = 100            # skip if fewer vectors
+min_interval_seconds = 60.0      # minimum gap between runs (10–86400)
+max_vectors = 500000             # max vectors per run (1–10000000)
 
 [vision]
 enabled = true
-concurrency = 2
-max_file_size_mb = 20
-skip_patterns = ["icon", "avatar", "favicon", "badge"]
+concurrency = 2                  # parallel vision processing tasks
+min_file_size_kb = 1             # skip files smaller than this
+max_file_size_mb = 20            # skip files larger than this
+queue_size = 256                 # vision processing queue depth
+skip_patterns = ["icon", "avatar", "favicon", "logo", "badge", "emoji", "thumb"]
+                                 # regex patterns — matching files are skipped
 
 [mcp]
 enabled = true
 port = 3456
+auth_token = ""                  # or FIELDNOTES_MCP_AUTH_TOKEN env var (optional)
+
+[health]
+enabled = false                  # enable HTTP health check endpoint
+port = 9100
+bind = "127.0.0.1"
+
+[rate_limits]
+requests_per_minute = 0          # per-provider rate limit (0 = unlimited)
+daily_token_budget = 0           # total tokens/day across all LLM calls (0 = unlimited)
+max_concurrency = 0              # max parallel LLM calls (0 = unlimited)
 ```
 
 ### Environment Variables
@@ -256,7 +305,8 @@ port = 3456
 | `OPENAI_API_KEY` | OpenAI API key | — |
 | `ANTHROPIC_API_KEY` | Anthropic API key | — |
 | `FIELDNOTES_DATA` | Docker volume root | `~/.fieldnotes/data` |
-| `GRAFANA_PASSWORD` | Grafana admin password | `fieldnotes` |
+| `FIELDNOTES_MCP_AUTH_TOKEN` | MCP server auth token | — |
+| `GRAFANA_PASSWORD` | Grafana admin password | *required* |
 
 ## Data Sources
 
@@ -432,6 +482,17 @@ fieldnotes [-c CONFIG] [-v] <command>
 ### Commands
 
 **`init`** — Bootstrap `~/.fieldnotes/config.toml` and data directories.
+  - When run in a terminal, launches an interactive wizard that prompts for your Neo4j password, model provider (Ollama/OpenAI/Anthropic), document paths, and Obsidian vault location.
+  - `--non-interactive` — skip prompts and use defaults (useful in scripts).
+  - `--with-docker` — generate a `.env` file with `NEO4J_PASSWORD` and `GRAFANA_PASSWORD`, then run `docker compose up -d` automatically.
+
+**`doctor`** — Pre-flight checks for a healthy setup. Verifies:
+  - Config file exists and parses correctly.
+  - Model role → model → provider chain is complete.
+  - Ollama is reachable and configured models are pulled.
+  - OpenAI / Anthropic API keys are set.
+  - Neo4j and Qdrant are reachable.
+  - Source watch paths exist on disk.
 
 **`search <query> [-k N]`** — Hybrid search combining graph traversal and vector similarity. Returns ranked results with source metadata.
 
@@ -475,6 +536,10 @@ fieldnotes [-c CONFIG] [-v] <command>
 **`serve --mcp`** — Run only the MCP server (stdio transport, for Claude Desktop).
 
 **`service install|uninstall|status|start|stop`** — Manage fieldnotes as a system service (launchd on macOS, systemd on Linux).
+
+  - **macOS**: Installs a launchd plist at `~/Library/LaunchAgents/com.fieldnotes.daemon.plist` with auto-restart.
+  - **Linux**: Installs a systemd user unit at `~/.config/systemd/user/fieldnotes.service`.
+  - **Logs**: `~/.fieldnotes/logs/daemon.log` (created on `service install`).
 
 **`setup-claude`** — Configure Claude Desktop to use the fieldnotes MCP server.
 
@@ -551,19 +616,23 @@ Fieldnotes pushes metrics to a Prometheus Pushgateway running in Docker. Prometh
 
 ### Docker Compose Services
 
+The full stack runs five containers. Both `NEO4J_PASSWORD` and `GRAFANA_PASSWORD` environment variables must be set before starting:
+
 ```bash
+export NEO4J_PASSWORD=changeme
+export GRAFANA_PASSWORD=changeme
 docker compose up -d
 ```
 
-| Service | Image | Port | Purpose |
-|---|---|---|---|
-| neo4j | `neo4j:5.26.22-community` | 7687 | Knowledge graph storage |
-| qdrant | `qdrant/qdrant:v1.17.0` | 6333 | Vector similarity search |
-| pushgateway | `prom/pushgateway:v1.11.0` | 9091 | Metrics collection endpoint |
-| prometheus | `prom/prometheus:v3.3.1` | 9090 | Metrics storage and querying |
-| grafana | `grafana/grafana-oss:11.6.0` | 3000 | Dashboards and visualization |
+| Service | Image | Port | Memory Limit | Purpose |
+|---|---|---|---|---|
+| neo4j | `neo4j:5.26.22-community` | 7687 | 1 GB | Knowledge graph storage |
+| qdrant | `qdrant/qdrant:v1.17.0` | 6333 | 512 MB | Vector similarity search |
+| pushgateway | `prom/pushgateway:v1.11.0` | 9091 | 64 MB | Metrics collection endpoint |
+| prometheus | `prom/prometheus:v3.3.1` | 9090 | 256 MB | Metrics storage and querying |
+| grafana | `grafana/grafana-oss:11.6.0` | 3000 | 128 MB | Dashboards and visualization |
 
-All services bind to `127.0.0.1` only. Data is persisted under `$FIELDNOTES_DATA` (default `~/.fieldnotes/data`).
+All services bind to `127.0.0.1` only. Data is persisted under `$FIELDNOTES_DATA` (default `~/.fieldnotes/data`). Total infrastructure memory footprint is approximately 2 GB.
 
 ### Key Metrics
 
@@ -576,7 +645,7 @@ All services bind to `127.0.0.1` only. Data is persisted under `$FIELDNOTES_DATA
 - `worker_circuit_breaker_rejections` — fault tolerance activations
 - `worker_queue_depth` — pending ingest events
 
-Access Grafana at `http://localhost:3000` (default credentials: admin / `fieldnotes`).
+Access Grafana at `http://localhost:3000` (user: `admin`, password: your `GRAFANA_PASSWORD`). A fieldnotes dashboard is auto-provisioned with panels for ingest throughput, LLM latency, entity counts, and pipeline health.
 
 ## Local Development
 
@@ -590,8 +659,9 @@ cd fieldnotes
 # Install in editable mode with dev dependencies (creates worker/.venv)
 make install-dev
 
-# Start infrastructure (Neo4j, Qdrant, Prometheus, Grafana)
+# Start infrastructure (Neo4j, Qdrant, Prometheus, Pushgateway, Grafana)
 export NEO4J_PASSWORD=changeme
+export GRAFANA_PASSWORD=changeme
 make docker-up
 ```
 

@@ -72,7 +72,24 @@ async def _run_daemon(cfg: Config) -> None:
     for source in sources:
         task = asyncio.create_task(source.start(queue), name=f"source:{source.name()}")
         source_tasks.append(task)
-    logger.info("Started %d source(s)", len(source_tasks))
+
+    # Startup summary
+    source_names = [s.name() for s in sources]
+    logger.info("Started %d source(s): %s", len(source_tasks), ", ".join(source_names))
+
+    provider_names = [f"{n} ({p.type})" for n, p in cfg.providers.items()]
+    if provider_names:
+        logger.info("Providers: %s", ", ".join(provider_names))
+
+    key_roles = ["embed", "extract", "completion", "query"]
+    role_info = []
+    for role in key_roles:
+        alias = cfg.roles.get(role)
+        if alias and alias in cfg.models:
+            m = cfg.models[alias]
+            role_info.append(f"{role}={m.model}")
+    if role_info:
+        logger.info("Model roles: %s", ", ".join(role_info))
 
     # Health-check endpoint (off by default)
     if cfg.health.enabled:

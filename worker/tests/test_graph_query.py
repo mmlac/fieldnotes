@@ -242,9 +242,9 @@ def _make_querier(
     mock_chain = MagicMock()
     gen_chain = MagicMock()
     if generation_side_effect:
-        gen_chain.run.side_effect = generation_side_effect
+        gen_chain.invoke.side_effect = generation_side_effect
     else:
-        gen_chain.run.return_value = generated_cypher
+        gen_chain.invoke.return_value = {"text": generated_cypher}
     mock_chain.cypher_generation_chain = gen_chain
 
     qa_chain = MagicMock()

@@ -62,6 +62,8 @@ def _ensure_dir() -> Path:
 
 def _conversation_path(conv_id: str) -> Path:
     """Return the path for *conv_id*, raising ValueError if it escapes the conversations dir."""
+    if "/" in conv_id or "\\" in conv_id:
+        raise ValueError(f"Invalid conversation ID: {conv_id!r}")
     conv_dir = _ensure_dir().resolve()
     candidate = (conv_dir / f"{conv_id}.json").resolve()
     try:

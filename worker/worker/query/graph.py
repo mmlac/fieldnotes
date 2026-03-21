@@ -255,8 +255,12 @@ class GraphQuerier:
         try:
             # Step 1: Generate Cypher (without executing against Neo4j).
             schema = self._graph.get_structured_schema
-            raw_cypher = self._chain.cypher_generation_chain.run(
+            gen_result = self._chain.cypher_generation_chain.invoke(
                 {"question": question, "schema": schema}
+            )
+            # invoke() returns a dict with 'text' key; run() returned the string directly
+            raw_cypher = (
+                gen_result["text"] if isinstance(gen_result, dict) else str(gen_result)
             )
             cypher = extract_cypher(raw_cypher)
 
