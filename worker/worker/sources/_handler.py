@@ -367,9 +367,10 @@ class BaseHandler(FileSystemEventHandler):
     def _dispatch(self, event: FileSystemEvent) -> None:
         ingest = self._build_event(event)
         if ingest is not None:
-            self._update_cursor(ingest)
-
-            # Check dedup window before enqueuing
+            # Check dedup window before enqueuing or updating cursor.
+            # Updating the cursor with dedup-dropped events would corrupt
+            # mtime_ns values (the ISO-string round-trip is lossy) and
+            # cause false "modified" detections on subsequent scans.
             sha256 = ingest.get("meta", {}).get("sha256")
             src_path = ingest.get("source_id", "")
             if self._is_dedup_duplicate(src_path, sha256):
@@ -378,6 +379,17 @@ class BaseHandler(FileSystemEventHandler):
                     source_type=self._source_type,
                 ).inc()
                 return
+
+            # Skip redundant deletions: if a file isn't in the handler's
+            # cursor the initial scan already reported its removal.  macOS
+            # FSEvents can replay recent deletions when a new observer
+            # starts, so this avoids duplicate "deleted" events.
+            if ingest["operation"] == "deleted":
+                with self._cursor_lock:
+                    if src_path not in self._cursor:
+                        return
+
+            self._update_cursor(ingest)
 
             SOURCE_WATCHER_EVENTS.labels(
                 source_type=self._source_type,

@@ -121,7 +121,7 @@ class TestLaunchdBackend:
         assert "<string>/usr/bin/fieldnotes</string>" in content
         assert "<string>serve</string>" in content
         assert "<string>--daemon</string>" in content
-        assert backend._plist_path.stat().st_mode & 0o777 == 0o644
+        assert backend._plist_path.stat().st_mode & 0o777 == 0o600
         mock_run.assert_called_once()
         assert "launchctl" in mock_run.call_args[0][0]
 
