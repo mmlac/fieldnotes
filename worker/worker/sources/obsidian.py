@@ -143,6 +143,7 @@ def _emit_scan_events(
     vault_path: Path,
     vault_name: str,
     queue: asyncio.Queue[dict[str, Any]],
+    categories_key: str = "categories",
 ) -> None:
     """Emit IngestEvent dicts for scan diff results."""
     now = datetime.now(timezone.utc).isoformat()
@@ -150,18 +151,21 @@ def _emit_scan_events(
     for file_path in diff.new:
         entry = current[file_path]
         _enqueue_scan_event(
-            file_path, "created", entry, vault_path, vault_name, now, queue
+            file_path, "created", entry, vault_path, vault_name, now, queue,
+            categories_key=categories_key,
         )
 
     for file_path in diff.modified:
         entry = current[file_path]
         _enqueue_scan_event(
-            file_path, "modified", entry, vault_path, vault_name, now, queue
+            file_path, "modified", entry, vault_path, vault_name, now, queue,
+            categories_key=categories_key,
         )
 
     for file_path in diff.deleted:
         _enqueue_scan_event(
-            file_path, "deleted", None, vault_path, vault_name, now, queue
+            file_path, "deleted", None, vault_path, vault_name, now, queue,
+            categories_key=categories_key,
         )
 
 
@@ -173,6 +177,8 @@ def _enqueue_scan_event(
     vault_name: str,
     now: str,
     queue: asyncio.Queue[dict[str, Any]],
+    *,
+    categories_key: str = "categories",
 ) -> None:
     """Build and enqueue a single scan event.
 
@@ -190,6 +196,7 @@ def _enqueue_scan_event(
         "vault_path": str(vault_path),
         "vault_name": vault_name,
         "relative_path": relative_path,
+        "categories_key": categories_key,
     }
 
     ingest: dict[str, Any] = {
@@ -236,6 +243,7 @@ class _VaultHandler(BaseHandler):
         include_extensions: set[str] | None,
         exclude_patterns: list[str],
         max_file_size: int = DEFAULT_MAX_FILE_SIZE,
+        categories_key: str = "categories",
     ) -> None:
         super().__init__(
             queue=queue,
@@ -246,6 +254,7 @@ class _VaultHandler(BaseHandler):
         )
         self._vault_path = vault_path
         self._vault_name = vault_name
+        self._categories_key = categories_key
 
     def _extra_skip(self, path: str) -> bool:
         """Skip files inside .obsidian/ config directory."""
@@ -264,6 +273,7 @@ class _VaultHandler(BaseHandler):
             "vault_path": str(self._vault_path),
             "vault_name": self._vault_name,
             "relative_path": relative_path,
+            "categories_key": self._categories_key,
         }
 
 
@@ -287,6 +297,7 @@ class ObsidianSource(PythonSource):
         self._max_file_size: int = DEFAULT_MAX_FILE_SIZE
         self._cursor_path: Path = DEFAULT_CURSOR_PATH
         self._checkpoint_interval: int = DEFAULT_CHECKPOINT_INTERVAL
+        self._categories_key: str = "categories"
 
     def name(self) -> str:
         return "obsidian"
@@ -322,6 +333,10 @@ class ObsidianSource(PythonSource):
         interval = cfg.get("cursor_checkpoint_interval")
         if interval is not None:
             self._checkpoint_interval = int(interval)
+
+        cats_key = cfg.get("categories_key")
+        if cats_key:
+            self._categories_key = cats_key
 
     async def start(self, queue: asyncio.Queue[dict[str, Any]]) -> None:
         loop = asyncio.get_running_loop()
@@ -363,7 +378,10 @@ class ObsidianSource(PythonSource):
             handled_stored_paths.update(vault_stored)
 
             diff = diff_cursor(vault_entries, vault_stored)
-            _emit_scan_events(diff, vault_entries, vault, vault_name, queue)
+            _emit_scan_events(
+                diff, vault_entries, vault, vault_name, queue,
+                categories_key=self._categories_key,
+            )
 
             n_new = len(diff.new)
             n_mod = len(diff.modified)
@@ -459,6 +477,7 @@ class ObsidianSource(PythonSource):
                 include_extensions=self._include_extensions,
                 exclude_patterns=self._exclude_patterns,
                 max_file_size=self._max_file_size,
+                categories_key=self._categories_key,
             )
             # Seed handler with the just-scanned current state so that
             # _save_checkpoint (called on cancel or interval) persists the

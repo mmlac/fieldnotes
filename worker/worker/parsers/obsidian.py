@@ -109,8 +109,12 @@ class ObsidianParser(BaseParser):
             node_props["created"] = str(fm["created"])
         if fm.get("updated"):
             node_props["updated"] = str(fm["updated"])
-        if fm.get("category"):
-            node_props["category"] = fm["category"]
+        categories_key = meta.get("categories_key", "categories")
+        raw_cats = fm.get(categories_key, [])
+        if isinstance(raw_cats, str):
+            raw_cats = [raw_cats]
+        if raw_cats:
+            node_props["categories"] = raw_cats
 
         # --- Extract wikilinks → LINKS_TO GraphHints -------------------------
         graph_hints: list[GraphHint] = []
@@ -167,25 +171,27 @@ class ObsidianParser(BaseParser):
                 )
             )
 
-        # --- Synthesize category/name hierarchical tag hint ------------------
+        # --- Synthesize category/name hierarchical tag hints -----------------
         # Merges onto the same Tag node that OmniFocus creates for this item,
         # so queries against that Tag return both OmniFocus tasks and this file.
-        category = fm.get("category")
-        name = node_props.get("title") or (
+        # categories is a list; one hint is emitted per category.
+        categories = node_props.get("categories", [])
+        name = (
             Path(meta["relative_path"]).stem if meta.get("relative_path") else None
         )
-        if category and name:
-            graph_hints.append(
-                GraphHint(
-                    subject_id=source_id,
-                    subject_label="File",
-                    predicate="TAGGED_BY_USER",
-                    object_id=f"omnifocus-tag:{category}/{name}",
-                    object_label="Tag",
-                    object_props={"name": f"{category}/{name}", "source": "omnifocus"},
-                    confidence=1.0,
+        if categories and name:
+            for cat in categories:
+                graph_hints.append(
+                    GraphHint(
+                        subject_id=source_id,
+                        subject_label="File",
+                        predicate="TAGGED_BY_USER",
+                        object_id=f"omnifocus-tag:{cat}/{name}",
+                        object_label="Tag",
+                        object_props={"name": f"{cat}/{name}", "source": "omnifocus"},
+                        confidence=1.0,
+                    )
                 )
-            )
 
         # --- Parse emails frontmatter → MENTIONS Person GraphHints -----------
         # Supports: emails: "a@b.com, c@d.com" (string) or emails: [a@b.com, c@d.com]

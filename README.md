@@ -361,51 +361,56 @@ max_concurrency = 0              # max parallel LLM calls (0 = unlimited)
 
 Each source emits `IngestEvent` dicts into the pipeline queue. Modified files trigger a delete-before-rewrite cycle that cleans stale graph data (edges, chunks, orphan entities) in a single Neo4j transaction before writing the updated version.
 
+### Git Repositories
+
+The Git Repositories source indexes documentation and commit history from local Git repos. Point `repo_roots` at one or more parent directories (e.g. `~/Code`) and the source discovers repositories one level deep — so `~/Code/projectX/.git` is found automatically, but `~/Code/org/projectX/.git` is not.
+
+Each discovered repo is scanned for files matching `include_patterns` (default: READMEs, changelogs, docs, TOML configs, ADRs). Commit messages from the last `max_commits` (default: 200) are also ingested. The source re-polls on a configurable interval (`poll_interval_seconds`, default: 300).
+
 ### Cross-Source Tag Unification (OmniFocus + Obsidian)
 
 Fieldnotes automatically merges tags across OmniFocus and Obsidian so that a single Tag node in the knowledge graph connects both your tasks and your notes. This means a query like "what do I know about ProjectX/Deploy" returns OmniFocus tasks *and* Obsidian notes in one result — no manual linking required.
 
-**How it works:** OmniFocus uses hierarchical tags (e.g., `ProjectX/Deploy`). When an Obsidian note has a `category` frontmatter field and a title, the Obsidian parser synthesizes a matching hierarchical tag that targets the same graph node OmniFocus created. Both sources MERGE onto one `Tag` node keyed by `omnifocus-tag:{category}/{name}`.
+**How it works:** OmniFocus uses hierarchical tags (e.g., `Work/Deploy`). When an Obsidian note has a `categories` frontmatter field (a list) and a filename, the Obsidian parser synthesizes a matching hierarchical tag for each category that targets the same graph node OmniFocus created. Both sources MERGE onto one `Tag` node keyed by `omnifocus-tag:{category}/{name}`.
 
 **Setup:**
 
-1. **In OmniFocus**, organize your tags hierarchically — the format is `Category/Name`:
+1. **In OmniFocus**, organize your tags hierarchically — child tags nested under a parent produce a `Parent/Child` path:
 
    ```
    Tags
    ├── Work
-   │   ├── Work/Deploy          ← tag applied to a task
-   │   └── Work/CodeReview
+   │   ├── Deploy               ← resulting tag path: Work/Deploy
+   │   └── CodeReview           ← resulting tag path: Work/CodeReview
    └── Personal
-       └── Personal/Taxes
+       └── Taxes                ← resulting tag path: Personal/Taxes
    ```
 
-2. **In Obsidian**, add a `category` field to your note's frontmatter. The note's `title` field (or filename if no title) becomes the second part of the hierarchy:
+2. **In Obsidian**, add a `categories` field to your note's frontmatter. The note's filename stem becomes the second part of the hierarchy:
 
    ```yaml
    ---
-   title: Deploy
-   category: Work
+   categories:
+     - Work
    ---
    Notes about the deployment process...
    ```
 
-   This note will be linked to the same `Work/Deploy` tag as your OmniFocus tasks.
-
-3. **If your note has no `title` frontmatter**, the filename stem is used instead. A file named `Deploy.md` with `category: Work` also merges onto `Work/Deploy`.
+   A file named `Deploy.md` with this frontmatter will be linked to the same `Work/Deploy` tag as your OmniFocus tasks. Multiple categories generate multiple tag links — a note in both `Work` and `Personal` merges onto both parent tags.
 
 **What gets unified:**
 
 | OmniFocus tag | Obsidian frontmatter | Merged Tag node |
 |---|---|---|
-| `Work/Deploy` | `category: Work`, `title: Deploy` | `omnifocus-tag:Work/Deploy` |
-| `Research/LLMs` | `category: Research`, filename `LLMs.md` | `omnifocus-tag:Research/LLMs` |
-| `Personal/Taxes` | `category: Personal`, `title: Taxes` | `omnifocus-tag:Personal/Taxes` |
+| `Work/Deploy` | `categories: [Work]`, filename `Deploy.md` | `omnifocus-tag:Work/Deploy` |
+| `Research/LLMs` | `categories: [Research]`, filename `LLMs.md` | `omnifocus-tag:Research/LLMs` |
+| `Personal/Taxes` | `categories: [Personal]`, filename `Taxes.md` | `omnifocus-tag:Personal/Taxes` |
 
 **Notes:**
-- Regular Obsidian `#tags` and frontmatter `tags: [...]` still create their own Tag nodes (prefixed `tag:`) — this unification only applies to the `category` frontmatter field.
-- If an Obsidian note has a `category` but no title and no filename that can serve as a name, no synthesized tag is emitted.
-- The `category` value must match the OmniFocus parent tag name exactly (case-sensitive).
+- Regular Obsidian `#tags` and frontmatter `tags: [...]` still create their own Tag nodes (prefixed `tag:`) — this unification only applies to the `categories` frontmatter field.
+- If an Obsidian note has `categories` but no filename that can serve as a name, no synthesized tag is emitted.
+- Each `categories` value must match the OmniFocus parent tag name exactly (case-sensitive).
+- The frontmatter key name is configurable via `categories_key` in `[sources.obsidian]` (default: `categories`).
 
 ### Cross-Source Person Linking (Gmail + Google Calendar + Obsidian)
 

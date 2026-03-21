@@ -252,23 +252,30 @@ class TestObsidianParser:
         assert docs[0].mime_type == "text/plain"
 
     def test_category_frontmatter(self):
-        note = "---\ncategory: books\n---\nSome content."
+        note = "---\ncategories:\n  - books\n---\nSome content."
         docs = self.parser.parse(_make_event(note))
-        assert docs[0].node_props["category"] == "books"
+        assert docs[0].node_props["categories"] == ["books"]
 
     def test_category_absent_when_not_set(self):
         note = "---\ntitle: No Category\n---\nContent."
         docs = self.parser.parse(_make_event(note))
-        assert "category" not in docs[0].node_props
+        assert "categories" not in docs[0].node_props
 
     def test_category_frontmatter_extracted(self):
-        note = "---\ncategory: ProjectX\n---\nSome content."
+        note = "---\ncategories: [ProjectX]\n---\nSome content."
         docs = self.parser.parse(_make_event(note))
-        assert docs[0].node_props["category"] == "ProjectX"
+        assert docs[0].node_props["categories"] == ["ProjectX"]
+
+    def test_category_string_normalised_to_list(self):
+        note = "---\ncategories: ProjectX\n---\nSome content."
+        docs = self.parser.parse(_make_event(note))
+        assert docs[0].node_props["categories"] == ["ProjectX"]
 
     def test_category_name_synthesized_tag_targets_omnifocus_id(self):
-        note = "---\ncategory: ProjectX\ntitle: AlphaTask\n---\nContent."
-        docs = self.parser.parse(_make_event(note))
+        note = "---\ncategories: [ProjectX]\ntitle: AlphaTask\n---\nContent."
+        docs = self.parser.parse(
+            _make_event(note, meta={"relative_path": "AlphaTask.md"})
+        )
         tag_hints = [h for h in docs[0].graph_hints if h.predicate == "TAGGED_BY_USER"]
         omnifocus_hints = [
             h for h in tag_hints if h.object_id.startswith("omnifocus-tag:")
@@ -280,7 +287,7 @@ class TestObsidianParser:
         assert hint.object_props["source"] == "omnifocus"
 
     def test_category_name_from_filename(self):
-        note = "---\ncategory: ProjectX\n---\nContent."
+        note = "---\ncategories: [ProjectX]\n---\nContent."
         docs = self.parser.parse(
             _make_event(note, meta={"relative_path": "BetaTask.md"})
         )
@@ -290,6 +297,31 @@ class TestObsidianParser:
         ]
         assert len(omnifocus_hints) == 1
         assert omnifocus_hints[0].object_id == "omnifocus-tag:ProjectX/BetaTask"
+
+    def test_multiple_categories_emit_multiple_hints(self):
+        note = "---\ncategories: [Work, Personal]\n---\nContent."
+        docs = self.parser.parse(
+            _make_event(note, meta={"relative_path": "Deploy.md"})
+        )
+        tag_hints = [h for h in docs[0].graph_hints if h.predicate == "TAGGED_BY_USER"]
+        omnifocus_hints = [
+            h for h in tag_hints if h.object_id.startswith("omnifocus-tag:")
+        ]
+        assert len(omnifocus_hints) == 2
+        ids = {h.object_id for h in omnifocus_hints}
+        assert ids == {"omnifocus-tag:Work/Deploy", "omnifocus-tag:Personal/Deploy"}
+
+    def test_custom_categories_key(self):
+        note = "---\ntopic: Research\n---\nContent."
+        docs = self.parser.parse(
+            _make_event(note, meta={"relative_path": "LLMs.md", "categories_key": "topic"})
+        )
+        tag_hints = [h for h in docs[0].graph_hints if h.predicate == "TAGGED_BY_USER"]
+        omnifocus_hints = [
+            h for h in tag_hints if h.object_id.startswith("omnifocus-tag:")
+        ]
+        assert len(omnifocus_hints) == 1
+        assert omnifocus_hints[0].object_id == "omnifocus-tag:Research/LLMs"
 
     def test_no_category_no_synthesized_hint(self):
         note = "---\ntitle: AlphaTask\n---\nContent."
@@ -301,7 +333,7 @@ class TestObsidianParser:
         assert len(omnifocus_hints) == 0
 
     def test_category_without_name_no_hint(self):
-        note = "---\ncategory: ProjectX\n---\nContent."
+        note = "---\ncategories: [ProjectX]\n---\nContent."
         docs = self.parser.parse(_make_event(note))
         tag_hints = [h for h in docs[0].graph_hints if h.predicate == "TAGGED_BY_USER"]
         omnifocus_hints = [

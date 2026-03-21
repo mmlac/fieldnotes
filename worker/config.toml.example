@@ -64,6 +64,7 @@ watch_paths = ["~/Documents"]
 
 [sources.obsidian]
 vault_path = "~/obsidian-vault"
+# categories_key = "categories"   # frontmatter key for category list (default: "categories")
 
 [sources.repositories]
 repo_roots = []
