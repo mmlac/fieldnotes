@@ -328,6 +328,21 @@ def _validate_homebrew_config(settings: dict[str, Any]) -> None:
         _check_type(section, "include_system", settings["include_system"], bool)
 
 
+def _validate_google_calendar_config(settings: dict[str, Any]) -> None:
+    """Validate [sources.google_calendar] settings."""
+    section = "sources.google_calendar"
+    if "poll_interval_seconds" in settings:
+        _check_type(
+            section, "poll_interval_seconds", settings["poll_interval_seconds"], int
+        )
+    if "max_initial_days" in settings:
+        _check_type(section, "max_initial_days", settings["max_initial_days"], int)
+    if "calendar_ids" in settings:
+        _check_list_of(section, "calendar_ids", settings["calendar_ids"], str)
+    if "client_secrets_path" in settings:
+        _check_type(section, "client_secrets_path", settings["client_secrets_path"], str)
+
+
 def _parse(raw: dict[str, Any]) -> Config:
     cfg = Config()
 
@@ -400,6 +415,8 @@ def _parse(raw: dict[str, Any]) -> Config:
             _validate_macos_apps_config(settings)
         elif name == "homebrew":
             _validate_homebrew_config(settings)
+        elif name == "google_calendar":
+            _validate_google_calendar_config(settings)
         cfg.sources[name] = SourceConfig(name=name, settings=settings)
 
     # [vision]

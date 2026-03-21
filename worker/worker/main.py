@@ -44,6 +44,7 @@ from worker.sources.repositories import RepositorySource
 from worker.sources.homebrew import HomebrewSource
 from worker.sources.macos_apps import MacOSAppsSource
 from worker.sources.omnifocus import OmniFocusSource
+from worker.sources.calendar import GoogleCalendarSource
 from worker.sources.base import PythonSource
 
 # Importing parsers triggers @register decorators
@@ -64,6 +65,7 @@ SOURCE_CLASSES: dict[str, type[PythonSource]] = {
     "macos_apps": MacOSAppsSource,
     "homebrew": HomebrewSource,
     "omnifocus": OmniFocusSource,
+    "google_calendar": GoogleCalendarSource,
 }
 
 

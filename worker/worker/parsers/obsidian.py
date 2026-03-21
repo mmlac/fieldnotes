@@ -13,7 +13,7 @@ from typing import Any
 
 import frontmatter
 
-from .base import BaseParser, GraphHint, ParsedDocument
+from .base import BaseParser, GraphHint, ParsedDocument, canonicalize_email
 from .registry import register
 
 logger = logging.getLogger(__name__)
@@ -186,6 +186,33 @@ class ObsidianParser(BaseParser):
                     confidence=1.0,
                 )
             )
+
+        # --- Parse emails frontmatter → MENTIONS Person GraphHints -----------
+        # Supports: emails: "a@b.com, c@d.com" (string) or emails: [a@b.com, c@d.com]
+        raw_emails = fm.get("emails")
+        if raw_emails:
+            email_list: list[str] = []
+            if isinstance(raw_emails, str):
+                email_list = [e.strip() for e in raw_emails.split(",") if e.strip()]
+            elif isinstance(raw_emails, list):
+                email_list = [str(e).strip() for e in raw_emails if str(e).strip()]
+
+            for raw_email in email_list:
+                norm = canonicalize_email(raw_email)
+                if not norm or "@" not in norm:
+                    continue
+                graph_hints.append(
+                    GraphHint(
+                        subject_id=source_id,
+                        subject_label="File",
+                        predicate="MENTIONS",
+                        object_id=f"person:{norm}",
+                        object_label="Person",
+                        object_props={"email": norm},
+                        object_merge_key="email",
+                        confidence=1.0,
+                    )
+                )
 
         # --- Build the main text ParsedDocument -------------------------------
         docs: list[ParsedDocument] = [

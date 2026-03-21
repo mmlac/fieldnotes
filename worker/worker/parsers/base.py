@@ -2,6 +2,29 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
 
+# ---------------------------------------------------------------------------
+# Email canonicalization — shared across Gmail, Calendar, and Obsidian parsers
+# ---------------------------------------------------------------------------
+
+# Domains that are aliases for gmail.com.  Google treats these as the same
+# mailbox, so normalising them avoids duplicate Person nodes.
+_GMAIL_ALIASES = frozenset({"googlemail.com"})
+
+
+def canonicalize_email(raw: str) -> str:
+    """Normalise an email address for cross-source Person matching.
+
+    * Strips whitespace, lower-cases.
+    * Rewrites ``@googlemail.com`` → ``@gmail.com``.
+    """
+    email = raw.strip().lower()
+    if not email or "@" not in email:
+        return email
+    local, domain = email.rsplit("@", 1)
+    if domain in _GMAIL_ALIASES:
+        domain = "gmail.com"
+    return f"{local}@{domain}"
+
 
 @dataclass
 class GraphHint:

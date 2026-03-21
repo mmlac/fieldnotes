@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+from worker.parsers.base import canonicalize_email
 from worker.parsers.obsidian import ObsidianParser
 
 
@@ -15,6 +16,32 @@ def _make_event(text: str, **overrides) -> dict:
     }
     base.update(overrides)
     return base
+
+
+class TestCanonicalizeEmail:
+    def test_lowercase(self):
+        assert canonicalize_email("Alice@Example.COM") == "alice@example.com"
+
+    def test_strip(self):
+        assert canonicalize_email("  bob@x.com  ") == "bob@x.com"
+
+    def test_googlemail_to_gmail(self):
+        assert canonicalize_email("user@googlemail.com") == "user@gmail.com"
+
+    def test_gmail_unchanged(self):
+        assert canonicalize_email("user@gmail.com") == "user@gmail.com"
+
+    def test_other_domains_unchanged(self):
+        assert canonicalize_email("user@outlook.com") == "user@outlook.com"
+
+    def test_empty_string(self):
+        assert canonicalize_email("") == ""
+
+    def test_no_at_sign(self):
+        assert canonicalize_email("notanemail") == "notanemail"
+
+    def test_googlemail_case_insensitive(self):
+        assert canonicalize_email("User@GOOGLEMAIL.COM") == "user@gmail.com"
 
 
 class TestObsidianParser:
@@ -287,3 +314,94 @@ class TestObsidianParser:
 
         parser = get("obsidian")
         assert isinstance(parser, ObsidianParser)
+
+    # --- emails frontmatter → MENTIONS Person hints --------------------------
+
+    def test_emails_string_comma_separated(self):
+        note = "---\nemails: alice@example.com, bob@example.com\n---\nContent."
+        docs = self.parser.parse(_make_event(note))
+        person_hints = [h for h in docs[0].graph_hints if h.predicate == "MENTIONS"]
+        assert len(person_hints) == 2
+        emails = {h.object_props["email"] for h in person_hints}
+        assert emails == {"alice@example.com", "bob@example.com"}
+
+    def test_emails_list_format(self):
+        note = "---\nemails:\n  - alice@example.com\n  - bob@example.com\n---\nContent."
+        docs = self.parser.parse(_make_event(note))
+        person_hints = [h for h in docs[0].graph_hints if h.predicate == "MENTIONS"]
+        assert len(person_hints) == 2
+
+    def test_emails_person_node_properties(self):
+        note = "---\nemails: alice@example.com\n---\nContent."
+        docs = self.parser.parse(_make_event(note))
+        hint = [h for h in docs[0].graph_hints if h.predicate == "MENTIONS"][0]
+        assert hint.subject_id == "notes/test.md"
+        assert hint.subject_label == "File"
+        assert hint.object_id == "person:alice@example.com"
+        assert hint.object_label == "Person"
+        assert hint.object_merge_key == "email"
+        assert hint.object_props == {"email": "alice@example.com"}
+
+    def test_emails_googlemail_canonicalized(self):
+        note = "---\nemails: alice@googlemail.com\n---\nContent."
+        docs = self.parser.parse(_make_event(note))
+        hint = [h for h in docs[0].graph_hints if h.predicate == "MENTIONS"][0]
+        assert hint.object_id == "person:alice@gmail.com"
+        assert hint.object_props["email"] == "alice@gmail.com"
+
+    def test_emails_case_normalized(self):
+        note = "---\nemails: Alice@Example.COM\n---\nContent."
+        docs = self.parser.parse(_make_event(note))
+        hint = [h for h in docs[0].graph_hints if h.predicate == "MENTIONS"][0]
+        assert hint.object_props["email"] == "alice@example.com"
+
+    def test_emails_whitespace_trimmed(self):
+        note = "---\nemails: \"  alice@example.com  ,  bob@example.com  \"\n---\nContent."
+        docs = self.parser.parse(_make_event(note))
+        person_hints = [h for h in docs[0].graph_hints if h.predicate == "MENTIONS"]
+        assert len(person_hints) == 2
+        emails = {h.object_props["email"] for h in person_hints}
+        assert emails == {"alice@example.com", "bob@example.com"}
+
+    def test_emails_empty_no_hints(self):
+        note = "---\nemails: \"\"\n---\nContent."
+        docs = self.parser.parse(_make_event(note))
+        person_hints = [h for h in docs[0].graph_hints if h.predicate == "MENTIONS"]
+        assert len(person_hints) == 0
+
+    def test_emails_invalid_skipped(self):
+        note = "---\nemails: notanemail, valid@example.com\n---\nContent."
+        docs = self.parser.parse(_make_event(note))
+        person_hints = [h for h in docs[0].graph_hints if h.predicate == "MENTIONS"]
+        assert len(person_hints) == 1
+        assert person_hints[0].object_props["email"] == "valid@example.com"
+
+    def test_emails_cross_source_with_gmail(self):
+        """Person ID format matches Gmail parser for cross-source linking."""
+        from worker.parsers.gmail import GmailParser
+
+        # Obsidian note with emails
+        note = "---\nemails: alice@example.com\n---\nContent."
+        obs_docs = self.parser.parse(_make_event(note))
+        obs_hint = [h for h in obs_docs[0].graph_hints if h.predicate == "MENTIONS"][0]
+
+        # Gmail email from the same person
+        gmail_event = {
+            "source_type": "gmail",
+            "source_id": "gmail:msg-1",
+            "operation": "created",
+            "text": "Hello",
+            "meta": {"sender_email": "alice@example.com", "recipients": []},
+        }
+        gmail_docs = GmailParser().parse(gmail_event)
+        gmail_hint = [h for h in gmail_docs[0].graph_hints if h.predicate == "SENT"][0]
+
+        # Both should resolve to the same Person node
+        assert obs_hint.object_id == gmail_hint.subject_id
+        assert obs_hint.object_merge_key == gmail_hint.subject_merge_key
+
+    def test_no_emails_frontmatter_no_hints(self):
+        note = "---\ntitle: No Emails\n---\nContent."
+        docs = self.parser.parse(_make_event(note))
+        person_hints = [h for h in docs[0].graph_hints if h.predicate == "MENTIONS"]
+        assert len(person_hints) == 0

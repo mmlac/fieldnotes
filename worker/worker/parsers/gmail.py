@@ -12,7 +12,7 @@ from typing import Any
 
 from bs4 import BeautifulSoup
 
-from .base import BaseParser, GraphHint, ParsedDocument
+from .base import BaseParser, GraphHint, ParsedDocument, canonicalize_email
 from .registry import register
 
 logger = logging.getLogger(__name__)
@@ -103,7 +103,7 @@ class GmailParser(BaseParser):
 
         # SENT: Person → Email (sender sent this email)
         if sender_addr:
-            norm_sender = sender_addr.strip().lower()
+            norm_sender = canonicalize_email(sender_addr)
             graph_hints.append(
                 GraphHint(
                     subject_id=f"person:{norm_sender}",
@@ -130,7 +130,7 @@ class GmailParser(BaseParser):
             recip_addr = _parse_email_address(recip_raw)
             if not recip_addr:
                 continue
-            norm_recip = recip_addr.strip().lower()
+            norm_recip = canonicalize_email(recip_addr)
             graph_hints.append(
                 GraphHint(
                     subject_id=source_id,

@@ -223,6 +223,12 @@ poll_interval_seconds = 300
 max_initial_threads = 500
 label_filter = "INBOX"
 client_secrets_path = "~/.fieldnotes/credentials.json"
+
+[sources.google_calendar]
+poll_interval_seconds = 300
+max_initial_days = 90
+calendar_ids = ["primary"]
+client_secrets_path = "~/.fieldnotes/credentials.json"
 ```
 
 #### Gmail OAuth Setup
@@ -236,6 +242,16 @@ Gmail indexing requires a Google Cloud OAuth2 credential. This is a one-time set
 5. **First run**: When the daemon starts with Gmail enabled, it will open your browser for a one-time consent screen. Approve read-only access (`gmail.readonly` scope). The resulting token is saved to `~/.fieldnotes/data/gmail_token.json` (mode `0600`) and refreshed automatically from then on.
 
 > **Note:** If you're running fieldnotes as a system service (headless), complete the first OAuth flow manually with `fieldnotes serve --daemon` in a terminal before installing the service. The saved token will be reused.
+
+#### Google Calendar OAuth Setup
+
+Google Calendar uses the same OAuth credentials file as Gmail. If you already configured Gmail, you only need to enable the Calendar API:
+
+1. **Enable the Google Calendar API**: In the same Google Cloud project, go to *APIs & Services → Library*, search for "Google Calendar API", and click *Enable*.
+2. **First run**: When the daemon starts with Google Calendar enabled, it will open your browser for a one-time consent screen. Approve read-only access (`calendar.events.readonly` scope). The token is saved to `~/.fieldnotes/data/calendar_token.json` (mode `0600`) and refreshed automatically.
+3. **Multiple calendars**: Set `calendar_ids` to a list of calendar IDs. Use `"primary"` for your main calendar. Other calendars can be found in Google Calendar settings under *Settings for other calendars → Integrate calendar → Calendar ID*.
+
+> **Tip:** The same `credentials.json` file works for both Gmail and Google Calendar — they share the OAuth client, but each source has its own token file and consent flow.
 
 ```toml
 repo_roots = ["~/projects"]
@@ -322,6 +338,7 @@ max_concurrency = 0              # max parallel LLM calls (0 = unlimited)
 | **OmniFocus** | Polling (default: every 5 minutes) | Tasks, projects, tags, due dates, and subtask hierarchy (macOS only) |
 | **macOS Apps** | Polling (default: every 6 hours) | Installed application bundles (Info.plist) |
 | **Homebrew** | Polling (default: every 6 hours) | Installed formulae and casks with descriptions |
+| **Google Calendar** | Backfill + polling (configurable interval) | Events, attendees, organizers, locations |
 
 Each source emits `IngestEvent` dicts into the pipeline queue. Modified files trigger a delete-before-rewrite cycle that cleans stale graph data (edges, chunks, orphan entities) in a single Neo4j transaction before writing the updated version.
 
@@ -371,6 +388,53 @@ Fieldnotes automatically merges tags across OmniFocus and Obsidian so that a sin
 - If an Obsidian note has a `category` but no title and no filename that can serve as a name, no synthesized tag is emitted.
 - The `category` value must match the OmniFocus parent tag name exactly (case-sensitive).
 
+### Cross-Source Person Linking (Gmail + Google Calendar + Obsidian)
+
+When multiple people-aware sources are enabled, Fieldnotes automatically merges Person nodes across sources into a single graph identity based on email address. An attendee at a meeting, the sender of an email, and a person mentioned in an Obsidian note all link to the same Person node — no manual linking required.
+
+**How it works:** The Gmail parser, Google Calendar parser, and Obsidian parser all emit `GraphHint` records with `object_merge_key="email"` and an `object_id` of the form `person:{email}`. The pipeline Writer `MERGE`s Person nodes by email, so an attendee in a calendar event, a correspondent in a Gmail thread, and a contact in an Obsidian note are guaranteed to resolve to the same graph node. Periodic `reconcile_persons()` runs create `SAME_AS` edges when the same email appears across sources, keeping the longest display name.
+
+**Email canonicalization:** All parsers normalise emails through a shared `canonicalize_email()` function that lower-cases, trims whitespace, and rewrites `@googlemail.com` → `@gmail.com` (Google treats these as the same mailbox). This prevents duplicate Person nodes for the same real-world identity.
+
+**Linking people from Obsidian notes:**
+
+Add an `emails` field to your note's frontmatter — either as a comma-separated string or a YAML list:
+
+```yaml
+---
+title: Alice Smith
+emails: alice@example.com, alice@googlemail.com
+---
+Meeting notes about Alice...
+```
+
+or equivalently:
+
+```yaml
+---
+title: Alice Smith
+emails:
+  - alice@example.com
+  - alice@googlemail.com
+---
+```
+
+Each email creates a `MENTIONS` edge from the File node to a Person node. Because `@googlemail.com` is canonicalised to `@gmail.com`, the Person node will automatically merge with any Gmail or Calendar activity from that address.
+
+**Graph relationships created by the Calendar parser:**
+
+| Predicate | Direction | Description |
+|---|---|---|
+| `ORGANIZED_BY` | CalendarEvent → Person | The event organizer |
+| `ATTENDED_BY` | CalendarEvent → Person | Each attendee (excludes the organizer to avoid duplication) |
+| `CREATED_BY` | CalendarEvent → Person | Only emitted when the creator is different from the organizer |
+
+**What this enables:**
+- "Who was in the meeting about X?" — traverses `ATTENDED_BY` edges from the CalendarEvent
+- "Show me all interactions with alice@example.com" — returns emails, meetings, *and* Obsidian notes via a single Person node
+- "What was discussed before and after the design review?" — links meeting context to email follow-ups and your notes through shared Person nodes
+- "What do I know about Bob?" — finds the Person node by email and traverses all `SENT`, `TO`, `ATTENDED_BY`, and `MENTIONS` edges across every source
+
 ### Initial Scan and Cursor Persistence
 
 On first startup, file and obsidian sources walk all configured directories and index every matching file. A SHA256-based cursor is saved to disk after the scan completes, recording the hash and mtime of every indexed file.
@@ -384,6 +448,7 @@ On subsequent startups, the cursor is loaded and diffed against the current file
 | **Gmail** | `~/.fieldnotes/data/gmail_cursor.json` | Gmail History API ID |
 | **Git Repos** | `~/.fieldnotes/data/repo_cursor.json` | Per-repo HEAD commit SHA |
 | **OmniFocus** | `~/.fieldnotes/state/omnifocus.json` | Per-task content hash |
+| **Google Calendar** | `~/.fieldnotes/data/calendar_cursor.json` | Per-calendar syncToken |
 
 Cursors are checkpointed every 5 minutes during operation and saved on graceful shutdown, so a restart only re-processes files that changed since the last checkpoint.
 
@@ -822,6 +887,9 @@ worker/
 │   ├── files.py            # Filesystem watcher (watchdog)
 │   ├── obsidian.py         # Obsidian vault watcher
 │   ├── gmail.py            # Gmail polling with cursor sync
+│   ├── gmail_auth.py       # Gmail OAuth2 flow
+│   ├── calendar.py         # Google Calendar polling with syncToken sync
+│   ├── calendar_auth.py    # Google Calendar OAuth2 flow
 │   ├── repositories.py     # Git repository scanner
 │   ├── omnifocus.py        # OmniFocus task polling via JXA (macOS)
 │   ├── macos_apps.py       # macOS app discovery (polling)
@@ -831,6 +899,7 @@ worker/
 │   ├── iwork.py            # Apple Pages and Keynote (osascript)
 │   ├── obsidian.py         # Obsidian notes (wikilinks, frontmatter)
 │   ├── gmail.py            # Email messages
+│   ├── calendar.py         # Calendar events (attendees, organizer, location)
 │   ├── repositories.py     # Git commits and READMEs
 │   ├── omnifocus.py        # OmniFocus tasks (projects, tags, subtasks)
 │   └── apps.py             # Application metadata
