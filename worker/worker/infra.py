@@ -5,6 +5,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 
@@ -12,6 +13,23 @@ _FN_DIR = Path.home() / ".fieldnotes"
 _INFRA_DIR = _FN_DIR / "infrastructure"
 _DEFAULT_COMPOSE = _INFRA_DIR / "docker-compose.yml"
 _DEFAULT_ENV = _INFRA_DIR / ".env"
+
+
+def wait_for_docker(timeout: int = 120) -> None:
+    """Block until the Docker daemon is reachable or *timeout* seconds elapse.
+
+    Raises ``RuntimeError`` if Docker does not become available in time.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        result = subprocess.run(
+            ["docker", "info"],
+            capture_output=True,
+        )
+        if result.returncode == 0:
+            return
+        time.sleep(2)
+    raise RuntimeError(f"Docker did not become available within {timeout}s")
 
 
 def _resolve_compose(compose_file: Path | None) -> tuple[Path, Path]:

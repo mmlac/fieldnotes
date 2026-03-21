@@ -8,9 +8,13 @@ import sys
 from pathlib import Path
 from string import Template
 
+from worker.infra import infra_stop, infra_up, wait_for_docker
+
 PLIST_LABEL = "com.fieldnotes.daemon"
 
 _TEMPLATES = Path(__file__).resolve().parent.parent / "templates"
+_BIN_DIR = Path.home() / ".fieldnotes" / "bin"
+_WRAPPER_PATH = _BIN_DIR / "fieldnotes-daemon-wrapper.sh"
 
 
 def _fieldnotes_executable() -> list[str]:
@@ -41,15 +45,24 @@ class LaunchdBackend:
         self._plist_path = self._plist_dir / f"{PLIST_LABEL}.plist"
         self._log_dir = _log_dir()
         self._log_path = self._log_dir / "daemon.log"
+        self._wrapper_path = _WRAPPER_PATH
 
     def install(self) -> None:
         self._plist_dir.mkdir(parents=True, exist_ok=True)
         self._log_dir.mkdir(parents=True, exist_ok=True)
 
-        exe_parts = _fieldnotes_executable()
-        exe_strings = "\n        ".join(
-            f"<string>{part}</string>" for part in [*exe_parts, "serve", "--daemon"]
+        # Write the wrapper script that waits for Docker then starts infra + daemon.
+        self._wrapper_path.parent.mkdir(parents=True, exist_ok=True)
+        fieldnotes_cmd = " ".join(_fieldnotes_executable())
+        wrapper_content = _render_template(
+            "fieldnotes-daemon-wrapper.sh",
+            {"FIELDNOTES_CMD": fieldnotes_cmd},
         )
+        self._wrapper_path.write_text(wrapper_content)
+        self._wrapper_path.chmod(0o755)
+        print(f"Wrote {self._wrapper_path}")
+
+        exe_strings = f"<string>{self._wrapper_path}</string>"
         content = _render_template(
             "com.fieldnotes.daemon.plist",
             {
@@ -79,11 +92,16 @@ class LaunchdBackend:
         else:
             print("Service plist not found — nothing to remove.")
 
+        if self._wrapper_path.exists():
+            self._wrapper_path.unlink()
+
     def start(self) -> None:
         if not self._plist_path.exists():
             raise SystemExit(
                 "error: service not installed — run 'fieldnotes service install' first"
             )
+        wait_for_docker()
+        infra_up()
         subprocess.run(
             ["launchctl", "load", "-w", str(self._plist_path)],
             check=True,
@@ -95,6 +113,7 @@ class LaunchdBackend:
             ["launchctl", "unload", str(self._plist_path)],
             check=False,
         )
+        infra_stop()
         print("Service stopped")
 
     def status(self) -> None:

@@ -9,6 +9,8 @@ import sys
 from pathlib import Path
 from string import Template
 
+from worker.infra import infra_stop, infra_up, wait_for_docker
+
 UNIT_NAME = "fieldnotes.service"
 
 _TEMPLATES = Path(__file__).resolve().parent.parent / "templates"
@@ -83,6 +85,8 @@ class SystemdBackend:
             raise SystemExit(
                 "error: service not installed — run 'fieldnotes service install' first"
             )
+        wait_for_docker()
+        infra_up()
         subprocess.run(
             ["systemctl", "--user", "start", UNIT_NAME],
             check=True,
@@ -94,6 +98,7 @@ class SystemdBackend:
             ["systemctl", "--user", "stop", UNIT_NAME],
             check=False,
         )
+        infra_stop()
         print("Service stopped")
 
     def status(self) -> None:

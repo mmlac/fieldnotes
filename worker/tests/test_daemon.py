@@ -46,17 +46,13 @@ class TestFieldnotesExecutable:
 
 class TestRenderTemplate:
     def test_plist_template(self) -> None:
-        exe_strings = "\n        ".join(
-            f"<string>{p}</string>"
-            for p in ["/usr/bin/fieldnotes", "serve", "--daemon"]
-        )
+        exe_strings = "<string>/tmp/wrapper.sh</string>"
         content = _render_template(
             "com.fieldnotes.daemon.plist",
             {"PROGRAM_ARGUMENTS": exe_strings, "LOG_PATH": "/tmp/fn.log"},
         )
         assert "com.fieldnotes.daemon" in content
-        assert "<string>/usr/bin/fieldnotes</string>" in content
-        assert "<string>serve</string>" in content
+        assert "<string>/tmp/wrapper.sh</string>" in content
         assert "/tmp/fn.log" in content
 
     def test_systemd_template(self) -> None:
@@ -68,7 +64,10 @@ class TestRenderTemplate:
         )
         assert "fieldnotes" in content
         assert "/usr/bin/fieldnotes" in content
-        assert "ExecStart" in content
+        assert "ExecStart=/usr/bin/fieldnotes serve --daemon" in content
+        assert "ExecStartPre=/usr/bin/fieldnotes up" in content
+        assert "ExecStopPost=-/usr/bin/fieldnotes stop" in content
+        assert "docker.service" in content
 
 
 # ------------------------------------------------------------------
@@ -112,15 +111,24 @@ class TestLaunchdBackend:
         backend._plist_path = tmp_path / "com.fieldnotes.daemon.plist"
         backend._log_dir = tmp_path / "logs"
         backend._log_path = tmp_path / "logs" / "daemon.log"
+        wrapper_path = tmp_path / "bin" / "fieldnotes-daemon-wrapper.sh"
+        backend._wrapper_path = wrapper_path
 
         backend.install()
 
+        # Wrapper script written and executable
+        assert wrapper_path.exists()
+        assert wrapper_path.stat().st_mode & 0o777 == 0o755
+        wrapper_content = wrapper_path.read_text()
+        assert "/usr/bin/fieldnotes up" in wrapper_content
+        assert "/usr/bin/fieldnotes serve --daemon" in wrapper_content
+        assert "docker info" in wrapper_content
+
+        # Plist points to the wrapper script
         assert backend._plist_path.exists()
         content = backend._plist_path.read_text()
         assert "com.fieldnotes.daemon" in content
-        assert "<string>/usr/bin/fieldnotes</string>" in content
-        assert "<string>serve</string>" in content
-        assert "<string>--daemon</string>" in content
+        assert str(wrapper_path) in content
         assert backend._plist_path.stat().st_mode & 0o777 == 0o600
         mock_run.assert_called_once()
         assert "launchctl" in mock_run.call_args[0][0]
@@ -131,10 +139,14 @@ class TestLaunchdBackend:
         plist_path = tmp_path / "com.fieldnotes.daemon.plist"
         plist_path.write_text("<plist>test</plist>")
         backend._plist_path = plist_path
+        wrapper_path = tmp_path / "wrapper.sh"
+        wrapper_path.write_text("#!/bin/sh")
+        backend._wrapper_path = wrapper_path
 
         backend.uninstall()
 
         assert not plist_path.exists()
+        assert not wrapper_path.exists()
         mock_run.assert_called_once()
 
     @patch("worker.service.launchd.subprocess.run")
@@ -143,6 +155,7 @@ class TestLaunchdBackend:
     ) -> None:
         backend = LaunchdBackend()
         backend._plist_path = tmp_path / "nonexistent.plist"
+        backend._wrapper_path = tmp_path / "nonexistent.sh"
 
         backend.uninstall()
 
@@ -159,23 +172,34 @@ class TestLaunchdBackend:
         with pytest.raises(SystemExit, match="not installed"):
             backend.start()
 
+    @patch("worker.service.launchd.infra_up", return_value=0)
+    @patch("worker.service.launchd.wait_for_docker")
     @patch("worker.service.launchd.subprocess.run")
-    def test_start_installed(self, mock_run: MagicMock, tmp_path: Path) -> None:
+    def test_start_installed(
+        self, mock_run: MagicMock, mock_wait: MagicMock, mock_up: MagicMock,
+        tmp_path: Path,
+    ) -> None:
         backend = LaunchdBackend()
         plist_path = tmp_path / "com.fieldnotes.daemon.plist"
         plist_path.write_text("<plist/>")
         backend._plist_path = plist_path
 
         backend.start()
+        mock_wait.assert_called_once()
+        mock_up.assert_called_once()
         mock_run.assert_called_once()
 
+    @patch("worker.service.launchd.infra_stop", return_value=0)
     @patch("worker.service.launchd.subprocess.run")
-    def test_stop(self, mock_run: MagicMock, tmp_path: Path) -> None:
+    def test_stop(
+        self, mock_run: MagicMock, mock_stop: MagicMock, tmp_path: Path,
+    ) -> None:
         backend = LaunchdBackend()
         backend._plist_path = tmp_path / "com.fieldnotes.daemon.plist"
 
         backend.stop()
         mock_run.assert_called_once()
+        mock_stop.assert_called_once()
 
     @patch("worker.service.launchd.subprocess.run")
     def test_status_loaded(
@@ -232,6 +256,9 @@ class TestSystemdBackend:
         assert backend._unit_path.exists()
         content = backend._unit_path.read_text()
         assert "ExecStart" in content
+        assert "ExecStartPre" in content
+        assert "ExecStopPost" in content
+        assert "docker.service" in content
         assert "/usr/bin/fieldnotes" in content
         assert backend._unit_path.stat().st_mode & 0o777 == 0o644
         # Should call daemon-reload and enable --now
@@ -270,21 +297,30 @@ class TestSystemdBackend:
         with pytest.raises(SystemExit, match="not installed"):
             backend.start()
 
+    @patch("worker.service.systemd.infra_up", return_value=0)
+    @patch("worker.service.systemd.wait_for_docker")
     @patch("worker.service.systemd.subprocess.run")
-    def test_start_installed(self, mock_run: MagicMock, tmp_path: Path) -> None:
+    def test_start_installed(
+        self, mock_run: MagicMock, mock_wait: MagicMock, mock_up: MagicMock,
+        tmp_path: Path,
+    ) -> None:
         backend = SystemdBackend()
         unit_path = tmp_path / "fieldnotes.service"
         unit_path.write_text("[Unit]")
         backend._unit_path = unit_path
 
         backend.start()
+        mock_wait.assert_called_once()
+        mock_up.assert_called_once()
         mock_run.assert_called_once()
 
+    @patch("worker.service.systemd.infra_stop", return_value=0)
     @patch("worker.service.systemd.subprocess.run")
-    def test_stop(self, mock_run: MagicMock) -> None:
+    def test_stop(self, mock_run: MagicMock, mock_stop: MagicMock) -> None:
         backend = SystemdBackend()
         backend.stop()
         mock_run.assert_called_once()
+        mock_stop.assert_called_once()
 
     @patch("worker.service.systemd.subprocess.run")
     def test_status_active(
