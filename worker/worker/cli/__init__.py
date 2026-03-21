@@ -316,6 +316,54 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Run even if corpus is below min_corpus_size",
     )
 
+    # ── backup ─────────────────────────────────────────────────────
+    backup_p = sub.add_parser(
+        "backup",
+        help="Create or list backups of fieldnotes data and databases",
+    )
+    backup_p.add_argument(
+        "--keep",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Only keep the N most recent backups, delete older ones",
+    )
+    backup_sub = backup_p.add_subparsers(dest="backup_command")
+    create_p = backup_sub.add_parser("create", help="Create a backup (default when no subcommand)")
+    create_p.add_argument(
+        "--keep",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Only keep the N most recent backups, delete older ones",
+    )
+    backup_sub.add_parser("list", help="List existing backups")
+    schedule_p = backup_sub.add_parser(
+        "schedule", help="Install or remove a daily scheduled backup"
+    )
+    schedule_p.add_argument(
+        "--remove",
+        action="store_true",
+        help="Remove the scheduled backup instead of installing it",
+    )
+    schedule_p.add_argument(
+        "--keep",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Only keep the N most recent backups per scheduled run",
+    )
+
+    # ── restore ────────────────────────────────────────────────────
+    restore_p = sub.add_parser(
+        "restore",
+        help="Restore fieldnotes data and databases from a backup",
+    )
+    restore_p.add_argument(
+        "backup_name",
+        help="Backup filename (from 'fieldnotes backup list') or full path",
+    )
+
     # ── topics ──────────────────────────────────────────────────────
     topics_p = sub.add_parser("topics", help="Browse and inspect topics")
     topics_p.add_argument(
@@ -629,6 +677,25 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
+
+    if args.command == "backup":
+        from worker.backup import backup as do_backup
+        from worker.backup import list_backups, schedule_backup
+
+        if args.backup_command == "list":
+            return list_backups()
+        if args.backup_command == "schedule":
+            return schedule_backup(remove=args.remove, keep=args.keep)
+        # No subcommand or "create" both mean: create a backup.
+        keep = getattr(args, "keep", None)
+        return do_backup(keep=keep)
+
+    if args.command == "restore":
+        from pathlib import Path as _Path
+
+        from worker.backup import restore
+
+        return restore(_Path(args.backup_name))
 
     print(f"error: unknown command {args.command!r}", file=sys.stderr)
     return 1

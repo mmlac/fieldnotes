@@ -1,0 +1,6 @@
+[Unit]
+Description=fieldnotes daily backup
+
+[Service]
+Type=oneshot
+ExecStart={{EXEC_START}}
