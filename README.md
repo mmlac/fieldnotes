@@ -101,15 +101,22 @@ fieldnotes init
 
 # 2. Start infrastructure (option A: automatic)
 fieldnotes init --with-docker
-# Generates .env with passwords, runs docker compose up -d.
+# Extracts docker-compose.yml + Grafana/Prometheus configs to
+# ~/.fieldnotes/infrastructure/, generates .env with passwords,
+# and runs docker compose up -d.
+
+# 2. Start infrastructure (option A, custom compose file)
+fieldnotes init --compose-file /path/to/docker-compose.yml
+# Uses the compose file's parent directory as the project root.
+# .env is written next to the compose file.
 
 # 2. Start infrastructure (option B: manual)
 export NEO4J_PASSWORD=changeme
 export GRAFANA_PASSWORD=changeme
-docker compose up -d
+docker compose -f ~/.fieldnotes/infrastructure/docker-compose.yml up -d
 
 # 3. Wait for services to be healthy
-docker compose ps          # all services should show "healthy"
+docker compose -f ~/.fieldnotes/infrastructure/docker-compose.yml ps
 
 # 4. Pull the default models (if using Ollama)
 ollama pull nomic-embed-text   # embedding model
@@ -484,7 +491,8 @@ fieldnotes [-c CONFIG] [-v] <command>
 **`init`** — Bootstrap `~/.fieldnotes/config.toml` and data directories.
   - When run in a terminal, launches an interactive wizard that prompts for your Neo4j password, model provider (Ollama/OpenAI/Anthropic), document paths, and Obsidian vault location.
   - `--non-interactive` — skip prompts and use defaults (useful in scripts).
-  - `--with-docker` — generate a `.env` file with `NEO4J_PASSWORD` and `GRAFANA_PASSWORD`, then run `docker compose up -d` automatically.
+  - `--with-docker` — extract the bundled `docker-compose.yml`, Prometheus, and Grafana configs to `~/.fieldnotes/infrastructure/`, generate a `.env` file with `NEO4J_PASSWORD` and `GRAFANA_PASSWORD`, create data directories for bind mounts, then run `docker compose up -d` automatically.
+  - `--compose-file PATH` — use a custom `docker-compose.yml` instead of the bundled one (implies `--with-docker`). The compose file's parent directory is used as the Docker Compose project root; `.env` is written there.
 
 **`doctor`** — Pre-flight checks for a healthy setup. Verifies:
   - Config file exists and parses correctly.
@@ -494,6 +502,12 @@ fieldnotes [-c CONFIG] [-v] <command>
   - Neo4j and Qdrant are reachable.
   - Source watch paths exist on disk.
   - Required tools (`ollama`, `docker`) are on PATH.
+
+**`up [--compose-file PATH]`** — Start Docker infrastructure (`docker compose up -d`). Uses `~/.fieldnotes/infrastructure/docker-compose.yml` by default.
+
+**`stop [--compose-file PATH]`** — Stop Docker containers without removing them (`docker compose stop`). Data volumes are preserved.
+
+**`down [--compose-file PATH]`** — Tear down Docker infrastructure (`docker compose down`). Containers and networks are removed; data volumes under `~/.fieldnotes/data/` are preserved.
 
 **`search <query> [-k N]`** — Hybrid search combining graph traversal and vector similarity. Returns ranked results with source metadata.
 
@@ -617,12 +631,18 @@ Fieldnotes pushes metrics to a Prometheus Pushgateway running in Docker. Prometh
 
 ### Docker Compose Services
 
-The full stack runs five containers. Both `NEO4J_PASSWORD` and `GRAFANA_PASSWORD` environment variables must be set before starting:
+The full stack runs five containers. When installed via `pipx install fieldnotes`, all Docker infrastructure files (compose file, Prometheus config, Grafana dashboards and provisioning) are bundled with the package and extracted to `~/.fieldnotes/infrastructure/` on first `fieldnotes init --with-docker`.
+
+If you cloned the repository, the same files are also available in the repo root.
 
 ```bash
+# Option A: automatic (extracts bundled infra + generates .env + starts containers)
+fieldnotes init --with-docker
+
+# Option B: manual
 export NEO4J_PASSWORD=changeme
 export GRAFANA_PASSWORD=changeme
-docker compose up -d
+docker compose -f ~/.fieldnotes/infrastructure/docker-compose.yml up -d
 ```
 
 | Service | Image | Port | Memory Limit | Purpose |
@@ -759,8 +779,13 @@ worker/
 ├── service/                # System service management
 │   ├── launchd.py          # macOS
 │   └── systemd.py          # Linux
+├── infrastructure/         # Bundled Docker Compose + Grafana/Prometheus configs
+│   ├── docker-compose.yml  # (extracted to ~/.fieldnotes/infrastructure/)
+│   ├── prometheus.yml
+│   └── grafana/            # Provisioning and dashboard JSON
 ├── config.py               # TOML config loader (with role→model→provider validation)
 ├── init.py                 # Interactive init wizard (--with-docker, --non-interactive)
+├── infra.py                # Docker Compose lifecycle (up, stop, down)
 ├── doctor.py               # Pre-flight diagnostic checks
 ├── mcp_server.py           # MCP server (stdio transport)
 ├── serve_daemon.py         # Daemon mode with startup summary

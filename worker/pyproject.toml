@@ -42,7 +42,7 @@ dependencies = [
 Repository = "https://github.com/mmlac/fieldnotes"
 
 [tool.setuptools.package-data]
-worker = ["templates/*", "config.toml.example"]
+worker = ["templates/*", "config.toml.example", "infrastructure/**/*"]
 
 [project.scripts]
 fieldnotes = "worker.cli:main"

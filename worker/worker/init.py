@@ -15,6 +15,7 @@ from pathlib import Path
 _FN_DIR = Path.home() / ".fieldnotes"
 _CONFIG_PATH = _FN_DIR / "config.toml"
 _DATA_DIR = _FN_DIR / "data"
+_INFRA_DIR = _FN_DIR / "infrastructure"
 
 
 def _ollama_available() -> bool:
@@ -116,9 +117,9 @@ def _interactive_config(config_text: str) -> str:
     return config_text
 
 
-def _generate_env_file(neo4j_pw: str) -> Path:
+def _generate_env_file(neo4j_pw: str, env_dir: Path) -> Path:
     """Write a .env file with required passwords for Docker Compose."""
-    env_path = Path.cwd() / ".env"
+    env_path = env_dir / ".env"
     if env_path.exists():
         print(f".env already exists at {env_path} — skipping generation")
         return env_path
@@ -140,10 +141,43 @@ def _generate_env_file(neo4j_pw: str) -> Path:
     return env_path
 
 
+def _extract_infrastructure() -> Path:
+    """Copy bundled Docker infrastructure files to ~/.fieldnotes/infrastructure/.
+
+    Returns the infrastructure directory path.  Files are only written if the
+    directory doesn't already exist so that user customisations are preserved.
+    """
+    if _INFRA_DIR.exists():
+        print(f"Infrastructure directory already exists at {_INFRA_DIR}")
+        return _INFRA_DIR
+
+    infra_pkg = resources.files("worker").joinpath("infrastructure")
+
+    def _copy_tree(src: resources.abc.Traversable, dst: Path) -> None:
+        dst.mkdir(parents=True, exist_ok=True)
+        for item in src.iterdir():
+            target = dst / item.name
+            if item.is_file():
+                target.write_bytes(item.read_bytes())
+            else:
+                _copy_tree(item, target)
+
+    _copy_tree(infra_pkg, _INFRA_DIR)
+    print(f"Extracted Docker infrastructure to {_INFRA_DIR}")
+    return _INFRA_DIR
+
+
+def _ensure_data_dirs() -> None:
+    """Create bind-mount data directories so Docker doesn't create them as root."""
+    for subdir in ("neo4j", "qdrant", "prometheus", "grafana"):
+        (_DATA_DIR / subdir).mkdir(parents=True, exist_ok=True)
+
+
 def init(
     *,
     with_docker: bool = False,
     non_interactive: bool = False,
+    compose_file: Path | None = None,
 ) -> int:
     """Create ~/.fieldnotes/ and generate a default config.toml.
 
@@ -196,6 +230,8 @@ def init(
             )
 
     # ── --with-docker ───────────────────────────────────────────────
+    if compose_file is not None:
+        with_docker = True
     if with_docker:
         # Read neo4j password from the config we just wrote
         import tomllib
@@ -203,12 +239,38 @@ def init(
         raw = tomllib.loads(_CONFIG_PATH.read_text())
         neo4j_pw = raw.get("neo4j", {}).get("password", "")
 
-        _generate_env_file(neo4j_pw)
+        # Determine which compose file to use
+        if compose_file is not None:
+            compose_path = compose_file.resolve()
+            if not compose_path.exists():
+                print(
+                    f"Compose file not found: {compose_path}",
+                    file=sys.stderr,
+                )
+                return 1
+            env_dir = compose_path.parent
+        else:
+            # Extract bundled infrastructure to ~/.fieldnotes/infrastructure/
+            infra_dir = _extract_infrastructure()
+            compose_path = infra_dir / "docker-compose.yml"
+            env_dir = infra_dir
+
+        _ensure_data_dirs()
+        _generate_env_file(neo4j_pw, env_dir)
 
         if shutil.which("docker"):
             print("\nStarting Docker infrastructure...")
             result = subprocess.run(
-                ["docker", "compose", "up", "-d"],
+                [
+                    "docker",
+                    "compose",
+                    "-f",
+                    str(compose_path),
+                    "--env-file",
+                    str(env_dir / ".env"),
+                    "up",
+                    "-d",
+                ],
                 capture_output=True,
                 text=True,
             )
@@ -224,7 +286,7 @@ def init(
         else:
             print(
                 "\ndocker not found on PATH. Start infrastructure manually:\n"
-                "  docker compose up -d",
+                f"  docker compose -f {compose_path} up -d",
                 file=sys.stderr,
             )
 

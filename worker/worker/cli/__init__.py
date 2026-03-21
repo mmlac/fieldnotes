@@ -104,12 +104,36 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="non_interactive",
         help="Skip interactive prompts (use defaults)",
     )
+    init_p.add_argument(
+        "--compose-file",
+        type=Path,
+        default=None,
+        dest="compose_file",
+        metavar="PATH",
+        help="Use a custom docker-compose.yml instead of the bundled one",
+    )
 
     # ── doctor ─────────────────────────────────────────────────────
     sub.add_parser(
         "doctor",
         help="Run pre-flight checks on config, infrastructure, and models",
     )
+
+    # ── up / stop / down ───────────────────────────────────────────
+    for cmd_name, cmd_help in [
+        ("up", "Start Docker infrastructure (docker compose up -d)"),
+        ("stop", "Stop Docker containers without removing them"),
+        ("down", "Tear down Docker infrastructure (docker compose down)"),
+    ]:
+        p = sub.add_parser(cmd_name, help=cmd_help)
+        p.add_argument(
+            "--compose-file",
+            type=Path,
+            default=None,
+            dest="compose_file",
+            metavar="PATH",
+            help="Path to a custom docker-compose.yml",
+        )
 
     # ── setup-claude ─────────────────────────────────────────────────
     sub.add_parser(
@@ -403,12 +427,19 @@ def main(argv: list[str] | None = None) -> int:
         return init(
             with_docker=args.with_docker,
             non_interactive=args.non_interactive,
+            compose_file=args.compose_file,
         )
 
     if args.command == "doctor":
         from worker.doctor import doctor
 
         return doctor(config_path=args.config)
+
+    if args.command in ("up", "stop", "down"):
+        from worker.infra import infra_down, infra_stop, infra_up
+
+        fn = {"up": infra_up, "stop": infra_stop, "down": infra_down}[args.command]
+        return fn(compose_file=args.compose_file)
 
     if args.command == "setup-claude":
         from worker.setup import setup_claude
