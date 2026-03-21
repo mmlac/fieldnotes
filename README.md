@@ -493,6 +493,7 @@ fieldnotes [-c CONFIG] [-v] <command>
   - OpenAI / Anthropic API keys are set.
   - Neo4j and Qdrant are reachable.
   - Source watch paths exist on disk.
+  - Required tools (`ollama`, `docker`) are on PATH.
 
 **`search <query> [-k N]`** — Hybrid search combining graph traversal and vector similarity. Returns ranked results with source metadata.
 
@@ -531,7 +532,7 @@ fieldnotes [-c CONFIG] [-v] <command>
   - `--summarize` — Generate an LLM-powered summary paragraph of the activity.
   - `--json` — Structured JSON output.
 
-**`serve --daemon`** — Run the ingest pipeline and MCP server together.
+**`serve --daemon`** — Run the ingest pipeline as a long-running background service. Prints a startup summary showing configured sources, model providers, and role assignments.
 
 **`serve --mcp`** — Run only the MCP server (stdio transport, for Claude Desktop).
 
@@ -626,11 +627,11 @@ docker compose up -d
 
 | Service | Image | Port | Memory Limit | Purpose |
 |---|---|---|---|---|
-| neo4j | `neo4j:5.26.22-community` | 7687 | 1 GB | Knowledge graph storage |
+| neo4j | `neo4j:2026.02.3-community` | 7687 | 1 GB | Knowledge graph storage |
 | qdrant | `qdrant/qdrant:v1.17.0` | 6333 | 512 MB | Vector similarity search |
-| pushgateway | `prom/pushgateway:v1.11.0` | 9091 | 64 MB | Metrics collection endpoint |
-| prometheus | `prom/prometheus:v3.3.1` | 9090 | 256 MB | Metrics storage and querying |
-| grafana | `grafana/grafana-oss:11.6.0` | 3000 | 128 MB | Dashboards and visualization |
+| pushgateway | `prom/pushgateway:v1.11.2` | 9091 | 64 MB | Metrics collection endpoint |
+| prometheus | `prom/prometheus:v3.10.0` | 9090 | 256 MB | Metrics storage and querying |
+| grafana | `grafana/grafana-oss:12.4.1` | 3000 | 128 MB | Dashboards and visualization |
 
 All services bind to `127.0.0.1` only. Data is persisted under `$FIELDNOTES_DATA` (default `~/.fieldnotes/data`). Total infrastructure memory footprint is approximately 2 GB.
 
@@ -758,9 +759,11 @@ worker/
 ├── service/                # System service management
 │   ├── launchd.py          # macOS
 │   └── systemd.py          # Linux
-├── config.py               # TOML config loader
+├── config.py               # TOML config loader (with role→model→provider validation)
+├── init.py                 # Interactive init wizard (--with-docker, --non-interactive)
+├── doctor.py               # Pre-flight diagnostic checks
 ├── mcp_server.py           # MCP server (stdio transport)
-├── serve_daemon.py         # Combined daemon mode
+├── serve_daemon.py         # Daemon mode with startup summary
 ├── metrics.py              # Prometheus metrics
 ├── circuit_breaker.py      # Fault tolerance
 └── config.toml.example     # Default configuration template
