@@ -385,7 +385,7 @@ def test_streaming_sha256_exceeds_max_size(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_file_source_skips_oversized_file(tmp_path: Path):
+async def test_file_source_indexes_oversized_as_metadata(tmp_path: Path):
     prefix = str(tmp_path.resolve())
     fs = FileSource()
     fs.configure(
@@ -399,9 +399,9 @@ async def test_file_source_skips_oversized_file(tmp_path: Path):
     task = asyncio.create_task(fs.start(q))
     await asyncio.sleep(0.3)
 
-    # Create an oversized file (should be skipped)
+    # Create an oversized file (should be indexed as metadata only)
     (tmp_path / "big.md").write_bytes(b"x" * 100)
-    # Create a small file (should pass)
+    # Create a small file (should have full content)
     (tmp_path / "small.md").write_text("ok")
 
     events = await _collect_until(
@@ -417,6 +417,13 @@ async def test_file_source_skips_oversized_file(tmp_path: Path):
     except asyncio.CancelledError:
         pass
 
-    source_ids = [e["source_id"] for e in events]
-    assert any("small.md" in sid for sid in source_ids)
-    assert not any("big.md" in sid for sid in source_ids)
+    small = [e for e in events if "small.md" in e["source_id"]]
+    big = [e for e in events if "big.md" in e["source_id"]]
+
+    assert len(small) >= 1
+    assert "text" in small[0]
+
+    assert len(big) >= 1
+    assert "text" not in big[0]
+    assert big[0]["meta"].get("oversized") is True
+    assert big[0]["meta"]["size_bytes"] == 100

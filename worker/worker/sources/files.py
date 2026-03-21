@@ -137,8 +137,11 @@ class FileSource(PythonSource):
                 try:
                     result = _read_file_atomic(file_path, self._max_file_size)
                     if result is None:
-                        logger.debug(
-                            "Skipping %s during scan — exceeds max_file_size", abs_path
+                        # File exceeds max_file_size — index metadata only
+                        # (no content hash, no body for parsing).
+                        stat = file_path.stat()
+                        current[abs_path] = FileEntry(
+                            sha256="", mtime_ns=stat.st_mtime_ns, size=stat.st_size
                         )
                         continue
                     data, mtime_ns = result

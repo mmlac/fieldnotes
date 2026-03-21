@@ -340,12 +340,20 @@ class TestBuildEvent:
         assert result["mime_type"] == "application/pdf"
         assert result["raw_bytes"] == pdf_data
 
-    def test_oversized_file_returns_none(self, tmp_path: Path):
+    def test_oversized_file_emits_metadata_only(self, tmp_path: Path):
         p = tmp_path / "huge.md"
         p.write_bytes(b"x" * 200)
         h = _make_handler(max_file_size=100)
         ev = FileCreatedEvent(str(p))
-        assert h._build_event(ev) is None
+        result = h._build_event(ev)
+        assert result is not None
+        assert result["source_id"] == str(p)
+        assert result["operation"] == "created"
+        assert result["meta"]["size_bytes"] == 200
+        assert result["meta"]["oversized"] is True
+        assert "sha256" not in result["meta"]
+        assert "text" not in result
+        assert "raw_bytes" not in result
 
     def test_extra_meta_included(self, tmp_path: Path):
         p = tmp_path / "note.md"

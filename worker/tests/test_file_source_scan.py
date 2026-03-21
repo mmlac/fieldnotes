@@ -282,7 +282,7 @@ async def test_scan_respects_exclude_patterns(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_scan_respects_max_file_size(tmp_path: Path) -> None:
-    """Initial scan skips files exceeding max_file_size."""
+    """Initial scan emits oversized files as metadata-only (no text content)."""
     watched = tmp_path / "watched"
     watched.mkdir()
     (watched / "small.md").write_text("ok")
@@ -295,7 +295,19 @@ async def test_scan_respects_max_file_size(tmp_path: Path) -> None:
     created = [e for e in events if e["operation"] == "created"]
     source_ids = [e["source_id"] for e in created]
     assert any("small.md" in s for s in source_ids)
-    assert not any("big.md" in s for s in source_ids)
+    assert any("big.md" in s for s in source_ids)
+
+    small = [e for e in created if "small.md" in e["source_id"]][0]
+    big = [e for e in created if "big.md" in e["source_id"]][0]
+
+    # Small file has text content and sha256
+    assert "text" in small
+    assert small["meta"].get("sha256")
+
+    # Big file has size metadata but no text and no sha256
+    assert "text" not in big
+    assert big["meta"]["size_bytes"] == 200
+    assert not big["meta"].get("sha256")
 
 
 @pytest.mark.asyncio

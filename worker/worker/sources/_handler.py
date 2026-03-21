@@ -278,12 +278,15 @@ class BaseHandler(FileSystemEventHandler):
             try:
                 result = _read_file_atomic(p, self._max_file_size)
                 if result is None:
-                    logger.warning(
-                        "Skipping %s — exceeds max_file_size (%d bytes)",
-                        src_path,
-                        self._max_file_size,
-                    )
-                    return None
+                    # File exceeds max_file_size — emit metadata-only
+                    # event (no content for parsing).
+                    stat = p.stat()
+                    ingest["source_modified_at"] = datetime.fromtimestamp(
+                        stat.st_mtime_ns / 1e9, tz=timezone.utc
+                    ).isoformat()
+                    ingest["meta"]["size_bytes"] = stat.st_size
+                    ingest["meta"]["oversized"] = True
+                    return ingest
                 data, mtime_ns = result
                 ingest["source_modified_at"] = datetime.fromtimestamp(
                     mtime_ns / 1e9, tz=timezone.utc
