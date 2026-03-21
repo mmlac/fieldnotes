@@ -201,6 +201,14 @@ class TestPruneBackups:
         remaining = sorted(p.name for p in tmp_path.glob("fieldnotes-*.tar.gz"))
         assert remaining == names
 
+    def test_prune_rejects_zero_keep(self) -> None:
+        with pytest.raises(ValueError, match="at least 1"):
+            _prune_backups(0)
+
+    def test_prune_rejects_negative_keep(self) -> None:
+        with pytest.raises(ValueError, match="at least 1"):
+            _prune_backups(-1)
+
     @patch("worker.backup._stop_containers", return_value=False)
     def test_backup_with_keep_prunes(
         self, _stop: object, tmp_path: Path
@@ -371,6 +379,31 @@ class TestRestore:
 
         assert rc == 1
         assert "unsafe path" in capsys.readouterr().err
+
+    @patch("worker.backup._stop_containers", return_value=False)
+    def test_restore_blocks_symlinks(
+        self, _stop: object, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        fn = tmp_path / ".fieldnotes"
+        fn.mkdir()
+        backups_dir = fn / "backups"
+        backups_dir.mkdir(parents=True)
+
+        evil_archive = backups_dir / "symlink.tar.gz"
+        with tarfile.open(evil_archive, "w:gz") as tar:
+            info = tarfile.TarInfo(name="evil_link")
+            info.type = tarfile.SYMTYPE
+            info.linkname = "/etc/passwd"
+            tar.addfile(info)
+
+        with (
+            patch("worker.backup._FN_DIR", fn),
+            patch("worker.backup._BACKUPS_DIR", backups_dir),
+        ):
+            rc = restore(evil_archive)
+
+        assert rc == 1
+        assert "link" in capsys.readouterr().err.lower()
 
     @patch("worker.backup._stop_containers", return_value=True)
     @patch("worker.backup._start_containers")

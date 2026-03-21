@@ -18,6 +18,11 @@ _DATA_DIR = _FN_DIR / "data"
 _INFRA_DIR = _FN_DIR / "infrastructure"
 
 
+def _escape_toml_string(value: str) -> str:
+    """Escape a value for safe embedding in a TOML basic (double-quoted) string."""
+    return value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+
+
 def _ollama_available() -> bool:
     """Return True if the ``ollama`` binary is on PATH."""
     return shutil.which("ollama") is not None
@@ -56,7 +61,9 @@ def _interactive_config(config_text: str) -> str:
         neo4j_pw = _prompt_password("Neo4j password (will be written to config)")
     if neo4j_pw:
         config_text = config_text.replace(
-            'password = ""', f'password = "{neo4j_pw}"', 1
+            'password = ""',
+            f'password = "{_escape_toml_string(neo4j_pw)}"',
+            1,
         )
 
     # 2. Model provider
@@ -73,7 +80,8 @@ def _interactive_config(config_text: str) -> str:
         # Uncomment the OpenAI provider block
         config_text = config_text.replace(
             '# [modelproviders.openai]\n# type = "openai"\n# api_key = ""',
-            f'[modelproviders.openai]\ntype = "openai"\napi_key = "{api_key}"',
+            f'[modelproviders.openai]\ntype = "openai"\n'
+            f'api_key = "{_escape_toml_string(api_key)}"',
         )
         # Update role bindings to use openai models
         config_text = config_text.replace(
@@ -86,7 +94,8 @@ def _interactive_config(config_text: str) -> str:
             api_key = _prompt_password("Anthropic API key")
         config_text = config_text.replace(
             '# [modelproviders.anthropic]\n# type = "anthropic"\n# api_key = ""',
-            f'[modelproviders.anthropic]\ntype = "anthropic"\napi_key = "{api_key}"',
+            f'[modelproviders.anthropic]\ntype = "anthropic"\n'
+            f'api_key = "{_escape_toml_string(api_key)}"',
         )
         config_text = config_text.replace(
             '[models.local_chat]\nprovider = "ollama"\nmodel = "llama3.2"',
@@ -135,8 +144,9 @@ def _generate_env_file(neo4j_pw: str, env_dir: Path) -> Path:
         f"NEO4J_PASSWORD={neo4j_pw}",
         f"GRAFANA_PASSWORD={grafana_pw}",
     ]
-    env_path.write_text("\n".join(lines) + "\n")
-    env_path.chmod(0o600)
+    fd = os.open(str(env_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write("\n".join(lines) + "\n")
     print(f"Created {env_path} (mode 0600)")
     return env_path
 
@@ -207,7 +217,9 @@ def init(
             neo4j_pw = os.environ.get("NEO4J_PASSWORD", "")
             if neo4j_pw:
                 config_text = config_text.replace(
-                    'password = ""', f'password = "{neo4j_pw}"', 1
+                    'password = ""',
+                    f'password = "{_escape_toml_string(neo4j_pw)}"',
+                    1,
                 )
 
         _CONFIG_PATH.write_text(config_text)

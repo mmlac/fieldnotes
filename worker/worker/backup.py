@@ -69,6 +69,8 @@ def _start_containers() -> None:
 
 def _prune_backups(keep: int) -> None:
     """Delete oldest backups so that only *keep* most-recent remain."""
+    if keep < 1:
+        raise ValueError("keep must be at least 1")
     archives = sorted(_BACKUPS_DIR.glob("fieldnotes-*.tar.gz"))
     to_delete = archives[: len(archives) - keep]
     for path in to_delete:
@@ -194,8 +196,22 @@ def restore(backup_path: Path) -> int:
     # Safety: verify archive only contains expected paths.
     with tarfile.open(backup_path, "r:gz") as tar:
         for member in tar.getmembers():
-            # Block path-traversal attacks.
-            if member.name.startswith("/") or ".." in member.name:
+            # Block symlinks, hardlinks, and device files.
+            if member.issym() or member.islnk():
+                print(
+                    f"Refusing to extract link: {member.name}",
+                    file=sys.stderr,
+                )
+                return 1
+            if not (member.isfile() or member.isdir()):
+                print(
+                    f"Refusing to extract special entry: {member.name}",
+                    file=sys.stderr,
+                )
+                return 1
+            # Block path-traversal attacks via resolved path check.
+            resolved = (_FN_DIR / member.name).resolve()
+            if not str(resolved).startswith(str(_FN_DIR.resolve())):
                 print(
                     f"Refusing to extract unsafe path: {member.name}",
                     file=sys.stderr,
@@ -239,7 +255,10 @@ def schedule_backup(*, remove: bool = False, keep: int | None = None) -> int:
 
 
 def _render_template(name: str, variables: dict[str, str]) -> str:
-    raw = (_TEMPLATES / name).read_text()
+    target = (_TEMPLATES / name).resolve()
+    if not str(target).startswith(str(_TEMPLATES.resolve())):
+        raise ValueError(f"Invalid template name: {name}")
+    raw = target.read_text()
     return Template(raw.replace("{{", "${").replace("}}", "}")).substitute(variables)
 
 
@@ -278,7 +297,7 @@ def _schedule_launchd(*, remove: bool, keep: int | None = None) -> int:
         },
     )
     plist_path.write_text(content)
-    plist_path.chmod(0o644)
+    plist_path.chmod(0o600)
 
     subprocess.run(
         ["launchctl", "load", "-w", str(plist_path)], check=True

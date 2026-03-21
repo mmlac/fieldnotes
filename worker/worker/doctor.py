@@ -67,6 +67,14 @@ def doctor(config_path: Path | None = None) -> int:
     for name, prov in cfg.providers.items():
         if prov.type == "ollama":
             base_url = prov.settings.get("base_url", "http://localhost:11434")
+            # Validate URL scheme to prevent SSRF.
+            from urllib.parse import urlparse
+
+            parsed = urlparse(base_url)
+            if parsed.scheme not in ("http", "https"):
+                _fail(f"Ollama ({name}) invalid URL scheme: {base_url}")
+                errors += 1
+                continue
             try:
                 import urllib.request
 

@@ -26,7 +26,10 @@ def _log_dir() -> Path:
 
 
 def _render_template(name: str, variables: dict[str, str]) -> str:
-    raw = (_TEMPLATES / name).read_text()
+    target = (_TEMPLATES / name).resolve()
+    if not str(target).startswith(str(_TEMPLATES.resolve())):
+        raise ValueError(f"Invalid template name: {name}")
+    raw = target.read_text()
     return Template(raw.replace("{{", "${").replace("}}", "}")).substitute(variables)
 
 
@@ -55,7 +58,7 @@ class LaunchdBackend:
             },
         )
         self._plist_path.write_text(content)
-        self._plist_path.chmod(0o644)
+        self._plist_path.chmod(0o600)
         print(f"Wrote {self._plist_path}")
 
         subprocess.run(
