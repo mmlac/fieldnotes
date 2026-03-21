@@ -15,6 +15,7 @@ Fieldnotes is a personal knowledge graph that continuously indexes your digital 
 - [Data Sources](#data-sources)
 - [Interacting With Your Data](#interacting-with-your-data)
 - [CLI Reference](#cli-reference)
+- [Backup & Restore](#backup--restore)
 - [MCP Server](#mcp-server)
 - [Pipeline Architecture](#pipeline-architecture)
 - [Observability](#observability)
@@ -94,44 +95,39 @@ pip install -e ".[dev]"
 ## Quick Start
 
 ```bash
-# 1. Bootstrap configuration (interactive wizard)
-fieldnotes init
-# Prompts for Neo4j password, model provider, watch paths.
-# Creates ~/.fieldnotes/config.toml with your choices.
-
-# 2. Start infrastructure (option A: automatic)
+# 1. Bootstrap configuration and start infrastructure
+#    Option A — fully automatic (recommended):
 fieldnotes init --with-docker
-# Extracts docker-compose.yml + Grafana/Prometheus configs to
-# ~/.fieldnotes/infrastructure/, generates .env with passwords,
-# and runs docker compose up -d.
+# Runs the interactive wizard, extracts docker-compose.yml +
+# Grafana/Prometheus configs to ~/.fieldnotes/infrastructure/,
+# generates .env with passwords, and starts Docker containers.
 
-# 2. Start infrastructure (option A, custom compose file)
+#    Option A — with a custom compose file:
 fieldnotes init --compose-file /path/to/docker-compose.yml
-# Uses the compose file's parent directory as the project root.
-# .env is written next to the compose file.
 
-# 2. Start infrastructure (option B: manual)
-export NEO4J_PASSWORD=changeme
+#    Option B — manual Docker setup:
+fieldnotes init                     # interactive wizard only
+export NEO4J_PASSWORD=changeme      # must match config.toml
 export GRAFANA_PASSWORD=changeme
 docker compose -f ~/.fieldnotes/infrastructure/docker-compose.yml up -d
 
-# 3. Wait for services to be healthy
+# 2. Wait for services to be healthy
 docker compose -f ~/.fieldnotes/infrastructure/docker-compose.yml ps
 
-# 4. Pull the default models (if using Ollama)
+# 3. Pull the default models (if using Ollama)
 ollama pull nomic-embed-text   # embedding model
 ollama pull llama3.2           # chat model (extraction, queries, completions)
 
-# 5. Verify everything is ready
+# 4. Verify everything is ready
 fieldnotes doctor
 
-# 6. Start the daemon (pipeline + MCP server)
+# 5. Start the daemon (pipeline + MCP server)
 fieldnotes serve --daemon
 
-# 7. Search your knowledge graph
+# 6. Search your knowledge graph
 fieldnotes search "what do I know about kubernetes"
 
-# 8. Ask a question (RAG + LLM synthesis)
+# 7. Ask a question (RAG + LLM synthesis)
 fieldnotes ask "summarize my recent project decisions"
 ```
 
@@ -556,7 +552,90 @@ fieldnotes [-c CONFIG] [-v] <command>
   - **Linux**: Installs a systemd user unit at `~/.config/systemd/user/fieldnotes.service`.
   - **Logs**: `~/.fieldnotes/logs/daemon.log` (created on `service install`).
 
+**`backup [create] [--keep N]`** — Create a compressed backup of all fieldnotes data and databases. Stops Docker containers for a consistent snapshot, archives configuration (`config.toml`, `credentials.json`, `.env`) and all database data (`data/neo4j`, `data/qdrant`, `data/prometheus`, `data/grafana`, `state/`) to `~/.fieldnotes/backups/fieldnotes-<timestamp>.tar.gz`, then restarts containers.
+  - `--keep N` — After creating the backup, delete all but the **N** most recent backups.
+
+**`backup list`** — List existing backups with filenames, sizes, and creation timestamps.
+
+**`backup schedule [--remove] [--keep N]`** — Install or remove a daily scheduled backup (02:00 local time).
+  - On macOS, installs a launchd plist at `~/Library/LaunchAgents/com.fieldnotes.backup.plist`.
+  - On Linux, installs a systemd user timer at `~/.config/systemd/user/fieldnotes-backup.timer`.
+  - `--remove` — Uninstall the scheduled backup.
+  - `--keep N` — Pass `--keep N` to each scheduled backup run so old backups are pruned automatically.
+
+**`restore <backup>`** — Restore fieldnotes data from a backup archive. Accepts a filename from `backup list` or a full path. Stops Docker containers, extracts the archive over `~/.fieldnotes/`, then restarts containers. Validates archive contents and blocks path-traversal attempts.
+
 **`setup-claude`** — Configure Claude Desktop to use the fieldnotes MCP server.
+
+## Backup & Restore
+
+Fieldnotes can back up and restore your entire setup — configuration, credentials, and all database data (Neo4j, Qdrant, Prometheus, Grafana) — in a single compressed archive.
+
+### Creating a Backup
+
+```bash
+# Create a backup (stops containers, archives, restarts)
+fieldnotes backup
+
+# Same thing, explicit subcommand
+fieldnotes backup create
+
+# Create a backup and keep only the 5 most recent
+fieldnotes backup create --keep 5
+```
+
+Backups are saved to `~/.fieldnotes/backups/fieldnotes-<YYYYMMDD-HHMMSS>.tar.gz`. Docker containers are stopped during the snapshot and restarted afterward.
+
+### Listing Backups
+
+```bash
+fieldnotes backup list
+```
+
+```
+Backup                                       Size  Created
+----------------------------------------------------------------------
+fieldnotes-20260318-020000.tar.gz          12.3 MB  2026-03-18 02:00 UTC
+fieldnotes-20260319-020000.tar.gz          12.5 MB  2026-03-19 02:00 UTC
+fieldnotes-20260320-143022.tar.gz          12.8 MB  2026-03-20 14:30 UTC
+```
+
+### Restoring From a Backup
+
+```bash
+# Restore by name (from backup list output)
+fieldnotes restore fieldnotes-20260318-020000.tar.gz
+
+# Or by full path
+fieldnotes restore /path/to/fieldnotes-20260318-020000.tar.gz
+```
+
+Restore stops running containers, extracts the archive over `~/.fieldnotes/`, and restarts containers. The archive is validated for path-traversal safety before extraction.
+
+### Scheduled Backups
+
+```bash
+# Install a daily backup at 02:00 local time
+fieldnotes backup schedule
+
+# With automatic pruning — keep only the last 7 backups
+fieldnotes backup schedule --keep 7
+
+# Remove the scheduled backup
+fieldnotes backup schedule --remove
+```
+
+On macOS this creates a launchd plist; on Linux a systemd user timer. Logs go to `~/.fieldnotes/logs/backup.log`.
+
+### What's Included in a Backup
+
+| Item | Contents |
+|---|---|
+| `config.toml` | All configuration settings |
+| `credentials.json` | OAuth / API credentials |
+| `data/` | Neo4j, Qdrant, Prometheus, and Grafana databases |
+| `state/` | Source cursors (OmniFocus, sync state) |
+| `infrastructure/.env` | Docker passwords and environment variables |
 
 ## MCP Server
 
@@ -783,9 +862,11 @@ worker/
 │   ├── docker-compose.yml  # (extracted to ~/.fieldnotes/infrastructure/)
 │   ├── prometheus.yml
 │   └── grafana/            # Provisioning and dashboard JSON
+├── templates/              # Bundled launchd/systemd templates for scheduled backups
 ├── config.py               # TOML config loader (with role→model→provider validation)
 ├── init.py                 # Interactive init wizard (--with-docker, --non-interactive)
 ├── infra.py                # Docker Compose lifecycle (up, stop, down)
+├── backup.py               # Backup, restore, and scheduled backup management
 ├── doctor.py               # Pre-flight diagnostic checks
 ├── mcp_server.py           # MCP server (stdio transport)
 ├── serve_daemon.py         # Daemon mode with startup summary
