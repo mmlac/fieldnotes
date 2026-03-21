@@ -114,12 +114,16 @@ def link_apps_to_topics(
 
         # Build centroid matrix and label mapping
         centroid_matrix, cluster_id_to_label = _build_centroid_matrix(
-            labeled, cluster_results,
+            labeled,
+            cluster_results,
         )
 
         # Compute similarities and find matches
         matches = _find_matches(
-            apps, app_vectors, centroid_matrix, cluster_id_to_label,
+            apps,
+            app_vectors,
+            centroid_matrix,
+            cluster_id_to_label,
             top_k=top_k,
             similarity_threshold=similarity_threshold,
         )
@@ -156,12 +160,14 @@ def _fetch_app_nodes(driver: Driver) -> list[AppNode]:
         for record in result:
             node_labels = record["labels"]
             label = "Application" if "Application" in node_labels else "Tool"
-            nodes.append(AppNode(
-                source_id=record["source_id"],
-                label=label,
-                name=record["name"] or "",
-                description=record["description"],
-            ))
+            nodes.append(
+                AppNode(
+                    source_id=record["source_id"],
+                    label=label,
+                    name=record["name"] or "",
+                    description=record["description"],
+                )
+            )
         return nodes
 
 
@@ -245,12 +251,14 @@ def _find_matches(
         for idx in top_indices:
             score = float(sims[idx])
             if score >= similarity_threshold:
-                matches.append((
-                    app.source_id,
-                    app.label,
-                    topic_labels[idx],
-                    score,
-                ))
+                matches.append(
+                    (
+                        app.source_id,
+                        app.label,
+                        topic_labels[idx],
+                        score,
+                    )
+                )
 
     return matches
 

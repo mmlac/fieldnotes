@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import threading
 import time
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from worker.config import RateLimitConfig, _parse
+from worker.config import _parse
 from worker.models.rate_limiter import (
     ConcurrencyLimiter,
     RateLimiter,
@@ -73,6 +72,7 @@ class TestTokenBudget:
     def test_warning_at_80_percent(self, caplog: pytest.LogCaptureFixture) -> None:
         budget = TokenBudget(daily_limit=100)
         import logging
+
         with caplog.at_level(logging.WARNING):
             budget.record(80, 0)
         assert "80%" in caplog.text or "Token budget" in caplog.text
@@ -80,6 +80,7 @@ class TestTokenBudget:
     def test_warning_fires_once(self, caplog: pytest.LogCaptureFixture) -> None:
         budget = TokenBudget(daily_limit=100)
         import logging
+
         with caplog.at_level(logging.WARNING):
             budget.record(81, 0)
             caplog.clear()
@@ -189,10 +190,14 @@ class TestResolvedModelWithLimiters:
         provider = MagicMock()
         provider.provider_type = "openai"
         provider.complete.return_value = CompletionResponse(
-            text="ok", input_tokens=10, output_tokens=5,
+            text="ok",
+            input_tokens=10,
+            output_tokens=5,
         )
         provider.embed.return_value = MagicMock(
-            vectors=[[0.1, 0.2]], model="test", input_tokens=3,
+            vectors=[[0.1, 0.2]],
+            model="test",
+            input_tokens=3,
         )
 
         return ResolvedModel(
@@ -206,6 +211,7 @@ class TestResolvedModelWithLimiters:
 
     def test_complete_records_token_budget(self) -> None:
         from worker.models.base import CompletionRequest
+
         budget = TokenBudget(daily_limit=1000)
         model = self._make_model(token_budget=budget)
         model.complete(CompletionRequest(system="test", messages=[]))
@@ -213,6 +219,7 @@ class TestResolvedModelWithLimiters:
 
     def test_complete_respects_rate_limit(self) -> None:
         from worker.models.base import CompletionRequest
+
         limiter = RateLimiter(rpm=1)
         model = self._make_model(rate_limiter=limiter)
         model.complete(CompletionRequest(system="test", messages=[]))
@@ -221,6 +228,7 @@ class TestResolvedModelWithLimiters:
 
     def test_complete_blocked_by_token_budget(self) -> None:
         from worker.models.base import CompletionRequest
+
         budget = TokenBudget(daily_limit=10)
         budget.record(10, 0)  # exhaust budget
         model = self._make_model(token_budget=budget)
@@ -237,7 +245,9 @@ class TestResolvedModelWithLimiters:
 
         limiter = ConcurrencyLimiter(max_concurrency=1)
         model = ResolvedModel(
-            alias="test", model="gpt-4", provider=provider,
+            alias="test",
+            model="gpt-4",
+            provider=provider,
             _concurrency_limiter=limiter,
         )
         with pytest.raises(RuntimeError):
@@ -247,6 +257,7 @@ class TestResolvedModelWithLimiters:
 
     def test_no_limiters_works_as_before(self) -> None:
         from worker.models.base import CompletionRequest
+
         model = self._make_model()  # no limiters
         resp = model.complete(CompletionRequest(system="test", messages=[]))
         assert resp.text == "ok"

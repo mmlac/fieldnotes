@@ -46,9 +46,7 @@ def _tool_call_response(entities: list, triples: list) -> CompletionResponse:
             {
                 "function": {
                     "name": "extract_entities_and_triples",
-                    "arguments": json.dumps(
-                        {"entities": entities, "triples": triples}
-                    ),
+                    "arguments": json.dumps({"entities": entities, "triples": triples}),
                 }
             }
         ],
@@ -103,7 +101,10 @@ class TestValidateAndBuild:
 
     def test_skips_entities_without_name(self) -> None:
         data = {
-            "entities": [{"type": "Person"}, {"name": "Bob", "type": "Person", "confidence": 0.8}],
+            "entities": [
+                {"type": "Person"},
+                {"name": "Bob", "type": "Person", "confidence": 0.8},
+            ],
             "triples": [],
         }
         result = _validate_and_build(data)
@@ -153,20 +154,28 @@ class TestCallAndParse:
         model = _mock_model(resp)
         from worker.models.base import CompletionRequest
 
-        req = CompletionRequest(system="", messages=[{"role": "user", "content": "test"}])
+        req = CompletionRequest(
+            system="", messages=[{"role": "user", "content": "test"}]
+        )
         result = _call_and_parse(model, req)
         assert len(result.entities) == 1
         assert result.entities[0]["name"] == "Neo4j"
 
     def test_parses_text_json_response(self) -> None:
-        resp = _text_response({
-            "entities": [{"name": "Python", "type": "Technology", "confidence": 0.85}],
-            "triples": [],
-        })
+        resp = _text_response(
+            {
+                "entities": [
+                    {"name": "Python", "type": "Technology", "confidence": 0.85}
+                ],
+                "triples": [],
+            }
+        )
         model = _mock_model(resp)
         from worker.models.base import CompletionRequest
 
-        req = CompletionRequest(system="", messages=[{"role": "user", "content": "test"}])
+        req = CompletionRequest(
+            system="", messages=[{"role": "user", "content": "test"}]
+        )
         result = _call_and_parse(model, req)
         assert len(result.entities) == 1
 
@@ -175,7 +184,9 @@ class TestCallAndParse:
         model = _mock_model(resp)
         from worker.models.base import CompletionRequest
 
-        req = CompletionRequest(system="", messages=[{"role": "user", "content": "test"}])
+        req = CompletionRequest(
+            system="", messages=[{"role": "user", "content": "test"}]
+        )
         with pytest.raises(ExtractionError, match="empty response"):
             _call_and_parse(model, req)
 
@@ -184,7 +195,9 @@ class TestCallAndParse:
         model = _mock_model(resp)
         from worker.models.base import CompletionRequest
 
-        req = CompletionRequest(system="", messages=[{"role": "user", "content": "test"}])
+        req = CompletionRequest(
+            system="", messages=[{"role": "user", "content": "test"}]
+        )
         with pytest.raises(json.JSONDecodeError):
             _call_and_parse(model, req)
 
@@ -197,7 +210,9 @@ class TestCallAndParse:
                     "function": {
                         "name": "extract_entities_and_triples",
                         "arguments": {
-                            "entities": [{"name": "Go", "type": "Technology", "confidence": 0.9}],
+                            "entities": [
+                                {"name": "Go", "type": "Technology", "confidence": 0.9}
+                            ],
                             "triples": [],
                         },
                     }
@@ -207,7 +222,9 @@ class TestCallAndParse:
         model = _mock_model(resp)
         from worker.models.base import CompletionRequest
 
-        req = CompletionRequest(system="", messages=[{"role": "user", "content": "test"}])
+        req = CompletionRequest(
+            system="", messages=[{"role": "user", "content": "test"}]
+        )
         result = _call_and_parse(model, req)
         assert result.entities[0]["name"] == "Go"
 
@@ -243,7 +260,9 @@ class TestExtractChunk:
 
     def test_falls_back_on_validation_error(self) -> None:
         # Return a non-dict JSON value
-        bad_model = _mock_model(CompletionResponse(text='"just a string"', tool_calls=None))
+        bad_model = _mock_model(
+            CompletionResponse(text='"just a string"', tool_calls=None)
+        )
         good_resp = _tool_call_response(
             entities=[{"name": "C", "type": "Concept", "confidence": 0.7}],
             triples=[],
@@ -297,6 +316,7 @@ class TestExtractChunks:
         registry.for_role.side_effect = lambda role: (
             _mock_model(resp) if role == EXTRACT_ROLE else MagicMock()
         )
+
         # Make fallback raise KeyError so it's None
         def for_role_side_effect(role: str):
             if role == EXTRACT_ROLE:

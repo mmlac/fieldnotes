@@ -44,10 +44,21 @@ DEFAULT_MAX_FILE_SIZE = 100 * 1024 * 1024
 
 # Image extensions that pass through include_extensions filters so standalone
 # images reach the vision pipeline even when the user restricts file types.
-IMAGE_EXTENSIONS: frozenset[str] = frozenset({
-    ".png", ".jpg", ".jpeg", ".gif", ".svg",
-    ".webp", ".bmp", ".tiff", ".tif", ".heic", ".heif",
-})
+IMAGE_EXTENSIONS: frozenset[str] = frozenset(
+    {
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".gif",
+        ".svg",
+        ".webp",
+        ".bmp",
+        ".tiff",
+        ".tif",
+        ".heic",
+        ".heif",
+    }
+)
 
 
 def streaming_sha256(path: Path, max_size: int) -> tuple[str, int] | None:
@@ -292,7 +303,9 @@ class BaseHandler(FileSystemEventHandler):
                 ):
                     ingest["raw_bytes"] = data
             except OSError:
-                logger.warning("Failed to read %s, emitting event without content hash", src_path)
+                logger.warning(
+                    "Failed to read %s, emitting event without content hash", src_path
+                )
                 ingest["source_modified_at"] = now
         else:
             ingest["source_modified_at"] = now
@@ -335,7 +348,9 @@ class BaseHandler(FileSystemEventHandler):
                         pass
                 if sha256:
                     self._cursor[src_path] = FileEntry(
-                        sha256=sha256, mtime_ns=mtime_ns, size=size,
+                        sha256=sha256,
+                        mtime_ns=mtime_ns,
+                        size=size,
                     )
 
     # -- Dispatch -----------------------------------------------------------

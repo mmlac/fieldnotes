@@ -80,7 +80,9 @@ class SystemdBackend:
 
     def start(self) -> None:
         if not self._unit_path.exists():
-            raise SystemExit("error: service not installed — run 'fieldnotes service install' first")
+            raise SystemExit(
+                "error: service not installed — run 'fieldnotes service install' first"
+            )
         subprocess.run(
             ["systemctl", "--user", "start", UNIT_NAME],
             check=True,

@@ -45,9 +45,7 @@ _TEST_COLLECTION = "fieldnotes_e2e_test"
 
 def _neo4j_available() -> bool:
     try:
-        with GraphDatabase.driver(
-            _NEO4J_URI, auth=(_NEO4J_USER, _NEO4J_PASSWORD)
-        ) as d:
+        with GraphDatabase.driver(_NEO4J_URI, auth=(_NEO4J_USER, _NEO4J_PASSWORD)) as d:
             d.verify_connectivity()
         return True
     except Exception:
@@ -77,7 +75,9 @@ def _uid(prefix: str = "e2e") -> str:
     return f"{prefix}/{uuid.uuid4().hex[:8]}"
 
 
-def _doc(source_id: str, operation: str = "created", **overrides: Any) -> ParsedDocument:
+def _doc(
+    source_id: str, operation: str = "created", **overrides: Any
+) -> ParsedDocument:
     defaults = dict(
         source_type="files",
         source_id=source_id,
@@ -125,8 +125,10 @@ def qdrant_client_() -> Generator[QdrantClient, None, None]:
 def writer() -> Generator[Writer, None, None]:
     neo4j_cfg = Neo4jConfig(uri=_NEO4J_URI, user=_NEO4J_USER, password=_NEO4J_PASSWORD)
     qdrant_cfg = QdrantConfig(
-        host=_QDRANT_HOST, port=_QDRANT_PORT,
-        collection=_TEST_COLLECTION, vector_size=VECTOR_SIZE,
+        host=_QDRANT_HOST,
+        port=_QDRANT_PORT,
+        collection=_TEST_COLLECTION,
+        vector_size=VECTOR_SIZE,
     )
     w = Writer(neo4j_cfg=neo4j_cfg, qdrant_cfg=qdrant_cfg)
     yield w
@@ -156,9 +158,7 @@ def _cleanup_qdrant(qdrant_client_: QdrantClient) -> Generator[None, None, None]
 
 def _count_nodes(driver: Driver, label: str) -> int:
     with driver.session() as session:
-        result = session.run(
-            f"MATCH (n:`{label}`) RETURN count(n) AS cnt"
-        )
+        result = session.run(f"MATCH (n:`{label}`) RETURN count(n) AS cnt")
         return result.single()["cnt"]
 
 
@@ -181,7 +181,9 @@ def _query_chunks(driver: Driver, source_id: str) -> list[str]:
         return [r["text"] for r in result]
 
 
-def _query_hint_edges(driver: Driver, source_id: str, predicate: str) -> list[dict[str, Any]]:
+def _query_hint_edges(
+    driver: Driver, source_id: str, predicate: str
+) -> list[dict[str, Any]]:
     with driver.session() as session:
         result = session.run(
             "MATCH (s {source_id: $sid})-[r {hint: true}]->(o) "
@@ -197,15 +199,19 @@ def _query_hint_edges(driver: Driver, source_id: str, predicate: str) -> list[di
 def _qdrant_count(client: QdrantClient, source_id: str) -> int:
     result = client.scroll(
         collection_name=_TEST_COLLECTION,
-        scroll_filter=Filter(must=[
-            FieldCondition(key="source_id", match=MatchValue(value=source_id)),
-        ]),
+        scroll_filter=Filter(
+            must=[
+                FieldCondition(key="source_id", match=MatchValue(value=source_id)),
+            ]
+        ),
         limit=1000,
     )
     return len(result[0])
 
 
-def _qdrant_search(client: QdrantClient, vector: list[float], top_k: int = 10) -> list[Any]:
+def _qdrant_search(
+    client: QdrantClient, vector: list[float], top_k: int = 10
+) -> list[Any]:
     return client.search(
         collection_name=_TEST_COLLECTION,
         query_vector=vector,
@@ -217,7 +223,8 @@ def _qdrant_search(client: QdrantClient, vector: list[float], top_k: int = 10) -
 def _node_exists(driver: Driver, source_id: str) -> bool:
     with driver.session() as session:
         result = session.run(
-            "MATCH (n {source_id: $sid}) RETURN count(n) AS cnt", sid=source_id,
+            "MATCH (n {source_id: $sid}) RETURN count(n) AS cnt",
+            sid=source_id,
         )
         return result.single()["cnt"] > 0
 
@@ -225,7 +232,8 @@ def _node_exists(driver: Driver, source_id: str) -> bool:
 def _entity_exists(driver: Driver, name: str) -> bool:
     with driver.session() as session:
         result = session.run(
-            "MATCH (e:Entity {name: $name}) RETURN count(e) AS cnt", name=name,
+            "MATCH (e:Entity {name: $name}) RETURN count(e) AS cnt",
+            name=name,
         )
         return result.single()["cnt"] > 0
 
@@ -290,7 +298,10 @@ class TestFullPipelineE2E:
     """Ingest documents from multiple source types and verify graph + vector state."""
 
     def test_file_source_creates_nodes_and_vectors(
-        self, writer: Writer, neo4j_driver: Driver, qdrant_client_: QdrantClient,
+        self,
+        writer: Writer,
+        neo4j_driver: Driver,
+        qdrant_client_: QdrantClient,
     ) -> None:
         """File source → Source node, Entity nodes, MENTIONS edges, Chunks, Qdrant vectors."""
         sid = "notes/ml-research.md"
@@ -299,7 +310,9 @@ class TestFullPipelineE2E:
             doc=_doc(sid, "created", text=CORPUS_FILE_TEXT),
             chunks=chunks,
             vectors=_vectors(2),
-            entities=_entities("Machine Learning", "Neural Networks", etype="Technology"),
+            entities=_entities(
+                "Machine Learning", "Neural Networks", etype="Technology"
+            ),
         )
         writer.write(unit)
 
@@ -323,24 +336,29 @@ class TestFullPipelineE2E:
         assert _qdrant_count(qdrant_client_, sid) == 2
 
     def test_email_source_with_graph_hints(
-        self, writer: Writer, neo4j_driver: Driver, qdrant_client_: QdrantClient,
+        self,
+        writer: Writer,
+        neo4j_driver: Driver,
+        qdrant_client_: QdrantClient,
     ) -> None:
         """Email source → Email node, Person nodes via graph hints, SENT/TO edges."""
         parser = GmailParser()
-        docs = parser.parse({
-            "source_id": "email/msg-001",
-            "operation": "created",
-            "text": CORPUS_EMAIL_BODY,
-            "mime_type": "text/plain",
-            "meta": {
-                "message_id": "msg-001",
-                "thread_id": "thread-001",
-                "subject": "Neural Networks Research",
-                "date": "2026-03-10",
-                "sender_email": "Alice Chen <alice@example.com>",
-                "recipients": ["Bob Zhang <bob@example.com>"],
-            },
-        })
+        docs = parser.parse(
+            {
+                "source_id": "email/msg-001",
+                "operation": "created",
+                "text": CORPUS_EMAIL_BODY,
+                "mime_type": "text/plain",
+                "meta": {
+                    "message_id": "msg-001",
+                    "thread_id": "thread-001",
+                    "subject": "Neural Networks Research",
+                    "date": "2026-03-10",
+                    "sender_email": "Alice Chen <alice@example.com>",
+                    "recipients": ["Bob Zhang <bob@example.com>"],
+                },
+            }
+        )
         assert len(docs) == 1
         email_doc = docs[0]
 
@@ -388,23 +406,27 @@ class TestFullPipelineE2E:
         assert "thread-001" in thread_ids
 
     def test_repository_commit_source(
-        self, writer: Writer, neo4j_driver: Driver,
+        self,
+        writer: Writer,
+        neo4j_driver: Driver,
     ) -> None:
         """Repository commit → Commit node, Person AUTHORED, PART_OF Repository."""
         parser = RepositoryParser()
-        docs = parser.parse({
-            "source_id": "commit:abc123",
-            "text": CORPUS_COMMIT_MSG,
-            "meta": {
-                "sha": "abc123def456",
-                "author_name": "Alice Chen",
-                "author_email": "alice@example.com",
-                "date": "2026-03-09",
-                "repo_name": "ml-pipeline",
-                "repo_path": "/repos/ml-pipeline",
-                "changed_files": ["src/train.py", "src/preprocess.py"],
-            },
-        })
+        docs = parser.parse(
+            {
+                "source_id": "commit:abc123",
+                "text": CORPUS_COMMIT_MSG,
+                "meta": {
+                    "sha": "abc123def456",
+                    "author_name": "Alice Chen",
+                    "author_email": "alice@example.com",
+                    "date": "2026-03-09",
+                    "repo_name": "ml-pipeline",
+                    "repo_path": "/repos/ml-pipeline",
+                    "changed_files": ["src/train.py", "src/preprocess.py"],
+                },
+            }
+        )
         assert len(docs) == 1
         commit_doc = docs[0]
 
@@ -439,16 +461,21 @@ class TestFullPipelineE2E:
         assert "ml-pipeline" in repos
 
     def test_obsidian_source_with_wikilinks(
-        self, writer: Writer, neo4j_driver: Driver, qdrant_client_: QdrantClient,
+        self,
+        writer: Writer,
+        neo4j_driver: Driver,
+        qdrant_client_: QdrantClient,
     ) -> None:
         """Obsidian note → File node, wikilink LINKS_TO edges via graph hints."""
         parser = ObsidianParser()
-        docs = parser.parse({
-            "source_id": "notes/project-alpha.md",
-            "operation": "created",
-            "text": CORPUS_OBSIDIAN_TEXT,
-            "meta": {},
-        })
+        docs = parser.parse(
+            {
+                "source_id": "notes/project-alpha.md",
+                "operation": "created",
+                "text": CORPUS_OBSIDIAN_TEXT,
+                "meta": {},
+            }
+        )
 
         # Should produce at least 1 text doc
         text_docs = [d for d in docs if d.text and d.node_label == "File"]
@@ -472,64 +499,81 @@ class TestFullPipelineE2E:
         assert _node_exists(neo4j_driver, "notes/project-alpha.md")
 
         # LINKS_TO edge created via graph hint
-        hint_edges = _query_hint_edges(neo4j_driver, "notes/project-alpha.md", "LINKS_TO")
+        hint_edges = _query_hint_edges(
+            neo4j_driver, "notes/project-alpha.md", "LINKS_TO"
+        )
         assert len(hint_edges) >= 1
 
     def test_multi_source_graph_structure(
-        self, writer: Writer, neo4j_driver: Driver, qdrant_client_: QdrantClient,
+        self,
+        writer: Writer,
+        neo4j_driver: Driver,
+        qdrant_client_: QdrantClient,
     ) -> None:
         """Ingest file + email + commit from corpus and verify overall graph structure."""
         # 1. File
         file_sid = "notes/ml-research.md"
-        writer.write(WriteUnit(
-            doc=_doc(file_sid, text=CORPUS_FILE_TEXT),
-            chunks=_chunks(["ML chunk 1", "ML chunk 2"]),
-            vectors=_vectors(2),
-            entities=_entities("Machine Learning", "Neural Networks", etype="Technology"),
-        ))
+        writer.write(
+            WriteUnit(
+                doc=_doc(file_sid, text=CORPUS_FILE_TEXT),
+                chunks=_chunks(["ML chunk 1", "ML chunk 2"]),
+                vectors=_vectors(2),
+                entities=_entities(
+                    "Machine Learning", "Neural Networks", etype="Technology"
+                ),
+            )
+        )
 
         # 2. Email (uses GmailParser for realistic graph hints)
-        email_doc = GmailParser().parse({
-            "source_id": "email/msg-001",
-            "operation": "created",
-            "text": CORPUS_EMAIL_BODY,
-            "mime_type": "text/plain",
-            "meta": {
-                "message_id": "msg-001",
-                "thread_id": "thread-001",
-                "subject": "Neural Networks Research",
-                "date": "2026-03-10",
-                "sender_email": "alice@example.com",
-                "recipients": ["bob@example.com"],
-            },
-        })[0]
-        writer.write(WriteUnit(
-            doc=email_doc,
-            chunks=_chunks(["Email chunk about NNs"]),
-            vectors=_vectors(1),
-            entities=_entities("Neural Networks", etype="Technology"),
-        ))
+        email_doc = GmailParser().parse(
+            {
+                "source_id": "email/msg-001",
+                "operation": "created",
+                "text": CORPUS_EMAIL_BODY,
+                "mime_type": "text/plain",
+                "meta": {
+                    "message_id": "msg-001",
+                    "thread_id": "thread-001",
+                    "subject": "Neural Networks Research",
+                    "date": "2026-03-10",
+                    "sender_email": "alice@example.com",
+                    "recipients": ["bob@example.com"],
+                },
+            }
+        )[0]
+        writer.write(
+            WriteUnit(
+                doc=email_doc,
+                chunks=_chunks(["Email chunk about NNs"]),
+                vectors=_vectors(1),
+                entities=_entities("Neural Networks", etype="Technology"),
+            )
+        )
 
         # 3. Commit
-        commit_doc = RepositoryParser().parse({
-            "source_id": "commit:abc123",
-            "text": CORPUS_COMMIT_MSG,
-            "meta": {
-                "sha": "abc123",
-                "author_name": "Alice Chen",
-                "author_email": "alice@example.com",
-                "date": "2026-03-09",
-                "repo_name": "ml-pipeline",
-                "repo_path": "/repos/ml-pipeline",
-                "changed_files": ["src/train.py"],
-            },
-        })[0]
-        writer.write(WriteUnit(
-            doc=commit_doc,
-            chunks=_chunks(["Commit chunk"]),
-            vectors=_vectors(1),
-            entities=_entities("Transformer", etype="Technology"),
-        ))
+        commit_doc = RepositoryParser().parse(
+            {
+                "source_id": "commit:abc123",
+                "text": CORPUS_COMMIT_MSG,
+                "meta": {
+                    "sha": "abc123",
+                    "author_name": "Alice Chen",
+                    "author_email": "alice@example.com",
+                    "date": "2026-03-09",
+                    "repo_name": "ml-pipeline",
+                    "repo_path": "/repos/ml-pipeline",
+                    "changed_files": ["src/train.py"],
+                },
+            }
+        )[0]
+        writer.write(
+            WriteUnit(
+                doc=commit_doc,
+                chunks=_chunks(["Commit chunk"]),
+                vectors=_vectors(1),
+                entities=_entities("Transformer", etype="Technology"),
+            )
+        )
 
         # Verify graph structure
         assert _count_nodes(neo4j_driver, "File") >= 1
@@ -558,49 +602,59 @@ class TestCrossSourceQueries:
     """Verify that entity resolution links data across source types."""
 
     def test_same_person_across_email_and_commit(
-        self, writer: Writer, neo4j_driver: Driver,
+        self,
+        writer: Writer,
+        neo4j_driver: Driver,
     ) -> None:
         """Alice appears in email (sender) AND commit (author). Person node linked."""
         # Email from Alice
-        email_doc = GmailParser().parse({
-            "source_id": "email/msg-alice",
-            "operation": "created",
-            "text": "Meeting notes from Alice",
-            "mime_type": "text/plain",
-            "meta": {
-                "message_id": "msg-alice",
-                "thread_id": "thread-alice",
-                "subject": "Meeting Notes",
-                "date": "2026-03-10",
-                "sender_email": "alice@example.com",
-                "recipients": [],
-            },
-        })[0]
-        writer.write(WriteUnit(
-            doc=email_doc,
-            chunks=_chunks(["Alice meeting notes"]),
-            vectors=_vectors(1),
-        ))
+        email_doc = GmailParser().parse(
+            {
+                "source_id": "email/msg-alice",
+                "operation": "created",
+                "text": "Meeting notes from Alice",
+                "mime_type": "text/plain",
+                "meta": {
+                    "message_id": "msg-alice",
+                    "thread_id": "thread-alice",
+                    "subject": "Meeting Notes",
+                    "date": "2026-03-10",
+                    "sender_email": "alice@example.com",
+                    "recipients": [],
+                },
+            }
+        )[0]
+        writer.write(
+            WriteUnit(
+                doc=email_doc,
+                chunks=_chunks(["Alice meeting notes"]),
+                vectors=_vectors(1),
+            )
+        )
 
         # Commit by Alice
-        commit_doc = RepositoryParser().parse({
-            "source_id": "commit:alice-commit",
-            "text": "fix: update config",
-            "meta": {
-                "sha": "aaa111",
-                "author_name": "Alice Chen",
-                "author_email": "alice@example.com",
-                "date": "2026-03-09",
-                "repo_name": "myrepo",
-                "repo_path": "/repos/myrepo",
-                "changed_files": [],
-            },
-        })[0]
-        writer.write(WriteUnit(
-            doc=commit_doc,
-            chunks=_chunks(["Config fix"]),
-            vectors=_vectors(1),
-        ))
+        commit_doc = RepositoryParser().parse(
+            {
+                "source_id": "commit:alice-commit",
+                "text": "fix: update config",
+                "meta": {
+                    "sha": "aaa111",
+                    "author_name": "Alice Chen",
+                    "author_email": "alice@example.com",
+                    "date": "2026-03-09",
+                    "repo_name": "myrepo",
+                    "repo_path": "/repos/myrepo",
+                    "changed_files": [],
+                },
+            }
+        )[0]
+        writer.write(
+            WriteUnit(
+                doc=commit_doc,
+                chunks=_chunks(["Config fix"]),
+                vectors=_vectors(1),
+            )
+        )
 
         # Reconcile persons
         writer.reconcile_persons()
@@ -621,38 +675,46 @@ class TestCrossSourceQueries:
         assert authored >= 1
 
     def test_shared_entity_across_sources(
-        self, writer: Writer, neo4j_driver: Driver,
+        self,
+        writer: Writer,
+        neo4j_driver: Driver,
     ) -> None:
         """Same entity 'Neural Networks' mentioned by file AND email."""
         # File mentioning Neural Networks
-        writer.write(WriteUnit(
-            doc=_doc("notes/nn-file.md", text="Neural Networks intro"),
-            chunks=_chunks(["NN chunk"]),
-            vectors=_vectors(1),
-            entities=_entities("Neural Networks", etype="Technology"),
-        ))
+        writer.write(
+            WriteUnit(
+                doc=_doc("notes/nn-file.md", text="Neural Networks intro"),
+                chunks=_chunks(["NN chunk"]),
+                vectors=_vectors(1),
+                entities=_entities("Neural Networks", etype="Technology"),
+            )
+        )
 
         # Email mentioning Neural Networks
-        email_doc = GmailParser().parse({
-            "source_id": "email/nn-email",
-            "operation": "created",
-            "text": "Discussion about Neural Networks",
-            "mime_type": "text/plain",
-            "meta": {
-                "message_id": "nn-email",
-                "thread_id": "t-nn",
-                "subject": "NN Discussion",
-                "date": "2026-03-10",
-                "sender_email": "researcher@example.com",
-                "recipients": [],
-            },
-        })[0]
-        writer.write(WriteUnit(
-            doc=email_doc,
-            chunks=_chunks(["NN email chunk"]),
-            vectors=_vectors(1),
-            entities=_entities("Neural Networks", etype="Technology"),
-        ))
+        email_doc = GmailParser().parse(
+            {
+                "source_id": "email/nn-email",
+                "operation": "created",
+                "text": "Discussion about Neural Networks",
+                "mime_type": "text/plain",
+                "meta": {
+                    "message_id": "nn-email",
+                    "thread_id": "t-nn",
+                    "subject": "NN Discussion",
+                    "date": "2026-03-10",
+                    "sender_email": "researcher@example.com",
+                    "recipients": [],
+                },
+            }
+        )[0]
+        writer.write(
+            WriteUnit(
+                doc=email_doc,
+                chunks=_chunks(["NN email chunk"]),
+                vectors=_vectors(1),
+                entities=_entities("Neural Networks", etype="Technology"),
+            )
+        )
 
         # Entity exists once (MERGE semantics)
         assert _entity_exists(neo4j_driver, "Neural Networks")
@@ -664,7 +726,9 @@ class TestCrossSourceQueries:
         assert "Neural Networks" in email_mentions
 
     def test_cross_source_vector_search(
-        self, writer: Writer, qdrant_client_: QdrantClient,
+        self,
+        writer: Writer,
+        qdrant_client_: QdrantClient,
     ) -> None:
         """Vectors from different source types are all searchable in the same collection."""
         # Write vectors for 3 different source types
@@ -672,11 +736,13 @@ class TestCrossSourceQueries:
         email_vec = [0.8] * VECTOR_SIZE
         commit_vec = [0.7] * VECTOR_SIZE
 
-        writer.write(WriteUnit(
-            doc=_doc("file/test.md", source_type="files", text="File content"),
-            chunks=_chunks(["file chunk"]),
-            vectors=[file_vec],
-        ))
+        writer.write(
+            WriteUnit(
+                doc=_doc("file/test.md", source_type="files", text="File content"),
+                chunks=_chunks(["file chunk"]),
+                vectors=[file_vec],
+            )
+        )
 
         email_doc = ParsedDocument(
             source_type="gmail",
@@ -686,11 +752,13 @@ class TestCrossSourceQueries:
             node_label="Email",
             node_props={"message_id": "test-vec"},
         )
-        writer.write(WriteUnit(
-            doc=email_doc,
-            chunks=_chunks(["email chunk"]),
-            vectors=[email_vec],
-        ))
+        writer.write(
+            WriteUnit(
+                doc=email_doc,
+                chunks=_chunks(["email chunk"]),
+                vectors=[email_vec],
+            )
+        )
 
         commit_doc = ParsedDocument(
             source_type="repositories",
@@ -700,11 +768,13 @@ class TestCrossSourceQueries:
             node_label="Commit",
             node_props={"sha": "testvec"},
         )
-        writer.write(WriteUnit(
-            doc=commit_doc,
-            chunks=_chunks(["commit chunk"]),
-            vectors=[commit_vec],
-        ))
+        writer.write(
+            WriteUnit(
+                doc=commit_doc,
+                chunks=_chunks(["commit chunk"]),
+                vectors=[commit_vec],
+            )
+        )
 
         # Search with a vector close to the file vector — file should rank first
         search_vec = [0.89] * VECTOR_SIZE
@@ -728,30 +798,40 @@ class TestContentUpdateE2E:
     """Full modify cycle: ingest v1 → modify → ingest v2 → verify cleanup."""
 
     def test_modify_cleans_stale_data_and_writes_new(
-        self, writer: Writer, neo4j_driver: Driver, qdrant_client_: QdrantClient,
+        self,
+        writer: Writer,
+        neo4j_driver: Driver,
+        qdrant_client_: QdrantClient,
     ) -> None:
         """v1 has entities A,B and 3 chunks. v2 has entities A,C and 2 chunks.
         B is gone, C is new, chunk count updated."""
         sid = _uid("update-test")
 
         # v1
-        writer.write(WriteUnit(
-            doc=_doc(sid, "created", text="v1 content"),
-            chunks=_chunks(["v1 chunk 0", "v1 chunk 1", "v1 chunk 2"]),
-            vectors=_vectors(3),
-            entities=_entities("EntityA", "EntityB"),
-        ))
-        assert sorted(_query_edges(neo4j_driver, sid, "MENTIONS")) == ["EntityA", "EntityB"]
+        writer.write(
+            WriteUnit(
+                doc=_doc(sid, "created", text="v1 content"),
+                chunks=_chunks(["v1 chunk 0", "v1 chunk 1", "v1 chunk 2"]),
+                vectors=_vectors(3),
+                entities=_entities("EntityA", "EntityB"),
+            )
+        )
+        assert sorted(_query_edges(neo4j_driver, sid, "MENTIONS")) == [
+            "EntityA",
+            "EntityB",
+        ]
         assert len(_query_chunks(neo4j_driver, sid)) == 3
         assert _qdrant_count(qdrant_client_, sid) == 3
 
         # v2 — modify
-        writer.write(WriteUnit(
-            doc=_doc(sid, "modified", text="v2 content"),
-            chunks=_chunks(["v2 chunk 0", "v2 chunk 1"]),
-            vectors=_vectors(2),
-            entities=_entities("EntityA", "EntityC"),
-        ))
+        writer.write(
+            WriteUnit(
+                doc=_doc(sid, "modified", text="v2 content"),
+                chunks=_chunks(["v2 chunk 0", "v2 chunk 1"]),
+                vectors=_vectors(2),
+                entities=_entities("EntityA", "EntityC"),
+            )
+        )
 
         # Stale data cleaned
         mentions = sorted(_query_edges(neo4j_driver, sid, "MENTIONS"))
@@ -763,17 +843,22 @@ class TestContentUpdateE2E:
         assert not _entity_exists(neo4j_driver, "EntityB")
 
     def test_delete_removes_all_data(
-        self, writer: Writer, neo4j_driver: Driver, qdrant_client_: QdrantClient,
+        self,
+        writer: Writer,
+        neo4j_driver: Driver,
+        qdrant_client_: QdrantClient,
     ) -> None:
         """Delete operation removes source node, chunks, and vectors."""
         sid = _uid("delete-test")
 
-        writer.write(WriteUnit(
-            doc=_doc(sid, "created", text="to be deleted"),
-            chunks=_chunks(["chunk 0", "chunk 1"]),
-            vectors=_vectors(2),
-            entities=_entities("DeleteEntity"),
-        ))
+        writer.write(
+            WriteUnit(
+                doc=_doc(sid, "created", text="to be deleted"),
+                chunks=_chunks(["chunk 0", "chunk 1"]),
+                vectors=_vectors(2),
+                entities=_entities("DeleteEntity"),
+            )
+        )
         assert _node_exists(neo4j_driver, sid)
         assert _qdrant_count(qdrant_client_, sid) == 2
 
@@ -785,7 +870,9 @@ class TestContentUpdateE2E:
         assert _qdrant_count(qdrant_client_, sid) == 0
 
     def test_modify_with_graph_hints_cleans_stale_hints(
-        self, writer: Writer, neo4j_driver: Driver,
+        self,
+        writer: Writer,
+        neo4j_driver: Driver,
     ) -> None:
         """v1 has LINKS_TO hints to X,Y. v2 has LINKS_TO hint to X only. Y gone."""
         sid = _uid("hint-update")
@@ -793,31 +880,39 @@ class TestContentUpdateE2E:
         target_y = _uid("target_y")
 
         hint_x = GraphHint(
-            subject_id=sid, subject_label="File",
+            subject_id=sid,
+            subject_label="File",
             predicate="LINKS_TO",
-            object_id=target_x, object_label="File",
+            object_id=target_x,
+            object_label="File",
         )
         hint_y = GraphHint(
-            subject_id=sid, subject_label="File",
+            subject_id=sid,
+            subject_label="File",
             predicate="LINKS_TO",
-            object_id=target_y, object_label="File",
+            object_id=target_y,
+            object_label="File",
         )
 
         # v1
-        writer.write(WriteUnit(
-            doc=_doc(sid, "created", graph_hints=[hint_x, hint_y]),
-            chunks=_chunks(["hint chunk"]),
-            vectors=_vectors(1),
-        ))
+        writer.write(
+            WriteUnit(
+                doc=_doc(sid, "created", graph_hints=[hint_x, hint_y]),
+                chunks=_chunks(["hint chunk"]),
+                vectors=_vectors(1),
+            )
+        )
         hints_v1 = _query_hint_edges(neo4j_driver, sid, "LINKS_TO")
         assert len(hints_v1) == 2
 
         # v2 — only hint_x
-        writer.write(WriteUnit(
-            doc=_doc(sid, "modified", graph_hints=[hint_x]),
-            chunks=_chunks(["updated hint chunk"]),
-            vectors=_vectors(1),
-        ))
+        writer.write(
+            WriteUnit(
+                doc=_doc(sid, "modified", graph_hints=[hint_x]),
+                chunks=_chunks(["updated hint chunk"]),
+                vectors=_vectors(1),
+            )
+        )
         hints_v2 = _query_hint_edges(neo4j_driver, sid, "LINKS_TO")
         assert len(hints_v2) == 1
 
@@ -834,55 +929,67 @@ class TestMCPToolsE2E:
     def _ingest_corpus(self, writer: Writer, neo4j_driver: Driver) -> None:
         """Ingest the test corpus into Neo4j + Qdrant."""
         # File
-        writer.write(WriteUnit(
-            doc=_doc("notes/ml-research.md", text=CORPUS_FILE_TEXT),
-            chunks=_chunks(["ML intro chunk", "NN overview chunk"]),
-            vectors=_vectors(2),
-            entities=_entities("Machine Learning", "Neural Networks", etype="Technology"),
-        ))
+        writer.write(
+            WriteUnit(
+                doc=_doc("notes/ml-research.md", text=CORPUS_FILE_TEXT),
+                chunks=_chunks(["ML intro chunk", "NN overview chunk"]),
+                vectors=_vectors(2),
+                entities=_entities(
+                    "Machine Learning", "Neural Networks", etype="Technology"
+                ),
+            )
+        )
 
         # Email
-        email_doc = GmailParser().parse({
-            "source_id": "email/msg-001",
-            "operation": "created",
-            "text": CORPUS_EMAIL_BODY,
-            "mime_type": "text/plain",
-            "meta": {
-                "message_id": "msg-001",
-                "thread_id": "thread-001",
-                "subject": "Neural Networks Research",
-                "date": "2026-03-10",
-                "sender_email": "alice@example.com",
-                "recipients": ["bob@example.com"],
-            },
-        })[0]
-        writer.write(WriteUnit(
-            doc=email_doc,
-            chunks=_chunks(["NN research email chunk"]),
-            vectors=_vectors(1),
-            entities=_entities("Neural Networks", etype="Technology"),
-        ))
+        email_doc = GmailParser().parse(
+            {
+                "source_id": "email/msg-001",
+                "operation": "created",
+                "text": CORPUS_EMAIL_BODY,
+                "mime_type": "text/plain",
+                "meta": {
+                    "message_id": "msg-001",
+                    "thread_id": "thread-001",
+                    "subject": "Neural Networks Research",
+                    "date": "2026-03-10",
+                    "sender_email": "alice@example.com",
+                    "recipients": ["bob@example.com"],
+                },
+            }
+        )[0]
+        writer.write(
+            WriteUnit(
+                doc=email_doc,
+                chunks=_chunks(["NN research email chunk"]),
+                vectors=_vectors(1),
+                entities=_entities("Neural Networks", etype="Technology"),
+            )
+        )
 
         # Commit
-        commit_doc = RepositoryParser().parse({
-            "source_id": "commit:abc123",
-            "text": CORPUS_COMMIT_MSG,
-            "meta": {
-                "sha": "abc123",
-                "author_name": "Alice Chen",
-                "author_email": "alice@example.com",
-                "date": "2026-03-09",
-                "repo_name": "ml-pipeline",
-                "repo_path": "/repos/ml-pipeline",
-                "changed_files": ["src/train.py"],
-            },
-        })[0]
-        writer.write(WriteUnit(
-            doc=commit_doc,
-            chunks=_chunks(["transformer training chunk"]),
-            vectors=_vectors(1),
-            entities=_entities("Transformer", etype="Technology"),
-        ))
+        commit_doc = RepositoryParser().parse(
+            {
+                "source_id": "commit:abc123",
+                "text": CORPUS_COMMIT_MSG,
+                "meta": {
+                    "sha": "abc123",
+                    "author_name": "Alice Chen",
+                    "author_email": "alice@example.com",
+                    "date": "2026-03-09",
+                    "repo_name": "ml-pipeline",
+                    "repo_path": "/repos/ml-pipeline",
+                    "changed_files": ["src/train.py"],
+                },
+            }
+        )[0]
+        writer.write(
+            WriteUnit(
+                doc=commit_doc,
+                chunks=_chunks(["transformer training chunk"]),
+                vectors=_vectors(1),
+                entities=_entities("Transformer", etype="Technology"),
+            )
+        )
 
         # Topic nodes (manually inserted for topic tool tests)
         with neo4j_driver.session() as session:
@@ -903,15 +1010,21 @@ class TestMCPToolsE2E:
 
     @pytest.mark.asyncio
     async def test_ingest_status_tool(
-        self, writer: Writer, neo4j_driver: Driver, qdrant_client_: QdrantClient,
+        self,
+        writer: Writer,
+        neo4j_driver: Driver,
+        qdrant_client_: QdrantClient,
     ) -> None:
         """ingest_status returns accurate counts matching ingested data."""
         self._ingest_corpus(writer, neo4j_driver)
 
         cfg = Config(
-            neo4j=Neo4jConfig(uri=_NEO4J_URI, user=_NEO4J_USER, password=_NEO4J_PASSWORD),
+            neo4j=Neo4jConfig(
+                uri=_NEO4J_URI, user=_NEO4J_USER, password=_NEO4J_PASSWORD
+            ),
             qdrant=QdrantConfig(
-                host=_QDRANT_HOST, port=_QDRANT_PORT,
+                host=_QDRANT_HOST,
+                port=_QDRANT_PORT,
                 collection=_TEST_COLLECTION,
             ),
         )
@@ -945,13 +1058,17 @@ class TestMCPToolsE2E:
             server._disconnect()
 
     def test_list_topics_tool(
-        self, writer: Writer, neo4j_driver: Driver,
+        self,
+        writer: Writer,
+        neo4j_driver: Driver,
     ) -> None:
         """list_topics returns topics after ingestion."""
         self._ingest_corpus(writer, neo4j_driver)
 
         cfg = Config(
-            neo4j=Neo4jConfig(uri=_NEO4J_URI, user=_NEO4J_USER, password=_NEO4J_PASSWORD),
+            neo4j=Neo4jConfig(
+                uri=_NEO4J_URI, user=_NEO4J_USER, password=_NEO4J_PASSWORD
+            ),
         )
         from worker.query.topics import TopicQuerier
 
@@ -969,7 +1086,9 @@ class TestMCPToolsE2E:
             assert ml_topic.doc_count >= 1
 
     def test_show_topic_tool(
-        self, writer: Writer, neo4j_driver: Driver,
+        self,
+        writer: Writer,
+        neo4j_driver: Driver,
     ) -> None:
         """show_topic returns topic details with linked documents."""
         self._ingest_corpus(writer, neo4j_driver)
@@ -977,7 +1096,9 @@ class TestMCPToolsE2E:
         from worker.query.topics import TopicQuerier
 
         cfg = Config(
-            neo4j=Neo4jConfig(uri=_NEO4J_URI, user=_NEO4J_USER, password=_NEO4J_PASSWORD),
+            neo4j=Neo4jConfig(
+                uri=_NEO4J_URI, user=_NEO4J_USER, password=_NEO4J_PASSWORD
+            ),
         )
         with TopicQuerier(cfg.neo4j) as querier:
             detail = querier.show_topic("Machine Learning")
@@ -985,23 +1106,31 @@ class TestMCPToolsE2E:
             assert detail.name == "Machine Learning"
             assert detail.source == "cluster"
             assert len(detail.documents) >= 1
-            assert any(d["source_id"] == "notes/ml-research.md" for d in detail.documents)
+            assert any(
+                d["source_id"] == "notes/ml-research.md" for d in detail.documents
+            )
 
     def test_show_topic_not_found(
-        self, writer: Writer, neo4j_driver: Driver,
+        self,
+        writer: Writer,
+        neo4j_driver: Driver,
     ) -> None:
         """show_topic returns None for nonexistent topic."""
         from worker.query.topics import TopicQuerier
 
         cfg = Config(
-            neo4j=Neo4jConfig(uri=_NEO4J_URI, user=_NEO4J_USER, password=_NEO4J_PASSWORD),
+            neo4j=Neo4jConfig(
+                uri=_NEO4J_URI, user=_NEO4J_USER, password=_NEO4J_PASSWORD
+            ),
         )
         with TopicQuerier(cfg.neo4j) as querier:
             detail = querier.show_topic("Nonexistent Topic XYZ")
             assert detail is None
 
     def test_topic_gaps_tool(
-        self, writer: Writer, neo4j_driver: Driver,
+        self,
+        writer: Writer,
+        neo4j_driver: Driver,
     ) -> None:
         """topic_gaps returns cluster topics without user counterparts."""
         self._ingest_corpus(writer, neo4j_driver)
@@ -1009,7 +1138,9 @@ class TestMCPToolsE2E:
         from worker.query.topics import TopicQuerier
 
         cfg = Config(
-            neo4j=Neo4jConfig(uri=_NEO4J_URI, user=_NEO4J_USER, password=_NEO4J_PASSWORD),
+            neo4j=Neo4jConfig(
+                uri=_NEO4J_URI, user=_NEO4J_USER, password=_NEO4J_PASSWORD
+            ),
         )
         with TopicQuerier(cfg.neo4j) as querier:
             gaps = querier.topic_gaps()
@@ -1031,120 +1162,151 @@ class TestParserToWriterIntegration:
     """Verify that each parser's output is accepted by the Writer without error."""
 
     def test_file_parser_output_writable(
-        self, writer: Writer, neo4j_driver: Driver,
+        self,
+        writer: Writer,
+        neo4j_driver: Driver,
     ) -> None:
         parser = FileParser()
-        docs = parser.parse({
-            "mime_type": "text/markdown",
-            "source_id": "notes/parser-test.md",
-            "operation": "created",
-            "text": "Simple test content for parsing. " * 5,
-        })
+        docs = parser.parse(
+            {
+                "mime_type": "text/markdown",
+                "source_id": "notes/parser-test.md",
+                "operation": "created",
+                "text": "Simple test content for parsing. " * 5,
+            }
+        )
         assert len(docs) >= 1
         for doc in docs:
             if doc.text:
-                writer.write(WriteUnit(
-                    doc=doc,
-                    chunks=_chunks(["parser test chunk"]),
-                    vectors=_vectors(1),
-                ))
+                writer.write(
+                    WriteUnit(
+                        doc=doc,
+                        chunks=_chunks(["parser test chunk"]),
+                        vectors=_vectors(1),
+                    )
+                )
         assert _node_exists(neo4j_driver, "notes/parser-test.md")
 
     def test_gmail_parser_output_writable(
-        self, writer: Writer, neo4j_driver: Driver,
+        self,
+        writer: Writer,
+        neo4j_driver: Driver,
     ) -> None:
         parser = GmailParser()
-        docs = parser.parse({
-            "source_id": "email/parser-test",
-            "operation": "created",
-            "text": "<html><body><p>HTML email body</p></body></html>",
-            "mime_type": "text/html",
-            "meta": {
-                "message_id": "parser-test",
-                "thread_id": "t-parser",
-                "subject": "Test Subject",
-                "date": "2026-03-11",
-                "sender_email": "test@example.com",
-                "recipients": ["other@example.com"],
-            },
-        })
+        docs = parser.parse(
+            {
+                "source_id": "email/parser-test",
+                "operation": "created",
+                "text": "<html><body><p>HTML email body</p></body></html>",
+                "mime_type": "text/html",
+                "meta": {
+                    "message_id": "parser-test",
+                    "thread_id": "t-parser",
+                    "subject": "Test Subject",
+                    "date": "2026-03-11",
+                    "sender_email": "test@example.com",
+                    "recipients": ["other@example.com"],
+                },
+            }
+        )
         assert len(docs) == 1
         doc = docs[0]
         # HTML should be stripped
         assert "<html>" not in doc.text
         assert "HTML email body" in doc.text
 
-        writer.write(WriteUnit(
-            doc=doc,
-            chunks=_chunks(["html email chunk"]),
-            vectors=_vectors(1),
-        ))
+        writer.write(
+            WriteUnit(
+                doc=doc,
+                chunks=_chunks(["html email chunk"]),
+                vectors=_vectors(1),
+            )
+        )
         assert _node_exists(neo4j_driver, "email/parser-test")
 
     def test_repository_file_parser_output_writable(
-        self, writer: Writer, neo4j_driver: Driver,
+        self,
+        writer: Writer,
+        neo4j_driver: Driver,
     ) -> None:
         parser = RepositoryParser()
-        docs = parser.parse({
-            "source_id": "repo:/repos/test:src/main.py",
-            "operation": "created",
-            "text": "def main():\n    print('hello')\n",
-            "mime_type": "text/x-python",
-            "meta": {
-                "repo_name": "test-repo",
-                "repo_path": "/repos/test",
-                "relative_path": "src/main.py",
-            },
-        })
+        docs = parser.parse(
+            {
+                "source_id": "repo:/repos/test:src/main.py",
+                "operation": "created",
+                "text": "def main():\n    print('hello')\n",
+                "mime_type": "text/x-python",
+                "meta": {
+                    "repo_name": "test-repo",
+                    "repo_path": "/repos/test",
+                    "relative_path": "src/main.py",
+                },
+            }
+        )
         assert len(docs) == 1
-        writer.write(WriteUnit(
-            doc=docs[0],
-            chunks=_chunks(["python code chunk"]),
-            vectors=_vectors(1),
-        ))
+        writer.write(
+            WriteUnit(
+                doc=docs[0],
+                chunks=_chunks(["python code chunk"]),
+                vectors=_vectors(1),
+            )
+        )
         assert _node_exists(neo4j_driver, "repo:/repos/test:src/main.py")
 
     def test_repository_commit_parser_output_writable(
-        self, writer: Writer, neo4j_driver: Driver,
+        self,
+        writer: Writer,
+        neo4j_driver: Driver,
     ) -> None:
         parser = RepositoryParser()
-        docs = parser.parse({
-            "source_id": "commit:parser-test-sha",
-            "text": "chore: update dependencies",
-            "meta": {
-                "sha": "parser-test-sha",
-                "author_name": "Dev",
-                "author_email": "dev@example.com",
-                "date": "2026-03-11",
-                "repo_name": "test-repo",
-                "repo_path": "/repos/test",
-                "changed_files": ["requirements.txt"],
-            },
-        })
+        docs = parser.parse(
+            {
+                "source_id": "commit:parser-test-sha",
+                "text": "chore: update dependencies",
+                "meta": {
+                    "sha": "parser-test-sha",
+                    "author_name": "Dev",
+                    "author_email": "dev@example.com",
+                    "date": "2026-03-11",
+                    "repo_name": "test-repo",
+                    "repo_path": "/repos/test",
+                    "changed_files": ["requirements.txt"],
+                },
+            }
+        )
         assert len(docs) == 1
-        writer.write(WriteUnit(
-            doc=docs[0],
-            chunks=_chunks(["commit chunk"]),
-            vectors=_vectors(1),
-        ))
+        writer.write(
+            WriteUnit(
+                doc=docs[0],
+                chunks=_chunks(["commit chunk"]),
+                vectors=_vectors(1),
+            )
+        )
         assert _node_exists(neo4j_driver, "commit:parser-test-sha")
 
     def test_obsidian_parser_output_writable(
-        self, writer: Writer, neo4j_driver: Driver,
+        self,
+        writer: Writer,
+        neo4j_driver: Driver,
     ) -> None:
         parser = ObsidianParser()
-        docs = parser.parse({
-            "source_id": "vault/parser-test.md",
-            "operation": "created",
-            "text": "---\ntitle: Test\n---\nContent with [[link]] and more text. " * 10,
-            "meta": {},
-        })
+        docs = parser.parse(
+            {
+                "source_id": "vault/parser-test.md",
+                "operation": "created",
+                "text": "---\ntitle: Test\n---\nContent with [[link]] and more text. "
+                * 10,
+                "meta": {},
+            }
+        )
         text_docs = [d for d in docs if d.text and d.node_label == "File"]
         assert len(text_docs) >= 1
         for doc in text_docs:
-            writer.write(WriteUnit(
-                doc=doc,
-                chunks=_chunks(["obsidian chunk"]),
-                vectors=_vectors(1),
-            ))
+            writer.write(
+                WriteUnit(
+                    doc=doc,
+                    chunks=_chunks(["obsidian chunk"]),
+                    vectors=_vectors(1),
+                )
+            )
         assert _node_exists(neo4j_driver, "vault/parser-test.md")

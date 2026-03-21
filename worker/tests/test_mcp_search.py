@@ -6,17 +6,18 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-@pytest.fixture(autouse=True)
-def _non_empty_corpus():
-    """Default: corpus is non-empty so queries proceed normally."""
-    with patch("worker.mcp_server.is_corpus_empty", return_value=False):
-        yield
-
 from worker.config import Config, Neo4jConfig, QdrantConfig
 from worker.mcp_server import FieldnotesServer
 from worker.query import EMPTY_CORPUS_MESSAGE
 from worker.query.graph import GraphQueryResult
 from worker.query.vector import VectorQueryResult, VectorResult
+
+
+@pytest.fixture(autouse=True)
+def _non_empty_corpus():
+    """Default: corpus is non-empty so queries proceed normally."""
+    with patch("worker.mcp_server.is_corpus_empty", return_value=False):
+        yield
 
 
 def _make_server() -> FieldnotesServer:
@@ -94,11 +95,14 @@ class TestSearchTool:
         server._graph_querier.query = MagicMock(return_value=graph_result)
         server._vector_querier.query = MagicMock(return_value=vector_result)
 
-        await server._call_tool("search", {
-            "query": "test",
-            "source_type": "email",
-            "top_k": 5,
-        })
+        await server._call_tool(
+            "search",
+            {
+                "query": "test",
+                "source_type": "email",
+                "top_k": 5,
+            },
+        )
 
         # Verify source_type and top_k were passed to vector query
         server._vector_querier.query.assert_called_once()
@@ -256,7 +260,7 @@ class TestSearchTool:
 
         text = result[0].text
         # dup1 should appear in Sources but only once
-        sources_section = text[text.index("[Sources]"):] if "[Sources]" in text else ""
+        sources_section = text[text.index("[Sources]") :] if "[Sources]" in text else ""
         if sources_section:
             assert sources_section.count("dup1") == 1
 

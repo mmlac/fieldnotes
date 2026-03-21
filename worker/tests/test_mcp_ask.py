@@ -6,19 +6,19 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-
-@pytest.fixture(autouse=True)
-def _non_empty_corpus():
-    """Default: corpus is non-empty so queries proceed normally."""
-    with patch("worker.mcp_server.is_corpus_empty", return_value=False):
-        yield
-
 from worker.config import Config, Neo4jConfig, QdrantConfig
 from worker.mcp_server import FieldnotesServer
 from worker.models.base import CompletionResponse
 from worker.query import EMPTY_CORPUS_MESSAGE
 from worker.query.graph import GraphQueryResult
 from worker.query.vector import VectorQueryResult, VectorResult
+
+
+@pytest.fixture(autouse=True)
+def _non_empty_corpus():
+    """Default: corpus is non-empty so queries proceed normally."""
+    with patch("worker.mcp_server.is_corpus_empty", return_value=False):
+        yield
 
 
 def _make_server() -> FieldnotesServer:
@@ -325,7 +325,7 @@ class TestAskTool:
         result = await server._call_tool("ask", {"question": "test"})
 
         text = result[0].text
-        sources_section = text[text.index("[Sources]"):]
+        sources_section = text[text.index("[Sources]") :]
         assert sources_section.count("dup1") == 1
 
     @pytest.mark.asyncio

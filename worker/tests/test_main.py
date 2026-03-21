@@ -97,7 +97,6 @@ class TestSetupLogging:
         --mcp``).  Any log line written to stdout would corrupt the
         JSON-RPC stream consumed by the MCP client.
         """
-        import sys
         import logging as _logging
 
         # Use a real root logger isolated to this test.
@@ -163,9 +162,7 @@ class TestCheckQdrant:
         cfg = _cfg()
         _check_qdrant(cfg)
 
-        mock_qc_cls.assert_called_once_with(
-            host=cfg.qdrant.host, port=cfg.qdrant.port
-        )
+        mock_qc_cls.assert_called_once_with(host=cfg.qdrant.host, port=cfg.qdrant.port)
         client.get_collections.assert_called_once()
         client.close.assert_called_once()
 
@@ -193,9 +190,7 @@ class TestBuildSources:
         fake_cls = MagicMock(return_value=fake_source)
 
         settings = {"watch_dir": "/tmp"}
-        cfg = _cfg(
-            sources={"files": SourceConfig(name="files", settings=settings)}
-        )
+        cfg = _cfg(sources={"files": SourceConfig(name="files", settings=settings)})
 
         with patch.dict(SOURCE_CLASSES, {"files": fake_cls}):
             result = _build_sources(cfg)
@@ -230,8 +225,10 @@ class TestBuildSources:
 
         with patch.dict(
             SOURCE_CLASSES,
-            {"files": MagicMock(return_value=fake_files),
-             "obsidian": MagicMock(return_value=fake_obsidian)},
+            {
+                "files": MagicMock(return_value=fake_files),
+                "obsidian": MagicMock(return_value=fake_obsidian),
+            },
         ):
             result = _build_sources(cfg)
 
@@ -274,11 +271,13 @@ class TestRun:
 
         # Source pushes one event then the stop signal fires
         async def fake_start(queue):
-            await queue.put({
-                "source_type": "file",
-                "source_id": "test.md",
-                "operation": "created",
-            })
+            await queue.put(
+                {
+                    "source_type": "file",
+                    "source_id": "test.md",
+                    "operation": "created",
+                }
+            )
             # Give the consumer a moment to process
             await asyncio.sleep(0.05)
 
@@ -316,16 +315,20 @@ class TestRun:
         fake_source.name.return_value = "files"
 
         async def fake_start(queue):
-            await queue.put({
-                "source_type": "file",
-                "source_id": "bad.md",
-                "operation": "created",
-            })
-            await queue.put({
-                "source_type": "file",
-                "source_id": "good.md",
-                "operation": "created",
-            })
+            await queue.put(
+                {
+                    "source_type": "file",
+                    "source_id": "bad.md",
+                    "operation": "created",
+                }
+            )
+            await queue.put(
+                {
+                    "source_type": "file",
+                    "source_id": "good.md",
+                    "operation": "created",
+                }
+            )
             await asyncio.sleep(0.1)
 
         fake_source.start = fake_start
@@ -547,4 +550,5 @@ class TestMain:
             main()
 
         from pathlib import Path
+
         mock_load.assert_called_once_with(Path("/tmp/test.toml"))

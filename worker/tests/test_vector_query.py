@@ -86,9 +86,7 @@ class TestVectorQuerier:
     """Tests for VectorQuerier with mocked Qdrant and registry."""
 
     @patch("worker.query.vector.QdrantClient")
-    def test_query_returns_ranked_results(
-        self, mock_qdrant_cls: MagicMock
-    ) -> None:
+    def test_query_returns_ranked_results(self, mock_qdrant_cls: MagicMock) -> None:
         mock_client = MagicMock()
         mock_qdrant_cls.return_value = mock_client
         mock_client.search.return_value = [
@@ -122,9 +120,7 @@ class TestVectorQuerier:
         assert call_kwargs.kwargs["query_filter"] is None
 
     @patch("worker.query.vector.QdrantClient")
-    def test_query_with_source_type_filter(
-        self, mock_qdrant_cls: MagicMock
-    ) -> None:
+    def test_query_with_source_type_filter(self, mock_qdrant_cls: MagicMock) -> None:
         mock_client = MagicMock()
         mock_qdrant_cls.return_value = mock_client
         mock_client.search.return_value = [
@@ -171,9 +167,7 @@ class TestVectorQuerier:
         assert call_kwargs.kwargs["limit"] == 5
 
     @patch("worker.query.vector.QdrantClient")
-    def test_query_handles_exception(
-        self, mock_qdrant_cls: MagicMock
-    ) -> None:
+    def test_query_handles_exception(self, mock_qdrant_cls: MagicMock) -> None:
         mock_client = MagicMock()
         mock_qdrant_cls.return_value = mock_client
         mock_client.search.side_effect = RuntimeError("qdrant down")
@@ -192,9 +186,7 @@ class TestVectorQuerier:
         assert result.results == []
 
     @patch("worker.query.vector.QdrantClient")
-    def test_query_handles_embed_failure(
-        self, mock_qdrant_cls: MagicMock
-    ) -> None:
+    def test_query_handles_embed_failure(self, mock_qdrant_cls: MagicMock) -> None:
         mock_qdrant_cls.return_value = MagicMock()
 
         registry = MagicMock()

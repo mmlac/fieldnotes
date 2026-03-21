@@ -48,7 +48,9 @@ class TestParseCore:
 
 class TestParseNeo4j:
     def test_overrides_all_fields(self) -> None:
-        cfg = _parse({"neo4j": {"uri": "bolt://db:7687", "user": "admin", "password": "secret"}})
+        cfg = _parse(
+            {"neo4j": {"uri": "bolt://db:7687", "user": "admin", "password": "secret"}}
+        )
         assert cfg.neo4j.uri == "bolt://db:7687"
         assert cfg.neo4j.user == "admin"
         assert cfg.neo4j.password == "secret"
@@ -160,14 +162,18 @@ class TestParseVision:
         assert "icon" in cfg.vision.skip_patterns
 
     def test_overrides_all_fields(self) -> None:
-        cfg = _parse({"vision": {
-            "enabled": False,
-            "concurrency": 8,
-            "min_file_size_kb": 5,
-            "max_file_size_mb": 50,
-            "skip_patterns": ["thumb", "banner"],
-            "queue_size": 128,
-        }})
+        cfg = _parse(
+            {
+                "vision": {
+                    "enabled": False,
+                    "concurrency": 8,
+                    "min_file_size_kb": 5,
+                    "max_file_size_mb": 50,
+                    "skip_patterns": ["thumb", "banner"],
+                    "queue_size": 128,
+                }
+            }
+        )
         assert cfg.vision.enabled is False
         assert cfg.vision.concurrency == 8
         assert cfg.vision.min_file_size_kb == 5
@@ -182,11 +188,15 @@ class TestParseVision:
         assert cfg.vision.queue_size == 256  # default preserved
 
     def test_min_file_size_kb_wrong_type(self) -> None:
-        with pytest.raises(TypeError, match=r"\[vision\] min_file_size_kb: expected int"):
+        with pytest.raises(
+            TypeError, match=r"\[vision\] min_file_size_kb: expected int"
+        ):
             _parse({"vision": {"min_file_size_kb": "small"}})
 
     def test_max_file_size_mb_wrong_type(self) -> None:
-        with pytest.raises(TypeError, match=r"\[vision\] max_file_size_mb: expected int"):
+        with pytest.raises(
+            TypeError, match=r"\[vision\] max_file_size_mb: expected int"
+        ):
             _parse({"vision": {"max_file_size_mb": 10.5}})
 
 
@@ -257,7 +267,11 @@ class TestFullRoundtrip:
     def test_complete_config(self) -> None:
         raw = {
             "core": {"data_dir": "~/.fieldnotes/data", "log_level": "info"},
-            "neo4j": {"uri": "bolt://localhost:7687", "user": "neo4j", "password": "pw"},
+            "neo4j": {
+                "uri": "bolt://localhost:7687",
+                "user": "neo4j",
+                "password": "pw",
+            },
             "qdrant": {"host": "localhost", "port": 6333, "collection": "fn"},
             "modelproviders": {
                 "local": {"type": "ollama", "base_url": "http://localhost:11434"},
@@ -286,7 +300,9 @@ class TestTypeValidation:
     """_parse rejects values with wrong types."""
 
     def test_core_data_dir_wrong_type(self) -> None:
-        with pytest.raises(TypeError, match=r"\[core\] data_dir: expected str, got int"):
+        with pytest.raises(
+            TypeError, match=r"\[core\] data_dir: expected str, got int"
+        ):
             _parse({"core": {"data_dir": 123}})
 
     def test_core_log_level_wrong_type(self) -> None:
@@ -326,7 +342,9 @@ class TestTypeValidation:
             _parse({"vision": {"skip_patterns": "icon,avatar"}})
 
     def test_vision_skip_patterns_bad_item(self) -> None:
-        with pytest.raises(TypeError, match=r"\[vision\] skip_patterns\[1\]: expected str"):
+        with pytest.raises(
+            TypeError, match=r"\[vision\] skip_patterns\[1\]: expected str"
+        ):
             _parse({"vision": {"skip_patterns": ["icon", 42]}})
 
     def test_clustering_enabled_wrong_type(self) -> None:
@@ -334,7 +352,9 @@ class TestTypeValidation:
             _parse({"clustering": {"enabled": 1}})
 
     def test_clustering_min_corpus_size_wrong_type(self) -> None:
-        with pytest.raises(TypeError, match=r"\[clustering\] min_corpus_size: expected int"):
+        with pytest.raises(
+            TypeError, match=r"\[clustering\] min_corpus_size: expected int"
+        ):
             _parse({"clustering": {"min_corpus_size": "many"}})
 
     def test_clustering_cron_wrong_type(self) -> None:
@@ -342,7 +362,9 @@ class TestTypeValidation:
             _parse({"clustering": {"cron": 12345}})
 
     def test_clustering_min_interval_seconds_wrong_type(self) -> None:
-        with pytest.raises(TypeError, match=r"\[clustering\] min_interval_seconds: expected float"):
+        with pytest.raises(
+            TypeError, match=r"\[clustering\] min_interval_seconds: expected float"
+        ):
             _parse({"clustering": {"min_interval_seconds": "fast"}})
 
     def test_clustering_min_interval_seconds_accepts_int(self) -> None:
@@ -382,29 +404,39 @@ class TestTypeValidation:
         cfg = _parse({"mcp": {}})
         assert cfg.mcp.auth_token == "env-token-xyz"
 
-    def test_mcp_auth_token_config_overrides_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_mcp_auth_token_config_overrides_env(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.setenv("FIELDNOTES_MCP_AUTH_TOKEN", "env-token-xyz")
         cfg = _parse({"mcp": {"auth_token": "config-token"}})
         assert cfg.mcp.auth_token == "config-token"
 
-    def test_mcp_auth_token_empty_env_is_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_mcp_auth_token_empty_env_is_none(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.setenv("FIELDNOTES_MCP_AUTH_TOKEN", "")
         cfg = _parse({"mcp": {}})
         assert cfg.mcp.auth_token is None
 
     def test_valid_types_still_accepted(self) -> None:
         """Ensure valid configs still parse without errors."""
-        cfg = _parse({
-            "qdrant": {"port": 6334, "host": "db", "vector_size": 1024},
-            "vision": {
-                "enabled": False,
-                "concurrency": 4,
-                "queue_size": 512,
-                "skip_patterns": ["icon", "thumb"],
-            },
-            "clustering": {"enabled": True, "cron": "0 0 * * *", "min_corpus_size": 50},
-            "mcp": {"enabled": False, "port": 9999},
-        })
+        cfg = _parse(
+            {
+                "qdrant": {"port": 6334, "host": "db", "vector_size": 1024},
+                "vision": {
+                    "enabled": False,
+                    "concurrency": 4,
+                    "queue_size": 512,
+                    "skip_patterns": ["icon", "thumb"],
+                },
+                "clustering": {
+                    "enabled": True,
+                    "cron": "0 0 * * *",
+                    "min_corpus_size": 50,
+                },
+                "mcp": {"enabled": False, "port": 9999},
+            }
+        )
         assert cfg.qdrant.port == 6334
         assert cfg.vision.concurrency == 4
         assert cfg.vision.skip_patterns == ["icon", "thumb"]
@@ -464,7 +496,9 @@ class TestConfigValidate:
 
     def test_invalid_regex_skip_pattern_raises(self) -> None:
         cfg = self._make_config(**{"vision.skip_patterns": ["icon", "[invalid"]})
-        with pytest.raises(ValueError, match=r"\[vision\] skip_patterns\[1\].*not a valid regex"):
+        with pytest.raises(
+            ValueError, match=r"\[vision\] skip_patterns\[1\].*not a valid regex"
+        ):
             cfg.validate()
 
     # -- min_interval_seconds boundary warnings --

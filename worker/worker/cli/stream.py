@@ -99,6 +99,7 @@ def _apply_inline_formatting(line: str) -> str:
     line = re.sub(r"\*\*(.+?)\*\*", rf"{_BOLD}\1{_RESET}", line)
     # Italic
     line = re.sub(r"\*(.+?)\*", rf"{_ITALIC}\1{_RESET}", line)
+
     # Citations
     def _cite_repl(m: re.Match[str]) -> str:
         inner = m.group(1)

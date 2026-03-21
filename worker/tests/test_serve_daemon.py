@@ -95,11 +95,13 @@ class TestRunDaemon:
         fake_source.name.return_value = "files"
 
         async def fake_start(queue):
-            await queue.put({
-                "source_type": "file",
-                "source_id": "test.md",
-                "operation": "created",
-            })
+            await queue.put(
+                {
+                    "source_type": "file",
+                    "source_id": "test.md",
+                    "operation": "created",
+                }
+            )
             await asyncio.sleep(999)
 
         fake_source.start = fake_start
@@ -205,16 +207,20 @@ class TestRunDaemon:
         fake_source.name.return_value = "files"
 
         async def fake_start(queue):
-            await queue.put({
-                "source_type": "file",
-                "source_id": "bad.md",
-                "operation": "created",
-            })
-            await queue.put({
-                "source_type": "file",
-                "source_id": "good.md",
-                "operation": "created",
-            })
+            await queue.put(
+                {
+                    "source_type": "file",
+                    "source_id": "bad.md",
+                    "operation": "created",
+                }
+            )
+            await queue.put(
+                {
+                    "source_type": "file",
+                    "source_id": "good.md",
+                    "operation": "created",
+                }
+            )
             await asyncio.sleep(999)
 
         fake_source.start = fake_start

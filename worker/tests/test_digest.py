@@ -62,11 +62,7 @@ def _make_querier(
                 rows = call_queue[idx] if idx < len(call_queue) else []
                 return fn(
                     MagicMock(
-                        **{
-                            "run.return_value": MagicMock(
-                                **{"data.return_value": rows}
-                            )
-                        }
+                        **{"run.return_value": MagicMock(**{"data.return_value": rows})}
                     )
                 )
 
@@ -96,7 +92,11 @@ def _make_querier(
             # _query_sources opens one session (all 5 source queries share it).
             # _query_new_connections opens its own session.
             # _query_new_topics opens its own session.
-            conns = connections_rows if connections_rows is not None else [{"new_connections": 0}]
+            conns = (
+                connections_rows
+                if connections_rows is not None
+                else [{"new_connections": 0}]
+            )
             tops = topics_rows if topics_rows is not None else [{"new_topics": 0}]
 
             sessions = [
@@ -148,11 +148,11 @@ class TestDigestDefault24h:
     def test_three_source_types_returned(self, mock_gdb_cls: MagicMock) -> None:
         # obsidian=2 modified, omnifocus=1 completed, gmail=3 new, repos=0, apps=0
         source_rows = [
-            [_source_row(modified=2, highlights=["Note A", "Note B"])],   # obsidian
-            [_source_row(completed=1, highlights=["Task 1"])],             # omnifocus
-            [_source_row(created=3, highlights=["Subject 1"])],            # gmail
-            [],                                                             # repositories (empty)
-            [],                                                             # apps (empty)
+            [_source_row(modified=2, highlights=["Note A", "Note B"])],  # obsidian
+            [_source_row(completed=1, highlights=["Task 1"])],  # omnifocus
+            [_source_row(created=3, highlights=["Subject 1"])],  # gmail
+            [],  # repositories (empty)
+            [],  # apps (empty)
         ]
         querier, _ = _make_querier(source_rows_by_call=source_rows)
         result = querier.query(since="24h", until="now")
@@ -169,7 +169,6 @@ class TestDigestDefault24h:
         querier, _ = _make_querier()
         before = datetime.now(timezone.utc)
         result = querier.query()
-        after = datetime.now(timezone.utc)
 
         since_dt = datetime.strptime(result.since, "%Y-%m-%dT%H:%M:%SZ").replace(
             tzinfo=timezone.utc
@@ -184,7 +183,6 @@ class TestDigestCustomRange:
         querier, _ = _make_querier()
         before = datetime.now(timezone.utc)
         result = querier.query(since="7d")
-        after = datetime.now(timezone.utc)
 
         since_dt = datetime.strptime(result.since, "%Y-%m-%dT%H:%M:%SZ").replace(
             tzinfo=timezone.utc
@@ -197,9 +195,11 @@ class TestDigestActivityCounts:
     @patch("worker.query.digest.GraphDatabase")
     def test_counts_are_correct_per_source_type(self, mock_gdb_cls: MagicMock) -> None:
         source_rows = [
-            [_source_row(modified=5, highlights=["a", "b"])],             # obsidian: 5 modified
-            [_source_row(completed=2, modified=3, highlights=["t1"])],    # omnifocus: 2 completed + 3 modified
-            [_source_row(created=10, highlights=["e1"])],                  # gmail: 10 new
+            [_source_row(modified=5, highlights=["a", "b"])],  # obsidian: 5 modified
+            [
+                _source_row(completed=2, modified=3, highlights=["t1"])
+            ],  # omnifocus: 2 completed + 3 modified
+            [_source_row(created=10, highlights=["e1"])],  # gmail: 10 new
             [],
             [],
         ]
@@ -297,12 +297,16 @@ class TestDigestWithSummarize:
                 since="2026-03-18T00:00:00Z",
                 until="2026-03-19T00:00:00Z",
                 sources=[
-                    SourceActivity(source_type="obsidian", modified=2, highlights=["Note A"]),
+                    SourceActivity(
+                        source_type="obsidian", modified=2, highlights=["Note A"]
+                    ),
                 ],
                 new_connections=1,
                 new_topics=0,
             )
-            mock_gen_summary.return_value = "You had a busy day with 2 Obsidian changes."
+            mock_gen_summary.return_value = (
+                "You had a busy day with 2 Obsidian changes."
+            )
 
             rc = run_digest(summarize=True)
             assert rc == 0
@@ -325,7 +329,9 @@ class TestDigestWithSummarize:
                 since="2026-03-18T00:00:00Z",
                 until="2026-03-19T00:00:00Z",
                 sources=[
-                    SourceActivity(source_type="gmail", created=5, highlights=["Email 1"]),
+                    SourceActivity(
+                        source_type="gmail", created=5, highlights=["Email 1"]
+                    ),
                 ],
             )
             summary_text = "5 emails received today."
@@ -390,11 +396,11 @@ class TestDigestSourceTypeMissing:
     def test_missing_source_types_excluded(self, mock_gdb_cls: MagicMock) -> None:
         # Only obsidian and gmail have activity; omnifocus/repos/apps return nothing.
         source_rows = [
-            [_source_row(modified=3, highlights=["Note"])],   # obsidian
-            [],                                                # omnifocus: no activity
-            [_source_row(created=2, highlights=["Email"])],   # gmail
-            [],                                                # repositories
-            [],                                                # apps
+            [_source_row(modified=3, highlights=["Note"])],  # obsidian
+            [],  # omnifocus: no activity
+            [_source_row(created=2, highlights=["Email"])],  # gmail
+            [],  # repositories
+            [],  # apps
         ]
         querier, _ = _make_querier(source_rows_by_call=source_rows)
         result = querier.query()
@@ -565,7 +571,10 @@ class TestCliDigestWithSummaryOutput:
         )
 
         # Bypass _generate_summary by passing summarize=False but pre-setting summary
-        with patch("worker.cli.digest._generate_summary", return_value="You modified 1 Obsidian note."):
+        with patch(
+            "worker.cli.digest._generate_summary",
+            return_value="You modified 1 Obsidian note.",
+        ):
             rc = run_digest(summarize=True)
 
         captured = capsys.readouterr()

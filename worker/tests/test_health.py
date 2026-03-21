@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -219,8 +219,13 @@ class TestBuildHealthPayload:
 
     @pytest.mark.asyncio
     @patch("worker.health._check_qdrant_health", return_value={"status": "ok"})
-    @patch("worker.health._check_neo4j_health", return_value={"status": "unhealthy", "error": "ConnectionError"})
-    async def test_degraded_when_component_unhealthy(self, mock_neo4j, mock_qdrant) -> None:
+    @patch(
+        "worker.health._check_neo4j_health",
+        return_value={"status": "unhealthy", "error": "ConnectionError"},
+    )
+    async def test_degraded_when_component_unhealthy(
+        self, mock_neo4j, mock_qdrant
+    ) -> None:
         payload = await _build_health_payload(_cfg(), None, time.monotonic())
 
         assert payload["status"] == "degraded"
@@ -272,7 +277,10 @@ class TestHealthServer:
 
     @pytest.mark.asyncio
     @patch("worker.health._check_qdrant_health", return_value={"status": "ok"})
-    @patch("worker.health._check_neo4j_health", return_value={"status": "unhealthy", "error": "timeout"})
+    @patch(
+        "worker.health._check_neo4j_health",
+        return_value={"status": "unhealthy", "error": "timeout"},
+    )
     async def test_degraded_returns_503(self, mock_neo4j, mock_qdrant) -> None:
         cfg = _cfg(health=HealthConfig(enabled=True, port=0, bind="127.0.0.1"))
         server = HealthServer(cfg)

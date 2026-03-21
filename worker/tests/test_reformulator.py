@@ -59,7 +59,10 @@ class TestReformulate:
     def test_followup_reformulated(self) -> None:
         model = self._mock_model("What is Alice's role in the Fieldnotes project?")
         history = [
-            ("What is the Fieldnotes project?", "Fieldnotes is a knowledge graph project."),
+            (
+                "What is the Fieldnotes project?",
+                "Fieldnotes is a knowledge graph project.",
+            ),
         ]
         result = reformulate("What about that person Alice mentioned?", history, model)
         assert result == "What is Alice's role in the Fieldnotes project?"

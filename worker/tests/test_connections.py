@@ -6,16 +6,15 @@ All Neo4j and Qdrant interactions are mocked — no running services required.
 from __future__ import annotations
 
 import json
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from worker.config import Config, Neo4jConfig, QdrantConfig
+from worker.config import Neo4jConfig, QdrantConfig
 from worker.query.connections import (
     ConnectionQuerier,
     ConnectionResult,
     SuggestedConnection,
-    _DEFAULT_THRESHOLD,
 )
 
 
@@ -35,7 +34,9 @@ def _make_querier(mock_gdb: MagicMock, mock_qdrant_cls: MagicMock) -> Connection
     return ConnectionQuerier(neo4j_cfg, qdrant_cfg)
 
 
-def _qdrant_point(source_id: str, source_type: str, vector: list[float] | None = None) -> MagicMock:
+def _qdrant_point(
+    source_id: str, source_type: str, vector: list[float] | None = None
+) -> MagicMock:
     """Build a fake Qdrant scroll/search hit."""
     point = MagicMock()
     point.payload = {"source_id": source_id, "source_type": source_type}
@@ -94,17 +95,36 @@ class TestConnectionsFindsUnlinkedSimilarDocs:
         # Neo4j: "linked" pair has edge_count=1; others have 0.
         # Keys must match canonical (alphabetical) order used by ConnectionQuerier.
         # "file://linked" < "file://seed" so a="file://linked", b="file://seed"
-        session = _neo4j_session_returning([
-            {"a": "file://linked", "b": "file://seed", "edge_count": 1},
-            {"a": "file://seed", "b": "file://unlinked1", "edge_count": 0},
-            {"a": "file://seed", "b": "file://unlinked2", "edge_count": 0},
-        ])
+        session = _neo4j_session_returning(
+            [
+                {"a": "file://linked", "b": "file://seed", "edge_count": 1},
+                {"a": "file://seed", "b": "file://unlinked1", "edge_count": 0},
+                {"a": "file://seed", "b": "file://unlinked2", "edge_count": 0},
+            ]
+        )
         # second session call is for node info
-        node_info_session = _neo4j_session_returning([
-            {"sid": "file://seed", "labels": ["File"], "title": "Seed", "source_type": "file"},
-            {"sid": "file://unlinked1", "labels": ["File"], "title": "Doc1", "source_type": "file"},
-            {"sid": "file://unlinked2", "labels": ["File"], "title": "Doc2", "source_type": "file"},
-        ])
+        node_info_session = _neo4j_session_returning(
+            [
+                {
+                    "sid": "file://seed",
+                    "labels": ["File"],
+                    "title": "Seed",
+                    "source_type": "file",
+                },
+                {
+                    "sid": "file://unlinked1",
+                    "labels": ["File"],
+                    "title": "Doc1",
+                    "source_type": "file",
+                },
+                {
+                    "sid": "file://unlinked2",
+                    "labels": ["File"],
+                    "title": "Doc2",
+                    "source_type": "file",
+                },
+            ]
+        )
         mock_gdb.driver.return_value.session.side_effect = [session, node_info_session]
 
         result = querier.suggest()
@@ -138,15 +158,34 @@ class TestConnectionsThresholdFiltering:
             # 0.75 and 0.65 would be filtered by Qdrant's score_threshold
         ]
 
-        edge_session = _neo4j_session_returning([
-            {"a": "file://seed", "b": "file://a", "edge_count": 0},
-            {"a": "file://seed", "b": "file://b", "edge_count": 0},
-        ])
-        node_session = _neo4j_session_returning([
-            {"sid": "file://seed", "labels": ["File"], "title": "Seed", "source_type": "file"},
-            {"sid": "file://a", "labels": ["File"], "title": "A", "source_type": "file"},
-            {"sid": "file://b", "labels": ["File"], "title": "B", "source_type": "file"},
-        ])
+        edge_session = _neo4j_session_returning(
+            [
+                {"a": "file://seed", "b": "file://a", "edge_count": 0},
+                {"a": "file://seed", "b": "file://b", "edge_count": 0},
+            ]
+        )
+        node_session = _neo4j_session_returning(
+            [
+                {
+                    "sid": "file://seed",
+                    "labels": ["File"],
+                    "title": "Seed",
+                    "source_type": "file",
+                },
+                {
+                    "sid": "file://a",
+                    "labels": ["File"],
+                    "title": "A",
+                    "source_type": "file",
+                },
+                {
+                    "sid": "file://b",
+                    "labels": ["File"],
+                    "title": "B",
+                    "source_type": "file",
+                },
+            ]
+        )
         mock_gdb.driver.return_value.session.side_effect = [edge_session, node_session]
 
         result = querier.suggest(threshold=0.80)
@@ -176,22 +215,46 @@ class TestConnectionsCrossSourceFilter:
         mock_qdrant = mock_qdrant_cls.return_value
         mock_qdrant.scroll.return_value = ([seed_file], None)
         mock_qdrant.search.return_value = [
-            _qdrant_hit("task://t1", 0.93, "omnifocus"),   # cross-source
-            _qdrant_hit("file://note2", 0.90, "file"),     # same source
-            _qdrant_hit("email://e1", 0.87, "gmail"),      # cross-source
+            _qdrant_hit("task://t1", 0.93, "omnifocus"),  # cross-source
+            _qdrant_hit("file://note2", 0.90, "file"),  # same source
+            _qdrant_hit("email://e1", 0.87, "gmail"),  # cross-source
         ]
 
-        edge_session = _neo4j_session_returning([
-            {"a": "file://note1", "b": "task://t1", "edge_count": 0},
-            {"a": "file://note1", "b": "file://note2", "edge_count": 0},
-            {"a": "email://e1", "b": "file://note1", "edge_count": 0},
-        ])
-        node_session = _neo4j_session_returning([
-            {"sid": "file://note1", "labels": ["File"], "title": "Note1", "source_type": "file"},
-            {"sid": "task://t1", "labels": ["Task"], "title": "Task1", "source_type": "omnifocus"},
-            {"sid": "file://note2", "labels": ["File"], "title": "Note2", "source_type": "file"},
-            {"sid": "email://e1", "labels": ["Email"], "title": "Email1", "source_type": "gmail"},
-        ])
+        edge_session = _neo4j_session_returning(
+            [
+                {"a": "file://note1", "b": "task://t1", "edge_count": 0},
+                {"a": "file://note1", "b": "file://note2", "edge_count": 0},
+                {"a": "email://e1", "b": "file://note1", "edge_count": 0},
+            ]
+        )
+        node_session = _neo4j_session_returning(
+            [
+                {
+                    "sid": "file://note1",
+                    "labels": ["File"],
+                    "title": "Note1",
+                    "source_type": "file",
+                },
+                {
+                    "sid": "task://t1",
+                    "labels": ["Task"],
+                    "title": "Task1",
+                    "source_type": "omnifocus",
+                },
+                {
+                    "sid": "file://note2",
+                    "labels": ["File"],
+                    "title": "Note2",
+                    "source_type": "file",
+                },
+                {
+                    "sid": "email://e1",
+                    "labels": ["Email"],
+                    "title": "Email1",
+                    "source_type": "gmail",
+                },
+            ]
+        )
         mock_gdb.driver.return_value.session.side_effect = [edge_session, node_session]
 
         result = querier.suggest(cross_source=True)
@@ -202,10 +265,14 @@ class TestConnectionsCrossSourceFilter:
                 f"Same-source pair survived filter: {s.source_type_a}"
             )
         # The file↔file pair must NOT appear
-        source_ids = {sid for s in result.suggestions for sid in (s.source_a, s.source_b)}
+        source_ids = {
+            sid for s in result.suggestions for sid in (s.source_a, s.source_b)
+        }
         assert "file://note2" not in source_ids or not any(
-            s.source_a == "file://note1" and s.source_b == "file://note2"
-            or s.source_a == "file://note2" and s.source_b == "file://note1"
+            s.source_a == "file://note1"
+            and s.source_b == "file://note2"
+            or s.source_a == "file://note2"
+            and s.source_b == "file://note1"
             for s in result.suggestions
         )
 
@@ -228,13 +295,27 @@ class TestConnectionsSourceIdSeed:
             _qdrant_hit("file://related", 0.91),
         ]
 
-        edge_session = _neo4j_session_returning([
-            {"a": "file://related", "b": "obsidian://note1", "edge_count": 0},
-        ])
-        node_session = _neo4j_session_returning([
-            {"sid": "obsidian://note1", "labels": ["Note"], "title": "Note1", "source_type": "obsidian"},
-            {"sid": "file://related", "labels": ["File"], "title": "Related", "source_type": "file"},
-        ])
+        edge_session = _neo4j_session_returning(
+            [
+                {"a": "file://related", "b": "obsidian://note1", "edge_count": 0},
+            ]
+        )
+        node_session = _neo4j_session_returning(
+            [
+                {
+                    "sid": "obsidian://note1",
+                    "labels": ["Note"],
+                    "title": "Note1",
+                    "source_type": "obsidian",
+                },
+                {
+                    "sid": "file://related",
+                    "labels": ["File"],
+                    "title": "Related",
+                    "source_type": "file",
+                },
+            ]
+        )
         mock_gdb.driver.return_value.session.side_effect = [edge_session, node_session]
 
         result = querier.suggest(source_id="obsidian://note1")
@@ -303,9 +384,19 @@ class TestConnectionsLimit:
             for i in range(8)
         ]
         node_records = [
-            {"sid": "file://seed", "labels": ["File"], "title": "Seed", "source_type": "file"}
+            {
+                "sid": "file://seed",
+                "labels": ["File"],
+                "title": "Seed",
+                "source_type": "file",
+            }
         ] + [
-            {"sid": f"file://doc{i}", "labels": ["File"], "title": f"Doc{i}", "source_type": "file"}
+            {
+                "sid": f"file://doc{i}",
+                "labels": ["File"],
+                "title": f"Doc{i}",
+                "source_type": "file",
+            }
             for i in range(8)
         ]
         edge_session = _neo4j_session_returning(edge_records)
@@ -363,13 +454,27 @@ class TestConnectionsDeduplicatesSameDocChunks:
         chunk2 = _qdrant_hit("file://other", 0.91)  # same source_id, different chunk
         mock_qdrant.search.return_value = [chunk1, chunk2]
 
-        edge_session = _neo4j_session_returning([
-            {"a": "file://seed", "b": "file://other", "edge_count": 0},
-        ])
-        node_session = _neo4j_session_returning([
-            {"sid": "file://seed", "labels": ["File"], "title": "Seed", "source_type": "file"},
-            {"sid": "file://other", "labels": ["File"], "title": "Other", "source_type": "file"},
-        ])
+        edge_session = _neo4j_session_returning(
+            [
+                {"a": "file://seed", "b": "file://other", "edge_count": 0},
+            ]
+        )
+        node_session = _neo4j_session_returning(
+            [
+                {
+                    "sid": "file://seed",
+                    "labels": ["File"],
+                    "title": "Seed",
+                    "source_type": "file",
+                },
+                {
+                    "sid": "file://other",
+                    "labels": ["File"],
+                    "title": "Other",
+                    "source_type": "file",
+                },
+            ]
+        )
         mock_gdb.driver.return_value.session.side_effect = [edge_session, node_session]
 
         result = querier.suggest()
@@ -401,9 +506,19 @@ class TestConnectionsBatchEdgeCheck:
             for i in range(10)
         ]
         node_records = [
-            {"sid": "file://seed", "labels": ["File"], "title": "Seed", "source_type": "file"}
+            {
+                "sid": "file://seed",
+                "labels": ["File"],
+                "title": "Seed",
+                "source_type": "file",
+            }
         ] + [
-            {"sid": f"file://doc{i}", "labels": ["File"], "title": f"Doc{i}", "source_type": "file"}
+            {
+                "sid": f"file://doc{i}",
+                "labels": ["File"],
+                "title": f"Doc{i}",
+                "source_type": "file",
+            }
             for i in range(10)
         ]
         edge_session = _neo4j_session_returning(edge_records)
@@ -436,13 +551,27 @@ class TestConnectionsEnrichment:
         mock_qdrant.scroll.return_value = ([seed], None)
         mock_qdrant.search.return_value = [_qdrant_hit("task://t1", 0.93, "omnifocus")]
 
-        edge_session = _neo4j_session_returning([
-            {"a": "obsidian://n1", "b": "task://t1", "edge_count": 0},
-        ])
-        node_session = _neo4j_session_returning([
-            {"sid": "obsidian://n1", "labels": ["Note"], "title": "My Note", "source_type": "obsidian"},
-            {"sid": "task://t1", "labels": ["Task"], "title": "My Task", "source_type": "omnifocus"},
-        ])
+        edge_session = _neo4j_session_returning(
+            [
+                {"a": "obsidian://n1", "b": "task://t1", "edge_count": 0},
+            ]
+        )
+        node_session = _neo4j_session_returning(
+            [
+                {
+                    "sid": "obsidian://n1",
+                    "labels": ["Note"],
+                    "title": "My Note",
+                    "source_type": "obsidian",
+                },
+                {
+                    "sid": "task://t1",
+                    "labels": ["Task"],
+                    "title": "My Task",
+                    "source_type": "omnifocus",
+                },
+            ]
+        )
         mock_gdb.driver.return_value.session.side_effect = [edge_session, node_session]
 
         result = querier.suggest()

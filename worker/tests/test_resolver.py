@@ -378,8 +378,22 @@ class TestCrossSourceResolution:
     def test_email_match_across_sources(self) -> None:
         """Person entities with same email across sources should match."""
         entities_by_source = {
-            "gmail": [{"name": "Alex Smith", "type": "Person", "confidence": 0.9, "email": "alex@example.com"}],
-            "repositories": [{"name": "A. Smith", "type": "Person", "confidence": 0.9, "email": "alex@example.com"}],
+            "gmail": [
+                {
+                    "name": "Alex Smith",
+                    "type": "Person",
+                    "confidence": 0.9,
+                    "email": "alex@example.com",
+                }
+            ],
+            "repositories": [
+                {
+                    "name": "A. Smith",
+                    "type": "Person",
+                    "confidence": 0.9,
+                    "email": "alex@example.com",
+                }
+            ],
         }
         matches = resolve_cross_source(entities_by_source)
         assert len(matches) == 1
@@ -462,8 +476,22 @@ class TestCrossSourceResolution:
     def test_email_match_case_insensitive(self) -> None:
         """Email matching should be case-insensitive."""
         entities_by_source = {
-            "gmail": [{"name": "Bob", "type": "Person", "confidence": 0.9, "email": "Bob@Example.COM"}],
-            "repositories": [{"name": "bob", "type": "Person", "confidence": 0.9, "email": "bob@example.com"}],
+            "gmail": [
+                {
+                    "name": "Bob",
+                    "type": "Person",
+                    "confidence": 0.9,
+                    "email": "Bob@Example.COM",
+                }
+            ],
+            "repositories": [
+                {
+                    "name": "bob",
+                    "type": "Person",
+                    "confidence": 0.9,
+                    "email": "bob@example.com",
+                }
+            ],
         }
         matches = resolve_cross_source(entities_by_source)
         # Should match on either exact name or email
@@ -472,8 +500,22 @@ class TestCrossSourceResolution:
     def test_invalid_email_not_used_for_matching(self) -> None:
         """Invalid emails should be ignored in cross-source matching."""
         entities_by_source = {
-            "gmail": [{"name": "Alice", "type": "Person", "confidence": 0.9, "email": "not-an-email"}],
-            "repositories": [{"name": "Bob", "type": "Person", "confidence": 0.9, "email": "not-an-email"}],
+            "gmail": [
+                {
+                    "name": "Alice",
+                    "type": "Person",
+                    "confidence": 0.9,
+                    "email": "not-an-email",
+                }
+            ],
+            "repositories": [
+                {
+                    "name": "Bob",
+                    "type": "Person",
+                    "confidence": 0.9,
+                    "email": "not-an-email",
+                }
+            ],
         }
         matches = resolve_cross_source(entities_by_source)
         assert len(matches) == 0
@@ -482,8 +524,12 @@ class TestCrossSourceResolution:
         """Emails exceeding RFC 5321 max length (254) should be rejected."""
         long_email = "a" * 245 + "@test.com"  # 254 chars
         entities_by_source = {
-            "gmail": [{"name": "A", "type": "Person", "confidence": 0.9, "email": long_email}],
-            "repositories": [{"name": "B", "type": "Person", "confidence": 0.9, "email": long_email}],
+            "gmail": [
+                {"name": "A", "type": "Person", "confidence": 0.9, "email": long_email}
+            ],
+            "repositories": [
+                {"name": "B", "type": "Person", "confidence": 0.9, "email": long_email}
+            ],
         }
         matches = resolve_cross_source(entities_by_source)
         # 254 chars is exactly the limit, should work
@@ -491,8 +537,22 @@ class TestCrossSourceResolution:
 
         too_long_email = "a" * 246 + "@test.com"  # 255 chars
         entities_by_source2 = {
-            "gmail": [{"name": "C", "type": "Person", "confidence": 0.9, "email": too_long_email}],
-            "repositories": [{"name": "D", "type": "Person", "confidence": 0.9, "email": too_long_email}],
+            "gmail": [
+                {
+                    "name": "C",
+                    "type": "Person",
+                    "confidence": 0.9,
+                    "email": too_long_email,
+                }
+            ],
+            "repositories": [
+                {
+                    "name": "D",
+                    "type": "Person",
+                    "confidence": 0.9,
+                    "email": too_long_email,
+                }
+            ],
         }
         matches2 = resolve_cross_source(entities_by_source2)
         assert not any(m.match_type == "email" for m in matches2)

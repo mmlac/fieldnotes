@@ -141,9 +141,7 @@ class VisionQueue:
             return
         self._running = True
         for i in range(self._config.concurrency):
-            task = asyncio.create_task(
-                self._worker(i), name=f"vision-worker-{i}"
-            )
+            task = asyncio.create_task(self._worker(i), name=f"vision-worker-{i}")
             self._workers.append(task)
         logger.info(
             "Vision queue started: %d workers, queue_size=%d",
@@ -214,9 +212,7 @@ class VisionQueue:
 
         # Skip pattern filtering (check source_id for icon/avatar patterns)
         if self._matches_skip_pattern(doc.source_id):
-            logger.debug(
-                "Vision skip %s: matches skip pattern", doc.source_id
-            )
+            logger.debug("Vision skip %s: matches skip pattern", doc.source_id)
             self._stats.increment("skipped_pattern")
             return False
 
@@ -310,9 +306,7 @@ class VisionQueue:
                 )
                 self._result_callback(result)
                 self._stats.increment("processed")
-                logger.debug(
-                    "Vision worker %d processed %s", worker_id, doc.source_id
-                )
+                logger.debug("Vision worker %d processed %s", worker_id, doc.source_id)
             except Exception:
                 self._stats.increment("failed")
                 logger.exception(

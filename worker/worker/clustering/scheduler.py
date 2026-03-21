@@ -90,7 +90,10 @@ def run_clustering_pipeline(
     # Link Application/Tool nodes to topic clusters
     try:
         edge_count = link_apps_to_topics(
-            labeled, clusters, registry, neo4j_cfg,
+            labeled,
+            clusters,
+            registry,
+            neo4j_cfg,
         )
         logger.info("App-topic linking: %d RELATED_TO_TOPIC edges created", edge_count)
     except Exception:
@@ -151,7 +154,9 @@ async def clustering_loop(
                 timeout=600,  # 10 minutes — generous but bounded
             )
         except asyncio.TimeoutError:
-            logger.error("Clustering pipeline timed out after 600s, will retry at next cron tick")
+            logger.error(
+                "Clustering pipeline timed out after 600s, will retry at next cron tick"
+            )
         except asyncio.CancelledError:
             raise
         except Exception:

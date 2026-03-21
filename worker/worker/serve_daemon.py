@@ -87,7 +87,9 @@ async def _run_daemon(cfg: Config) -> None:
         )
         health_task = asyncio.create_task(health_server.run(), name="health-server")
         background_tasks.append(health_task)
-        logger.info("Health endpoint enabled on %s:%d", cfg.health.bind, cfg.health.port)
+        logger.info(
+            "Health endpoint enabled on %s:%d", cfg.health.bind, cfg.health.port
+        )
 
     # Graceful shutdown
     stop_event = asyncio.Event()
@@ -120,7 +122,9 @@ async def _run_daemon(cfg: Config) -> None:
             except Exception:
                 logger.exception(
                     "Failed to process event %s %s (%s)",
-                    source_type, source_id, operation,
+                    source_type,
+                    source_id,
+                    operation,
                 )
     finally:
         _DRAIN_TIMEOUT = 10  # seconds to wait for in-progress work
@@ -132,7 +136,8 @@ async def _run_daemon(cfg: Config) -> None:
         try:
             await asyncio.wait_for(
                 asyncio.gather(
-                    *background_tasks, *source_tasks,
+                    *background_tasks,
+                    *source_tasks,
                     return_exceptions=True,
                 ),
                 timeout=_DRAIN_TIMEOUT,
@@ -160,9 +165,11 @@ def run_daemon(config_path: Path | None = None) -> None:
             break
         except Exception as exc:
             if attempt == max_retries:
-                logger.error("Neo4j check failed after %d attempts: %s", max_retries, exc)
+                logger.error(
+                    "Neo4j check failed after %d attempts: %s", max_retries, exc
+                )
                 sys.exit(1)
-            time.sleep(2 ** attempt)
+            time.sleep(2**attempt)
 
     for attempt in range(1, max_retries + 1):
         try:
@@ -170,8 +177,10 @@ def run_daemon(config_path: Path | None = None) -> None:
             break
         except Exception as exc:
             if attempt == max_retries:
-                logger.error("Qdrant check failed after %d attempts: %s", max_retries, exc)
+                logger.error(
+                    "Qdrant check failed after %d attempts: %s", max_retries, exc
+                )
                 sys.exit(1)
-            time.sleep(2 ** attempt)
+            time.sleep(2**attempt)
 
     asyncio.run(_run_daemon(cfg))

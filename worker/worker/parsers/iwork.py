@@ -22,15 +22,17 @@ from typing import Any
 
 from worker.metrics import IWORK_EXTRACTION_DURATION_SECONDS, observe_duration
 
-from .base import BaseParser, ParsedDocument
+from .base import ParsedDocument
 
 log = logging.getLogger(__name__)
 
 # MIME types handled by this parser.
-IWORK_MIME_TYPES: frozenset[str] = frozenset({
-    "application/x-iwork-pages",
-    "application/x-iwork-keynote",
-})
+IWORK_MIME_TYPES: frozenset[str] = frozenset(
+    {
+        "application/x-iwork-pages",
+        "application/x-iwork-keynote",
+    }
+)
 
 # Map MIME type to the iWork application name used in osascript.
 _MIME_TO_APP: dict[str, str] = {
@@ -49,6 +51,8 @@ def _escape_applescript_string(s: str) -> str:
     to prevent breaking out of the string context.
     """
     return s.replace("\\", "\\\\").replace('"', '\\"')
+
+
 _DEFAULT_KEYNOTE_TIMEOUT = 120  # presentations can be large
 
 _KEYNOTE_SCRIPT_TEMPLATE = """\
@@ -138,7 +142,9 @@ class IWorkParser:
                 log.warning("Password-protected file, skipping %s", source_id)
             else:
                 log.error(
-                    "osascript failed for %s: %s", source_id, stderr,
+                    "osascript failed for %s: %s",
+                    source_id,
+                    stderr,
                 )
             return []
         except OSError as exc:

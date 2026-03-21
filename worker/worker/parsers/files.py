@@ -128,7 +128,9 @@ class FileParser(BaseParser):
         if len(text_bytes) > self._max_text_bytes:
             log.warning(
                 "Text file %s exceeds max size (%d bytes > %d), skipping",
-                source_id, len(text_bytes), self._max_text_bytes,
+                source_id,
+                len(text_bytes),
+                self._max_text_bytes,
             )
             return []
         props = self._node_props(source_id, event)
@@ -157,7 +159,9 @@ class FileParser(BaseParser):
             if len(raw) > self._max_image_bytes:
                 log.warning(
                     "Image %s exceeds max size (%d > %d bytes encoded), skipping",
-                    source_id, len(raw), self._max_image_bytes,
+                    source_id,
+                    len(raw),
+                    self._max_image_bytes,
                 )
                 return []
             try:
@@ -174,7 +178,9 @@ class FileParser(BaseParser):
         if len(raw) > self._max_image_bytes:
             log.warning(
                 "Image %s exceeds max size (%d > %d bytes), skipping",
-                source_id, len(raw), self._max_image_bytes,
+                source_id,
+                len(raw),
+                self._max_image_bytes,
             )
             return []
 
@@ -207,7 +213,9 @@ class FileParser(BaseParser):
             if len(raw) > self._max_pdf_bytes:
                 log.warning(
                     "PDF %s exceeds max size (%d > %d bytes encoded), skipping",
-                    source_id, len(raw), self._max_pdf_bytes,
+                    source_id,
+                    len(raw),
+                    self._max_pdf_bytes,
                 )
                 return []
             try:
@@ -224,7 +232,9 @@ class FileParser(BaseParser):
         if len(raw) > self._max_pdf_bytes:
             log.warning(
                 "PDF %s exceeds max size (%d > %d bytes), skipping",
-                source_id, len(raw), self._max_pdf_bytes,
+                source_id,
+                len(raw),
+                self._max_pdf_bytes,
             )
             return []
 
@@ -233,7 +243,12 @@ class FileParser(BaseParser):
 
         try:
             doc = pymupdf.open(stream=raw, filetype="pdf")
-        except (pymupdf.FileDataError, pymupdf.EmptyFileError, ValueError, RuntimeError):
+        except (
+            pymupdf.FileDataError,
+            pymupdf.EmptyFileError,
+            ValueError,
+            RuntimeError,
+        ):
             log.error("Failed to open PDF %s", source_id, exc_info=True)
             return []
 
@@ -243,7 +258,9 @@ class FileParser(BaseParser):
                 if i >= self._max_pdf_pages:
                     log.warning(
                         "PDF %s truncated at %d pages (limit %d)",
-                        source_id, i, self._max_pdf_pages,
+                        source_id,
+                        i,
+                        self._max_pdf_pages,
                     )
                     break
                 pages.append(page.get_text())

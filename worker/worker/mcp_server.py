@@ -46,7 +46,10 @@ from worker.query.topics import (
     format_topic_gaps,
     format_topics_list,
 )
-from worker.query.timeline import TimelineQuerier, VALID_SOURCE_TYPES as _TIMELINE_SOURCE_TYPES
+from worker.query.timeline import (
+    TimelineQuerier,
+    VALID_SOURCE_TYPES as _TIMELINE_SOURCE_TYPES,
+)
 from worker.query.digest import DigestQuerier
 
 logger = logging.getLogger(__name__)
@@ -86,8 +89,7 @@ TOOLS: list[Tool] = [
                 "source_type": {
                     "type": "string",
                     "description": (
-                        "Optional filter to restrict results to a specific "
-                        "source type"
+                        "Optional filter to restrict results to a specific source type"
                     ),
                     "enum": ["file", "email", "obsidian", "repositories"],
                 },
@@ -155,9 +157,7 @@ TOOLS: list[Tool] = [
             "properties": {
                 "name": {
                     "type": "string",
-                    "description": (
-                        "Exact topic name as returned by list_topics"
-                    ),
+                    "description": ("Exact topic name as returned by list_topics"),
                 },
             },
             "required": ["name"],
@@ -476,14 +476,20 @@ class FieldnotesServer:
     async def _handle_search(self, arguments: dict) -> list[TextContent]:
         query = arguments.get("query", "")
         if not isinstance(query, str) or not query.strip():
-            return [TextContent(type="text", text="error: 'query' must be a non-empty string")]
+            return [
+                TextContent(
+                    type="text", text="error: 'query' must be a non-empty string"
+                )
+            ]
         top_k = max(1, min(int(arguments.get("top_k", 10)), 100))
         source_type: str | None = arguments.get("source_type")
         if source_type is not None and source_type not in self._VALID_SOURCE_TYPES:
-            return [TextContent(
-                type="text",
-                text=f"error: 'source_type' must be one of {sorted(self._VALID_SOURCE_TYPES)}",
-            )]
+            return [
+                TextContent(
+                    type="text",
+                    text=f"error: 'source_type' must be one of {sorted(self._VALID_SOURCE_TYPES)}",
+                )
+            ]
 
         if self._graph_querier is None or self._vector_querier is None:
             raise RuntimeError("Server not initialised — call _connect() first")
@@ -522,9 +528,7 @@ class FieldnotesServer:
             )
         if isinstance(vector_result, BaseException):
             logger.exception("Vector query raised", exc_info=vector_result)
-            vector_result = VectorQueryResult(
-                question=query, error=str(vector_result)
-            )
+            vector_result = VectorQueryResult(question=query, error=str(vector_result))
 
         hybrid = merge(query, graph_result, vector_result)
 
@@ -576,13 +580,19 @@ class FieldnotesServer:
         """Retrieve context via hybrid search, then synthesize an LLM answer."""
         question = arguments.get("question", "")
         if not isinstance(question, str) or not question.strip():
-            return [TextContent(type="text", text="error: 'question' must be a non-empty string")]
+            return [
+                TextContent(
+                    type="text", text="error: 'question' must be a non-empty string"
+                )
+            ]
         source_type: str | None = arguments.get("source_type")
         if source_type is not None and source_type not in self._VALID_SOURCE_TYPES:
-            return [TextContent(
-                type="text",
-                text=f"error: 'source_type' must be one of {sorted(self._VALID_SOURCE_TYPES)}",
-            )]
+            return [
+                TextContent(
+                    type="text",
+                    text=f"error: 'source_type' must be one of {sorted(self._VALID_SOURCE_TYPES)}",
+                )
+            ]
 
         if self._graph_querier is None or self._vector_querier is None:
             raise RuntimeError("Server not initialised — call _connect() first")
@@ -598,14 +608,16 @@ class FieldnotesServer:
             self._vector_querier,
         )
         if empty:
-            return [TextContent(
-                type="text",
-                text=(
-                    f"[Answer]\n{EMPTY_CORPUS_MESSAGE}\n\n"
-                    "[Sources]\nNone\n\n"
-                    "[Confidence]\ncorpus is empty"
-                ),
-            )]
+            return [
+                TextContent(
+                    type="text",
+                    text=(
+                        f"[Answer]\n{EMPTY_CORPUS_MESSAGE}\n\n"
+                        "[Sources]\nNone\n\n"
+                        "[Confidence]\ncorpus is empty"
+                    ),
+                )
+            ]
 
         # --- 1. Retrieve context (same as _handle_search) ---
 
@@ -639,16 +651,18 @@ class FieldnotesServer:
         # --- 2. Build RAG prompt and call LLM ---
         context_text = hybrid.context
         if not context_text.strip():
-            return [TextContent(
-                type="text",
-                text=(
-                    "[Answer]\n"
-                    "I don't have enough information in the knowledge graph "
-                    "to answer this question.\n\n"
-                    "[Sources]\nNone\n\n"
-                    "[Confidence]\nno relevant context found"
-                ),
-            )]
+            return [
+                TextContent(
+                    type="text",
+                    text=(
+                        "[Answer]\n"
+                        "I don't have enough information in the knowledge graph "
+                        "to answer this question.\n\n"
+                        "[Sources]\nNone\n\n"
+                        "[Confidence]\nno relevant context found"
+                    ),
+                )
+            ]
 
         # Collect source_ids for citation tracking.
         source_ids: list[str] = []
@@ -749,7 +763,11 @@ class FieldnotesServer:
     def _handle_show_topic(self, arguments: dict) -> list[TextContent]:
         topic_name = arguments.get("name", "")
         if not isinstance(topic_name, str) or not topic_name.strip():
-            return [TextContent(type="text", text="error: 'name' must be a non-empty string")]
+            return [
+                TextContent(
+                    type="text", text="error: 'name' must be a non-empty string"
+                )
+            ]
         with TopicQuerier(self._cfg.neo4j) as querier:
             detail = querier.show_topic(topic_name)
             text = format_topic_detail(detail, use_json=True)
@@ -773,8 +791,14 @@ class FieldnotesServer:
             with driver.session() as session:
                 sources: dict = {}
                 for label in (
-                    "File", "Email", "Commit", "Entity",
-                    "Topic", "Chunk", "Image", "Repository",
+                    "File",
+                    "Email",
+                    "Commit",
+                    "Entity",
+                    "Topic",
+                    "Chunk",
+                    "Image",
+                    "Repository",
                 ):
                     if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", label):
                         raise ValueError(f"Unsafe Neo4j label: {label!r}")
@@ -785,7 +809,9 @@ class FieldnotesServer:
                     ).single()
                     sources[label.lower()] = {
                         "count": row["cnt"],
-                        "last_sync": str(row["last_sync"]) if row["last_sync"] else None,
+                        "last_sync": str(row["last_sync"])
+                        if row["last_sync"]
+                        else None,
                     }
 
                 # Entity counts by type
@@ -794,19 +820,14 @@ class FieldnotesServer:
                     "RETURN e.type AS type, count(e) AS cnt "
                     "ORDER BY cnt DESC"
                 ).data()
-                entities_by_type = {
-                    r["type"]: r["cnt"] for r in entity_rows
-                }
+                entities_by_type = {r["type"]: r["cnt"] for r in entity_rows}
                 entity_total = sum(entities_by_type.values())
 
                 # Topic counts by source (cluster vs user)
                 topic_rows = session.run(
-                    "MATCH (t:Topic) "
-                    "RETURN t.source AS source, count(t) AS cnt"
+                    "MATCH (t:Topic) RETURN t.source AS source, count(t) AS cnt"
                 ).data()
-                topics_by_source = {
-                    r["source"]: r["cnt"] for r in topic_rows
-                }
+                topics_by_source = {r["source"]: r["cnt"] for r in topic_rows}
         except Exception as exc:
             logger.exception("ingest_status: Neo4j query failed")
             neo4j_health = f"error: {type(exc).__name__}"
@@ -851,7 +872,9 @@ class FieldnotesServer:
                 name: cb.status() for name, cb in sorted(breakers.items())
             }
 
-        return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+        return [
+            TextContent(type="text", text=json.dumps(result, indent=2, default=str))
+        ]
 
     async def _handle_timeline(self, arguments: dict) -> list[TextContent]:
         """Execute a timeline query and return results as JSON."""
@@ -865,10 +888,12 @@ class FieldnotesServer:
         if not isinstance(until, str) or not until:
             until = "now"
         if source_type is not None and source_type not in _TIMELINE_SOURCE_TYPES:
-            return [TextContent(
-                type="text",
-                text=f"error: 'source_type' must be one of {sorted(_TIMELINE_SOURCE_TYPES)}",
-            )]
+            return [
+                TextContent(
+                    type="text",
+                    text=f"error: 'source_type' must be one of {sorted(_TIMELINE_SOURCE_TYPES)}",
+                )
+            ]
 
         loop = asyncio.get_running_loop()
 
@@ -975,6 +1000,7 @@ class FieldnotesServer:
             return [TextContent(type="text", text=f"error: {result.error}")]
 
         import json as _json
+
         data = {
             "checked": result.checked,
             "suggestions": [
@@ -1018,7 +1044,9 @@ class FieldnotesServer:
             async with stdio_server() as (read_stream, write_stream):
                 if auth_token:
                     read_stream = await self._auth_gate(
-                        read_stream, write_stream, auth_token,
+                        read_stream,
+                        write_stream,
+                        auth_token,
                     )
                 await self._app.run(
                     read_stream,

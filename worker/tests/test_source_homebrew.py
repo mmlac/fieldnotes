@@ -31,9 +31,7 @@ SAMPLE_FORMULA = {
     "homepage": "https://github.com/BurntSushi/ripgrep",
     "tap": "homebrew/core",
     "versions": {"stable": "14.1.0"},
-    "installed": [
-        {"version": "14.1.0", "installed_as_dependency": False}
-    ],
+    "installed": [{"version": "14.1.0", "installed_as_dependency": False}],
 }
 
 SAMPLE_CASK = {
@@ -70,8 +68,10 @@ async def _collect_events(
 
 class TestFindBrew:
     def test_returns_none_when_not_installed(self) -> None:
-        with patch("worker.sources.homebrew.Path.is_file", return_value=False), \
-             patch("worker.sources.homebrew.shutil.which", return_value=None):
+        with (
+            patch("worker.sources.homebrew.Path.is_file", return_value=False),
+            patch("worker.sources.homebrew.shutil.which", return_value=None),
+        ):
             assert _find_brew() is None
 
     def test_finds_apple_silicon_path(self) -> None:
@@ -92,7 +92,13 @@ class TestStatePersistence:
 
     def test_save_and_load(self, tmp_path: Path) -> None:
         p = tmp_path / "state.json"
-        state = {"brew://formula/rg": {"name": "ripgrep", "version": "14.1.0", "kind": "formula"}}
+        state = {
+            "brew://formula/rg": {
+                "name": "ripgrep",
+                "version": "14.1.0",
+                "kind": "formula",
+            }
+        }
         _save_state(p, state)
         loaded = _load_state(p)
         assert loaded == state
@@ -149,27 +155,57 @@ class TestBuildCaskSnapshot:
 class TestDiffSnapshots:
     def test_new_package(self) -> None:
         prev: dict[str, dict[str, Any]] = {}
-        curr = {"brew://formula/rg": {"name": "ripgrep", "version": "14.1.0", "kind": "formula"}}
+        curr = {
+            "brew://formula/rg": {
+                "name": "ripgrep",
+                "version": "14.1.0",
+                "kind": "formula",
+            }
+        }
         changes = _diff_snapshots(prev, curr)
         assert len(changes) == 1
         assert changes[0][2] == "created"
 
     def test_removed_package(self) -> None:
-        prev = {"brew://formula/rg": {"name": "ripgrep", "version": "14.1.0", "kind": "formula"}}
+        prev = {
+            "brew://formula/rg": {
+                "name": "ripgrep",
+                "version": "14.1.0",
+                "kind": "formula",
+            }
+        }
         curr: dict[str, dict[str, Any]] = {}
         changes = _diff_snapshots(prev, curr)
         assert len(changes) == 1
         assert changes[0][2] == "deleted"
 
     def test_version_change(self) -> None:
-        prev = {"brew://formula/rg": {"name": "ripgrep", "version": "14.0.0", "kind": "formula"}}
-        curr = {"brew://formula/rg": {"name": "ripgrep", "version": "14.1.0", "kind": "formula"}}
+        prev = {
+            "brew://formula/rg": {
+                "name": "ripgrep",
+                "version": "14.0.0",
+                "kind": "formula",
+            }
+        }
+        curr = {
+            "brew://formula/rg": {
+                "name": "ripgrep",
+                "version": "14.1.0",
+                "kind": "formula",
+            }
+        }
         changes = _diff_snapshots(prev, curr)
         assert len(changes) == 1
         assert changes[0][2] == "modified"
 
     def test_no_changes(self) -> None:
-        state = {"brew://formula/rg": {"name": "ripgrep", "version": "14.1.0", "kind": "formula"}}
+        state = {
+            "brew://formula/rg": {
+                "name": "ripgrep",
+                "version": "14.1.0",
+                "kind": "formula",
+            }
+        }
         changes = _diff_snapshots(state, dict(state))
         assert changes == []
 
@@ -274,9 +310,13 @@ async def test_initial_scan_emits_events(tmp_path: Path) -> None:
     s = HomebrewSource()
     s.configure({"state_path": str(tmp_path / "state.json")})
 
-    with patch("worker.sources.homebrew._find_brew", return_value="/usr/local/bin/brew"), \
-         patch("worker.sources.homebrew._collect_installed", return_value=SAMPLE_BREW_JSON), \
-         patch("worker.sources.homebrew._brew_prefix", return_value="/usr/local"):
+    with (
+        patch("worker.sources.homebrew._find_brew", return_value="/usr/local/bin/brew"),
+        patch(
+            "worker.sources.homebrew._collect_installed", return_value=SAMPLE_BREW_JSON
+        ),
+        patch("worker.sources.homebrew._brew_prefix", return_value="/usr/local"),
+    ):
         q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         task = asyncio.create_task(s.start(q))
         events = await _collect_events(q)
@@ -301,16 +341,26 @@ async def test_incremental_scan_detects_changes(tmp_path: Path) -> None:
     state_path = tmp_path / "state.json"
 
     # Seed state with an old version of ripgrep
-    prev = {"brew://formula/ripgrep": {"name": "ripgrep", "version": "13.0.0", "kind": "formula"}}
+    prev = {
+        "brew://formula/ripgrep": {
+            "name": "ripgrep",
+            "version": "13.0.0",
+            "kind": "formula",
+        }
+    }
     _save_state(state_path, prev)
 
     # New scan has ripgrep 14.1.0 (version bump) + docker (new cask)
     s = HomebrewSource()
     s.configure({"state_path": str(state_path)})
 
-    with patch("worker.sources.homebrew._find_brew", return_value="/usr/local/bin/brew"), \
-         patch("worker.sources.homebrew._collect_installed", return_value=SAMPLE_BREW_JSON), \
-         patch("worker.sources.homebrew._brew_prefix", return_value="/usr/local"):
+    with (
+        patch("worker.sources.homebrew._find_brew", return_value="/usr/local/bin/brew"),
+        patch(
+            "worker.sources.homebrew._collect_installed", return_value=SAMPLE_BREW_JSON
+        ),
+        patch("worker.sources.homebrew._brew_prefix", return_value="/usr/local"),
+    ):
         q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         task = asyncio.create_task(s.start(q))
         events = await _collect_events(q)
@@ -336,8 +386,12 @@ async def test_handles_brew_timeout(tmp_path: Path) -> None:
     def timeout_collect(*args: Any, **kwargs: Any) -> None:
         raise subprocess.TimeoutExpired(cmd="brew", timeout=120)
 
-    with patch("worker.sources.homebrew._find_brew", return_value="/usr/local/bin/brew"), \
-         patch("worker.sources.homebrew._collect_installed", side_effect=timeout_collect):
+    with (
+        patch("worker.sources.homebrew._find_brew", return_value="/usr/local/bin/brew"),
+        patch(
+            "worker.sources.homebrew._collect_installed", side_effect=timeout_collect
+        ),
+    ):
         q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         task = asyncio.create_task(s.start(q))
         events = await _collect_events(q, timeout=1.0)
@@ -357,7 +411,11 @@ async def test_uninstall_detection(tmp_path: Path) -> None:
 
     # Seed state with ripgrep installed
     prev = {
-        "brew://formula/ripgrep": {"name": "ripgrep", "version": "14.1.0", "kind": "formula"},
+        "brew://formula/ripgrep": {
+            "name": "ripgrep",
+            "version": "14.1.0",
+            "kind": "formula",
+        },
     }
     _save_state(state_path, prev)
 
@@ -367,9 +425,11 @@ async def test_uninstall_detection(tmp_path: Path) -> None:
     s = HomebrewSource()
     s.configure({"state_path": str(state_path)})
 
-    with patch("worker.sources.homebrew._find_brew", return_value="/usr/local/bin/brew"), \
-         patch("worker.sources.homebrew._collect_installed", return_value=brew_json), \
-         patch("worker.sources.homebrew._brew_prefix", return_value="/usr/local"):
+    with (
+        patch("worker.sources.homebrew._find_brew", return_value="/usr/local/bin/brew"),
+        patch("worker.sources.homebrew._collect_installed", return_value=brew_json),
+        patch("worker.sources.homebrew._brew_prefix", return_value="/usr/local"),
+    ):
         q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         task = asyncio.create_task(s.start(q))
         events = await _collect_events(q)
@@ -388,10 +448,12 @@ async def test_uninstall_detection(tmp_path: Path) -> None:
 async def test_poll_interval_respected(tmp_path: Path) -> None:
     """poll_interval_seconds should be passed to asyncio.sleep between scans."""
     s = HomebrewSource()
-    s.configure({
-        "state_path": str(tmp_path / "state.json"),
-        "poll_interval_seconds": 42,
-    })
+    s.configure(
+        {
+            "state_path": str(tmp_path / "state.json"),
+            "poll_interval_seconds": 42,
+        }
+    )
 
     sleep_args: list[float] = []
 
@@ -399,10 +461,14 @@ async def test_poll_interval_respected(tmp_path: Path) -> None:
         sleep_args.append(delay)
         raise asyncio.CancelledError
 
-    with patch("worker.sources.homebrew._find_brew", return_value="/usr/local/bin/brew"), \
-         patch("worker.sources.homebrew._collect_installed", return_value=SAMPLE_BREW_JSON), \
-         patch("worker.sources.homebrew._brew_prefix", return_value="/usr/local"), \
-         patch("asyncio.sleep", side_effect=mock_sleep):
+    with (
+        patch("worker.sources.homebrew._find_brew", return_value="/usr/local/bin/brew"),
+        patch(
+            "worker.sources.homebrew._collect_installed", return_value=SAMPLE_BREW_JSON
+        ),
+        patch("worker.sources.homebrew._brew_prefix", return_value="/usr/local"),
+        patch("asyncio.sleep", side_effect=mock_sleep),
+    ):
         q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         task = asyncio.create_task(s.start(q))
         try:
@@ -417,14 +483,20 @@ async def test_poll_interval_respected(tmp_path: Path) -> None:
 async def test_graceful_shutdown_during_sleep(tmp_path: Path) -> None:
     """Cancellation during sleep should exit cleanly without errors."""
     s = HomebrewSource()
-    s.configure({
-        "state_path": str(tmp_path / "state.json"),
-        "poll_interval_seconds": 9999,
-    })
+    s.configure(
+        {
+            "state_path": str(tmp_path / "state.json"),
+            "poll_interval_seconds": 9999,
+        }
+    )
 
-    with patch("worker.sources.homebrew._find_brew", return_value="/usr/local/bin/brew"), \
-         patch("worker.sources.homebrew._collect_installed", return_value=SAMPLE_BREW_JSON), \
-         patch("worker.sources.homebrew._brew_prefix", return_value="/usr/local"):
+    with (
+        patch("worker.sources.homebrew._find_brew", return_value="/usr/local/bin/brew"),
+        patch(
+            "worker.sources.homebrew._collect_installed", return_value=SAMPLE_BREW_JSON
+        ),
+        patch("worker.sources.homebrew._brew_prefix", return_value="/usr/local"),
+    ):
         q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         task = asyncio.create_task(s.start(q))
 
@@ -446,9 +518,13 @@ async def test_no_changes_emits_nothing(tmp_path: Path) -> None:
     s1 = HomebrewSource()
     s1.configure({"state_path": str(state_path)})
 
-    with patch("worker.sources.homebrew._find_brew", return_value="/usr/local/bin/brew"), \
-         patch("worker.sources.homebrew._collect_installed", return_value=SAMPLE_BREW_JSON), \
-         patch("worker.sources.homebrew._brew_prefix", return_value="/usr/local"):
+    with (
+        patch("worker.sources.homebrew._find_brew", return_value="/usr/local/bin/brew"),
+        patch(
+            "worker.sources.homebrew._collect_installed", return_value=SAMPLE_BREW_JSON
+        ),
+        patch("worker.sources.homebrew._brew_prefix", return_value="/usr/local"),
+    ):
         q1: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         task1 = asyncio.create_task(s1.start(q1))
         await _collect_events(q1)
@@ -462,9 +538,13 @@ async def test_no_changes_emits_nothing(tmp_path: Path) -> None:
     s2 = HomebrewSource()
     s2.configure({"state_path": str(state_path)})
 
-    with patch("worker.sources.homebrew._find_brew", return_value="/usr/local/bin/brew"), \
-         patch("worker.sources.homebrew._collect_installed", return_value=SAMPLE_BREW_JSON), \
-         patch("worker.sources.homebrew._brew_prefix", return_value="/usr/local"):
+    with (
+        patch("worker.sources.homebrew._find_brew", return_value="/usr/local/bin/brew"),
+        patch(
+            "worker.sources.homebrew._collect_installed", return_value=SAMPLE_BREW_JSON
+        ),
+        patch("worker.sources.homebrew._brew_prefix", return_value="/usr/local"),
+    ):
         q2: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         task2 = asyncio.create_task(s2.start(q2))
         events = await _collect_events(q2)

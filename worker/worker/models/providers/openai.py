@@ -30,11 +30,20 @@ from ..registry import register
 logger = logging.getLogger(__name__)
 
 _openai_retry = retry(
-    retry=retry_if_exception_type((openai.APITimeoutError, openai.APIConnectionError, openai.RateLimitError, openai.InternalServerError)),
+    retry=retry_if_exception_type(
+        (
+            openai.APITimeoutError,
+            openai.APIConnectionError,
+            openai.RateLimitError,
+            openai.InternalServerError,
+        )
+    ),
     stop=stop_after_attempt(4),
     wait=wait_exponential_jitter(initial=0.5, max=10),
     before_sleep=lambda rs: logger.warning(
-        "OpenAI call failed (%s), retry %d", sanitize_exception(rs.outcome.exception()), rs.attempt_number
+        "OpenAI call failed (%s), retry %d",
+        sanitize_exception(rs.outcome.exception()),
+        rs.attempt_number,
     ),
     reraise=True,
 )
@@ -60,7 +69,9 @@ class OpenAIProvider(ModelProvider):
                 "OpenAI provider requires an API key: set 'api_key' in config "
                 "or the OPENAI_API_KEY environment variable"
             )
-        self._completion_timeout = float(cfg.get("completion_timeout", self._completion_timeout))
+        self._completion_timeout = float(
+            cfg.get("completion_timeout", self._completion_timeout)
+        )
         self._embed_timeout = float(cfg.get("embed_timeout", self._embed_timeout))
         self._client = openai.OpenAI(api_key=self._api_key)
 
@@ -83,7 +94,9 @@ class OpenAIProvider(ModelProvider):
             "messages": messages,
             "max_tokens": req.max_tokens,
             "temperature": req.temperature,
-            "timeout": req.timeout if req.timeout is not None else self._completion_timeout,
+            "timeout": req.timeout
+            if req.timeout is not None
+            else self._completion_timeout,
         }
         if req.tools:
             kwargs["tools"] = req.tools
@@ -103,7 +116,9 @@ class OpenAIProvider(ModelProvider):
                         tc.function.name,
                     )
                     args = tc.function.arguments
-                parsed.append({"function": {"name": tc.function.name, "arguments": args}})
+                parsed.append(
+                    {"function": {"name": tc.function.name, "arguments": args}}
+                )
             tool_calls = parsed
 
         usage = response.usage
@@ -117,7 +132,9 @@ class OpenAIProvider(ModelProvider):
             or 0,
         )
 
-    def stream_complete(self, model: str, req: CompletionRequest) -> Iterator[StreamChunk]:
+    def stream_complete(
+        self, model: str, req: CompletionRequest
+    ) -> Iterator[StreamChunk]:
         client = self._get_client()
 
         messages: list[dict[str, Any]] = []
@@ -130,7 +147,9 @@ class OpenAIProvider(ModelProvider):
             "messages": messages,
             "max_tokens": req.max_tokens,
             "temperature": req.temperature,
-            "timeout": req.timeout if req.timeout is not None else self._completion_timeout,
+            "timeout": req.timeout
+            if req.timeout is not None
+            else self._completion_timeout,
             "stream": True,
             "stream_options": {"include_usage": True},
         }

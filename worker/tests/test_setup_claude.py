@@ -68,9 +68,7 @@ class TestSetupClaude:
         assert data["mcpServers"]["fieldnotes"] == _MCP_ENTRY
 
     @patch("worker.setup.shutil.which", return_value="/usr/local/bin/fieldnotes")
-    def test_existing_config_preserved(
-        self, _mock: object, tmp_path: Path
-    ) -> None:
+    def test_existing_config_preserved(self, _mock: object, tmp_path: Path) -> None:
         cfg_path = tmp_path / "claude_desktop_config.json"
         existing = {"mcpServers": {"other_tool": {"command": "other"}}, "customKey": 42}
         cfg_path.write_text(json.dumps(existing))
@@ -98,9 +96,7 @@ class TestSetupClaude:
         assert "already configured" in out
 
     @patch("worker.setup.shutil.which", return_value="/usr/local/bin/fieldnotes")
-    def test_backup_created(
-        self, _mock: object, tmp_path: Path
-    ) -> None:
+    def test_backup_created(self, _mock: object, tmp_path: Path) -> None:
         cfg_path = tmp_path / "claude_desktop_config.json"
         existing = {"mcpServers": {"other": {"command": "x"}}}
         cfg_path.write_text(json.dumps(existing))
@@ -139,9 +135,7 @@ class TestSetupClaude:
         assert "not a JSON object" in err
 
     @patch("worker.setup.shutil.which", return_value="/usr/local/bin/fieldnotes")
-    def test_creates_parent_directories(
-        self, _mock: object, tmp_path: Path
-    ) -> None:
+    def test_creates_parent_directories(self, _mock: object, tmp_path: Path) -> None:
         cfg_path = tmp_path / "deep" / "nested" / "claude_desktop_config.json"
 
         rc = setup_claude(config_path=cfg_path)
@@ -150,9 +144,7 @@ class TestSetupClaude:
         assert cfg_path.exists()
 
     @patch("worker.setup.shutil.which", return_value="/usr/local/bin/fieldnotes")
-    def test_config_file_permissions(
-        self, _mock: object, tmp_path: Path
-    ) -> None:
+    def test_config_file_permissions(self, _mock: object, tmp_path: Path) -> None:
         cfg_path = tmp_path / "claude_desktop_config.json"
 
         rc = setup_claude(config_path=cfg_path)

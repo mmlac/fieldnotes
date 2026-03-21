@@ -62,7 +62,10 @@ def _load_state(path: Path) -> dict[str, dict[str, Any]]:
         data = json.loads(path.read_text())
         return data if isinstance(data, dict) else {}
     except (json.JSONDecodeError, OSError):
-        logger.warning("Failed to read brew state file %s, starting fresh", redact_home_path(str(path)))
+        logger.warning(
+            "Failed to read brew state file %s, starting fresh",
+            redact_home_path(str(path)),
+        )
         return {}
 
 
@@ -132,7 +135,11 @@ def _build_formula_snapshot(
     name = f["name"]
     source_id = f"brew://formula/{name}"
     installed = f.get("installed", [])
-    version = installed[0]["version"] if installed else f.get("versions", {}).get("stable", "")
+    version = (
+        installed[0]["version"]
+        if installed
+        else f.get("versions", {}).get("stable", "")
+    )
     snapshot: dict[str, Any] = {
         "name": name,
         "kind": "formula",
@@ -142,8 +149,7 @@ def _build_formula_snapshot(
         "tap": f.get("tap", ""),
         "binaries": _formula_binaries(prefix, name),
         "installed_paths": [
-            entry.get("installed_as_dependency", False)
-            for entry in installed
+            entry.get("installed_as_dependency", False) for entry in installed
         ],
     }
     return source_id, snapshot
@@ -336,7 +342,8 @@ class HomebrewSource(PythonSource):
             event = _build_event(source_id, snapshot, operation)
             await queue.put(event)
             SOURCE_WATCHER_EVENTS.labels(
-                source_type="homebrew", event_type=operation,
+                source_type="homebrew",
+                event_type=operation,
             ).inc()
             WATCHER_LAST_EVENT_TIMESTAMP.labels(
                 source_type="homebrew",
@@ -350,7 +357,10 @@ class HomebrewSource(PythonSource):
 
         logger.info(
             "App scan: %d new, %d removed, %d updated, %d total",
-            new_count, removed_count, updated_count, len(curr_state),
+            new_count,
+            removed_count,
+            updated_count,
+            len(curr_state),
         )
 
         # Update state for next cycle

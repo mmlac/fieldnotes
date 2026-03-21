@@ -89,7 +89,9 @@ class AppDescriptionCache:
             try:
                 self._data = json.loads(self._path.read_text())
             except (json.JSONDecodeError, OSError):
-                logger.warning("Corrupt app description cache at %s — starting fresh", self._path)
+                logger.warning(
+                    "Corrupt app description cache at %s — starting fresh", self._path
+                )
                 self._data = {}
 
     def _save(self) -> None:
@@ -122,7 +124,9 @@ class AppDescriptionCache:
 
         return cached_desc
 
-    def put(self, bundle_id: str, display_name: str, version: str, description: str) -> None:
+    def put(
+        self, bundle_id: str, display_name: str, version: str, description: str
+    ) -> None:
         """Store a description in the cache (does not persist until save)."""
         self._data[bundle_id] = {
             "description": description,
@@ -230,13 +234,19 @@ def _describe_batch(
         try:
             model = registry.for_role(FALLBACK_ROLE)
         except KeyError:
-            logger.warning("No model configured for '%s' or '%s' role — skipping app descriptions", DESCRIBE_ROLE, FALLBACK_ROLE)
+            logger.warning(
+                "No model configured for '%s' or '%s' role — skipping app descriptions",
+                DESCRIBE_ROLE,
+                FALLBACK_ROLE,
+            )
             return {}
 
     try:
         resp = model.complete(req, task="describe_apps")
     except Exception:
-        logger.warning("LLM call failed for app descriptions — skipping batch", exc_info=True)
+        logger.warning(
+            "LLM call failed for app descriptions — skipping batch", exc_info=True
+        )
         return {}
 
     return _parse_response(resp, apps)

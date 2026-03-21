@@ -119,9 +119,7 @@ class TopicQuerier:
         documents: list[dict[str, str]] = []
         for r in records:
             if r["source_id"]:
-                doc_labels = [
-                    lb for lb in (r["doc_labels"] or []) if lb != "Topic"
-                ]
+                doc_labels = [lb for lb in (r["doc_labels"] or []) if lb != "Topic"]
                 documents.append(
                     {
                         "source_id": r["source_id"],
@@ -203,7 +201,9 @@ def format_topics_list(topics: list[TopicSummary], *, use_json: bool = False) ->
         label = "User-defined" if source == "user" else "Cluster-discovered"
         lines.append(f"\033[1;36m{label} ({len(items)})\033[0m")
         for t in items:
-            count_str = f"\033[33m{t.doc_count}\033[0m doc{'s' if t.doc_count != 1 else ''}"
+            count_str = (
+                f"\033[33m{t.doc_count}\033[0m doc{'s' if t.doc_count != 1 else ''}"
+            )
             lines.append(f"  \033[1m{t.name}\033[0m  ({count_str})")
             if t.description:
                 lines.append(f"    {t.description}")
@@ -239,13 +239,9 @@ def format_topic_detail(detail: TopicDetail | None, *, use_json: bool = False) -
     if not detail.documents:
         lines.append("  No linked documents.")
     else:
-        lines.append(
-            f"\033[1;36mLinked documents ({len(detail.documents)})\033[0m"
-        )
+        lines.append(f"\033[1;36mLinked documents ({len(detail.documents)})\033[0m")
         for doc in detail.documents:
-            lines.append(
-                f"  \033[33m[{doc['type']}]\033[0m {doc['name']}"
-            )
+            lines.append(f"  \033[33m[{doc['type']}]\033[0m {doc['name']}")
 
     return "\n".join(lines)
 

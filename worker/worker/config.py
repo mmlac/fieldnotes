@@ -81,6 +81,7 @@ class QdrantConfig:
 @dataclass
 class ProviderConfig:
     """A single [modelproviders.<name>] section."""
+
     name: str
     type: str
     settings: dict[str, Any] = field(default_factory=dict)
@@ -89,6 +90,7 @@ class ProviderConfig:
 @dataclass
 class ModelConfig:
     """A single [models.<alias>] section (not roles)."""
+
     alias: str
     provider: str
     model: str
@@ -97,6 +99,7 @@ class ModelConfig:
 @dataclass
 class RolesConfig:
     """[models.roles] — maps pipeline roles to model aliases."""
+
     mapping: dict[str, str] = field(default_factory=dict)
 
     def get(self, role: str) -> str | None:
@@ -106,6 +109,7 @@ class RolesConfig:
 @dataclass
 class SourceConfig:
     """A single [sources.<name>] section."""
+
     name: str
     settings: dict[str, Any] = field(default_factory=dict)
 
@@ -116,9 +120,17 @@ class VisionConfig:
     concurrency: int = 2
     min_file_size_kb: int = 1
     max_file_size_mb: int = 20
-    skip_patterns: list[str] = field(default_factory=lambda: [
-        "icon", "avatar", "favicon", "logo", "badge", "emoji", "thumb",
-    ])
+    skip_patterns: list[str] = field(
+        default_factory=lambda: [
+            "icon",
+            "avatar",
+            "favicon",
+            "logo",
+            "badge",
+            "emoji",
+            "thumb",
+        ]
+    )
     queue_size: int = 256
 
 
@@ -155,9 +167,10 @@ class RateLimitConfig:
 
     All fields default to 0 (disabled / unlimited).
     """
-    requests_per_minute: int = 0    # per-provider RPM; 0 = unlimited
-    daily_token_budget: int = 0     # total tokens (input + output) per day; 0 = unlimited
-    max_concurrency: int = 0        # max parallel LLM calls; 0 = unlimited
+
+    requests_per_minute: int = 0  # per-provider RPM; 0 = unlimited
+    daily_token_budget: int = 0  # total tokens (input + output) per day; 0 = unlimited
+    max_concurrency: int = 0  # max parallel LLM calls; 0 = unlimited
 
 
 @dataclass
@@ -256,7 +269,9 @@ def _validate_repositories_config(settings: dict[str, Any]) -> None:
     if "exclude_patterns" in settings:
         _check_list_of(section, "exclude_patterns", settings["exclude_patterns"], str)
     if "poll_interval_seconds" in settings:
-        _check_type(section, "poll_interval_seconds", settings["poll_interval_seconds"], int)
+        _check_type(
+            section, "poll_interval_seconds", settings["poll_interval_seconds"], int
+        )
     if "max_file_size" in settings:
         _check_type(section, "max_file_size", settings["max_file_size"], int)
 
@@ -269,7 +284,9 @@ def _validate_macos_apps_config(settings: dict[str, Any]) -> None:
     if "scan_dirs" in settings:
         _check_list_of(section, "scan_dirs", settings["scan_dirs"], str)
     if "poll_interval_seconds" in settings:
-        _check_type(section, "poll_interval_seconds", settings["poll_interval_seconds"], int)
+        _check_type(
+            section, "poll_interval_seconds", settings["poll_interval_seconds"], int
+        )
     if "state_path" in settings:
         _check_type(section, "state_path", settings["state_path"], str)
 
@@ -280,7 +297,9 @@ def _validate_homebrew_config(settings: dict[str, Any]) -> None:
     if "enabled" in settings:
         _check_type(section, "enabled", settings["enabled"], bool)
     if "poll_interval_seconds" in settings:
-        _check_type(section, "poll_interval_seconds", settings["poll_interval_seconds"], int)
+        _check_type(
+            section, "poll_interval_seconds", settings["poll_interval_seconds"], int
+        )
     if "state_path" in settings:
         _check_type(section, "state_path", settings["state_path"], str)
     if "include_system" in settings:
@@ -334,7 +353,9 @@ def _parse(raw: dict[str, Any]) -> Config:
         provider_type = pcfg["type"]
         settings = {k: v for k, v in pcfg.items() if k != "type"}
         cfg.providers[name] = ProviderConfig(
-            name=name, type=provider_type, settings=settings,
+            name=name,
+            type=provider_type,
+            settings=settings,
         )
 
     # [models.*] and [models.roles]
@@ -419,7 +440,9 @@ def _parse(raw: dict[str, Any]) -> Config:
             enabled=cl.get("enabled", cfg.clustering.enabled),
             cron=cl.get("cron", cfg.clustering.cron),
             min_corpus_size=cl.get("min_corpus_size", cfg.clustering.min_corpus_size),
-            min_interval_seconds=cl.get("min_interval_seconds", cfg.clustering.min_interval_seconds),
+            min_interval_seconds=cl.get(
+                "min_interval_seconds", cfg.clustering.min_interval_seconds
+            ),
             max_vectors=cl.get("max_vectors", cfg.clustering.max_vectors),
         )
 
@@ -460,18 +483,19 @@ def _parse(raw: dict[str, Any]) -> Config:
             if k in rl:
                 _check_type("rate_limits", k, rl[k], int)
                 if rl[k] < 0:
-                    raise ValueError(
-                        f"[rate_limits] {k} must be >= 0, got {rl[k]}"
-                    )
+                    raise ValueError(f"[rate_limits] {k} must be >= 0, got {rl[k]}")
         cfg.rate_limits = RateLimitConfig(
             requests_per_minute=rl.get(
-                "requests_per_minute", cfg.rate_limits.requests_per_minute,
+                "requests_per_minute",
+                cfg.rate_limits.requests_per_minute,
             ),
             daily_token_budget=rl.get(
-                "daily_token_budget", cfg.rate_limits.daily_token_budget,
+                "daily_token_budget",
+                cfg.rate_limits.daily_token_budget,
             ),
             max_concurrency=rl.get(
-                "max_concurrency", cfg.rate_limits.max_concurrency,
+                "max_concurrency",
+                cfg.rate_limits.max_concurrency,
             ),
         )
 

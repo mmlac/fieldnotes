@@ -66,7 +66,9 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     # ── service ────────────────────────────────────────────────────
-    service_p = sub.add_parser("service", help="Manage the fieldnotes background service")
+    service_p = sub.add_parser(
+        "service", help="Manage the fieldnotes background service"
+    )
     service_sub = service_p.add_subparsers(dest="service_command")
     service_sub.add_parser("install", help="Install and start the service")
     service_sub.add_parser("uninstall", help="Stop and remove the service")
@@ -75,7 +77,9 @@ def _build_parser() -> argparse.ArgumentParser:
     service_sub.add_parser("stop", help="Stop the service")
 
     # ── daemon (deprecated alias) ─────────────────────────────────
-    daemon_p = sub.add_parser("daemon", help="(deprecated: use 'service') Manage the background daemon")
+    daemon_p = sub.add_parser(
+        "daemon", help="(deprecated: use 'service') Manage the background daemon"
+    )
     daemon_sub = daemon_p.add_subparsers(dest="daemon_command")
     daemon_sub.add_parser("install", help="Install and start the daemon service")
     daemon_sub.add_parser("uninstall", help="Stop and remove the daemon service")
@@ -423,8 +427,10 @@ def main(argv: list[str] | None = None) -> int:
             return service.start()
         if args.service_command == "stop":
             return service.stop()
-        print("Usage: fieldnotes service {install,uninstall,status,start,stop}",
-              file=sys.stderr)
+        print(
+            "Usage: fieldnotes service {install,uninstall,status,start,stop}",
+            file=sys.stderr,
+        )
         return 1
 
     if args.command == "daemon":
@@ -440,8 +446,10 @@ def main(argv: list[str] | None = None) -> int:
             return service.start()
         if args.daemon_command == "stop":
             return service.stop()
-        print("Usage: fieldnotes daemon {install,uninstall,status,start,stop}",
-              file=sys.stderr)
+        print(
+            "Usage: fieldnotes daemon {install,uninstall,status,start,stop}",
+            file=sys.stderr,
+        )
         return 1
 
     if args.command == "setup-gastown":

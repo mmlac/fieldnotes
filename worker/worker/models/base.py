@@ -7,27 +7,32 @@ from typing import Any
 @dataclass
 class CompletionRequest:
     """Normalised input for any text completion call."""
-    system:      str
-    messages:    list[dict[str, Any]]   # [{"role": "user"|"assistant", "content": "..."}]
-    tools:       list[dict] | None = None   # for function calling / tool use
-    max_tokens:  int = 4096
-    temperature: float = 0.0            # 0.0 = deterministic; extraction always uses 0.0
-    timeout:     float | None = None    # per-request timeout in seconds; None = provider default
+
+    system: str
+    messages: list[dict[str, Any]]  # [{"role": "user"|"assistant", "content": "..."}]
+    tools: list[dict] | None = None  # for function calling / tool use
+    max_tokens: int = 4096
+    temperature: float = 0.0  # 0.0 = deterministic; extraction always uses 0.0
+    timeout: float | None = (
+        None  # per-request timeout in seconds; None = provider default
+    )
 
 
 @dataclass
 class CompletionResponse:
     """Normalised output from any text completion call."""
-    text:          str
-    tool_calls:    list[dict] | None = None
-    input_tokens:  int = 0
+
+    text: str
+    tool_calls: list[dict] | None = None
+    input_tokens: int = 0
     output_tokens: int = 0
-    cached_tokens: int = 0              # prompt cache hits (Anthropic / OpenAI)
+    cached_tokens: int = 0  # prompt cache hits (Anthropic / OpenAI)
 
 
 @dataclass
 class StreamChunk:
     """A single chunk from a streaming completion."""
+
     text: str = ""
     input_tokens: int = 0
     output_tokens: int = 0
@@ -37,13 +42,15 @@ class StreamChunk:
 @dataclass
 class EmbedRequest:
     texts: list[str]
-    timeout: float | None = None        # per-request timeout in seconds; None = provider default
+    timeout: float | None = (
+        None  # per-request timeout in seconds; None = provider default
+    )
 
 
 @dataclass
 class EmbedResponse:
-    vectors:      list[list[float]]
-    model:        str
+    vectors: list[list[float]]
+    model: str
     input_tokens: int = 0
 
 
@@ -66,7 +73,9 @@ class ModelProvider(ABC):
         """Run a chat completion. model is the raw model string (e.g. 'qwen3.5:27b')."""
         ...
 
-    def stream_complete(self, model: str, req: CompletionRequest) -> Iterator[StreamChunk]:
+    def stream_complete(
+        self, model: str, req: CompletionRequest
+    ) -> Iterator[StreamChunk]:
         """Stream a chat completion token-by-token.
 
         Default implementation falls back to non-streaming :meth:`complete`.

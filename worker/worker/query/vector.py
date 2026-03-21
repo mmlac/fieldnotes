@@ -107,7 +107,9 @@ class VectorQuerier:
         # Clamp top_k to valid range.
         if top_k < 1 or top_k > MAX_TOP_K:
             logger.warning(
-                "top_k=%d out of bounds, clamping to [1, %d]", top_k, MAX_TOP_K,
+                "top_k=%d out of bounds, clamping to [1, %d]",
+                top_k,
+                MAX_TOP_K,
             )
             top_k = max(1, min(top_k, MAX_TOP_K))
 
@@ -115,7 +117,8 @@ class VectorQuerier:
         if len(question) > MAX_QUESTION_LENGTH:
             logger.warning(
                 "Question length %d exceeds max %d chars, truncating",
-                len(question), MAX_QUESTION_LENGTH,
+                len(question),
+                MAX_QUESTION_LENGTH,
             )
             question = question[:MAX_QUESTION_LENGTH]
 
@@ -183,7 +186,9 @@ class VectorQuerier:
     def __enter__(self) -> VectorQuerier:
         return self
 
-    def __exit__(self, exc_type: type | None, exc_val: BaseException | None, exc_tb: object) -> None:
+    def __exit__(
+        self, exc_type: type | None, exc_val: BaseException | None, exc_tb: object
+    ) -> None:
         self.close()
 
     def close(self) -> None:

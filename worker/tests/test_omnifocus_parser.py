@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import pytest
 
 from worker.parsers.omnifocus import OmniFocusParser
 
@@ -291,5 +290,6 @@ class TestTextContent:
 class TestParserRegistration:
     def test_registered_in_registry(self) -> None:
         from worker.parsers.registry import get
+
         parser = get("omnifocus")
         assert parser.source_type == "omnifocus"

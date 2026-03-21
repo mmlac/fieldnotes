@@ -31,7 +31,10 @@ from worker.models.resolver import ModelRegistry
 from worker.parsers.base import ParsedDocument
 from worker.pipeline.chunker import Chunk, chunk_text
 from worker.pipeline.embedder import embed_chunks
-from worker.pipeline.extractor import ExtractionResult, extract_chunks
+from worker.pipeline.extractor import (
+    ExtractionResult as ExtractionResult,
+    extract_chunks,
+)
 from worker.pipeline.resolver import (
     ResolutionResult,
     resolve_entities_from_registry,
@@ -116,9 +119,7 @@ class Pipeline:
             DOCUMENTS_PROCESSED.labels(
                 source_type=parsed_doc.source_type, operation="deleted"
             ).inc()
-            logger.info(
-                "Deleted %s %s", parsed_doc.source_type, parsed_doc.source_id
-            )
+            logger.info("Deleted %s %s", parsed_doc.source_type, parsed_doc.source_id)
             return
 
         # Image documents: route to vision queue if available
@@ -232,7 +233,9 @@ class Pipeline:
     def __enter__(self) -> Pipeline:
         return self
 
-    def __exit__(self, exc_type: type | None, exc_val: BaseException | None, exc_tb: object) -> None:
+    def __exit__(
+        self, exc_type: type | None, exc_val: BaseException | None, exc_tb: object
+    ) -> None:
         self.close()
 
     def close(self) -> None:
@@ -266,9 +269,7 @@ class Pipeline:
         vectors = [vec for _, vec in embedded]
 
         if len(vectors) != len(chunks):
-            DOCUMENTS_FAILED.labels(
-                source_type=doc.source_type, stage="embed"
-            ).inc()
+            DOCUMENTS_FAILED.labels(source_type=doc.source_type, stage="embed").inc()
             raise RuntimeError(
                 f"Embedding returned {len(vectors)} vectors for {len(chunks)} chunks "
                 f"(doc {doc.source_id}) — refusing to proceed with mismatched data"
@@ -375,15 +376,17 @@ class Pipeline:
             if not bundle_id:
                 continue
 
-            apps_needing_desc.append((
-                doc,
-                AppInfo(
-                    bundle_id=bundle_id,
-                    display_name=doc.node_props.get("name", ""),
-                    category="",  # category not in node_props, check source_metadata
-                    version=doc.node_props.get("version", ""),
-                ),
-            ))
+            apps_needing_desc.append(
+                (
+                    doc,
+                    AppInfo(
+                        bundle_id=bundle_id,
+                        display_name=doc.node_props.get("name", ""),
+                        category="",  # category not in node_props, check source_metadata
+                        version=doc.node_props.get("version", ""),
+                    ),
+                )
+            )
 
         if not apps_needing_desc:
             return
@@ -442,9 +445,7 @@ class Pipeline:
         node to each extracted entity.
         """
         if not result.text and not result.entities:
-            logger.debug(
-                "Empty vision result for %s — skipping", result.source_id
-            )
+            logger.debug("Empty vision result for %s — skipping", result.source_id)
             return
 
         # Build synthetic chunk from vision text and embed it
@@ -533,9 +534,11 @@ def _resolved_to_entity_dicts(resolved: ResolutionResult) -> list[dict[str, Any]
     entities: list[dict[str, Any]] = []
     for ent in resolved.entities:
         name = ent.merged_into if ent.merged_into else ent.name
-        entities.append({
-            "name": name,
-            "type": ent.type,
-            "confidence": ent.confidence,
-        })
+        entities.append(
+            {
+                "name": name,
+                "type": ent.type,
+                "confidence": ent.confidence,
+            }
+        )
     return entities

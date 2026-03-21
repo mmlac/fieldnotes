@@ -115,7 +115,9 @@ class TestCircuitBreakerStatus:
         assert "recovery_remaining_s" not in status
 
     def test_open_status_includes_recovery(self):
-        cb = CircuitBreaker("test-open-status", failure_threshold=1, recovery_timeout=60)
+        cb = CircuitBreaker(
+            "test-open-status", failure_threshold=1, recovery_timeout=60
+        )
         cb.record_failure()
         status = cb.status()
         assert status["state"] == "open"
@@ -143,7 +145,9 @@ class TestCircuitBreakerReset:
     """Test manual reset."""
 
     def test_reset_closes_open_breaker(self):
-        cb = CircuitBreaker("test-manual-reset", failure_threshold=1, recovery_timeout=999)
+        cb = CircuitBreaker(
+            "test-manual-reset", failure_threshold=1, recovery_timeout=999
+        )
         cb.record_failure()
         assert cb.state == State.OPEN
         cb.reset()

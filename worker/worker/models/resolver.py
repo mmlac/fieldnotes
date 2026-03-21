@@ -114,9 +114,7 @@ class ResolvedModel:
             t0 = time.monotonic()
             ok = self._concurrency_limiter.acquire()
             if not ok:
-                raise RateLimitExceeded(
-                    "Timed out waiting for concurrency slot"
-                )
+                raise RateLimitExceeded("Timed out waiting for concurrency slot")
             waited = time.monotonic() - t0
             if waited > 0.05:
                 CONCURRENCY_LIMIT_WAITS.inc()
@@ -140,7 +138,9 @@ class ResolvedModel:
 
     # -- public API ---------------------------------------------------------
 
-    def complete(self, req: CompletionRequest, *, task: str = "unknown") -> CompletionResponse:
+    def complete(
+        self, req: CompletionRequest, *, task: str = "unknown"
+    ) -> CompletionResponse:
         """Run a completion with latency, token, error, and circuit breaker tracking."""
         breaker = _llm_breaker(self.provider.provider_type)
         if not breaker.allow_request():
@@ -159,20 +159,28 @@ class ResolvedModel:
             elapsed = time.monotonic() - start
             LLM_REQUEST_DURATION.labels(model=self.model, task=task).observe(elapsed)
             LLM_ERRORS.labels(
-                model=self.model, task=task, error_type=type(exc).__name__,
+                model=self.model,
+                task=task,
+                error_type=type(exc).__name__,
             ).inc()
             breaker.record_failure()
             raise
         elapsed = time.monotonic() - start
         LLM_REQUEST_DURATION.labels(model=self.model, task=task).observe(elapsed)
         if resp.input_tokens or resp.output_tokens:
-            LLM_TOKENS.labels(model=self.model, task=task, direction="input").inc(resp.input_tokens)
-            LLM_TOKENS.labels(model=self.model, task=task, direction="output").inc(resp.output_tokens)
+            LLM_TOKENS.labels(model=self.model, task=task, direction="input").inc(
+                resp.input_tokens
+            )
+            LLM_TOKENS.labels(model=self.model, task=task, direction="output").inc(
+                resp.output_tokens
+            )
         breaker.record_success()
         self._post_request(resp.input_tokens, resp.output_tokens)
         return resp
 
-    def stream_complete(self, req: CompletionRequest, *, task: str = "unknown") -> Iterator[StreamChunk]:
+    def stream_complete(
+        self, req: CompletionRequest, *, task: str = "unknown"
+    ) -> Iterator[StreamChunk]:
         """Stream a completion with metrics tracking on the final chunk."""
         breaker = _llm_breaker(self.provider.provider_type)
         if not breaker.allow_request():
@@ -185,10 +193,16 @@ class ResolvedModel:
             for chunk in self.provider.stream_complete(self.model, req):
                 if chunk.done:
                     elapsed = time.monotonic() - start
-                    LLM_REQUEST_DURATION.labels(model=self.model, task=task).observe(elapsed)
+                    LLM_REQUEST_DURATION.labels(model=self.model, task=task).observe(
+                        elapsed
+                    )
                     if chunk.input_tokens or chunk.output_tokens:
-                        LLM_TOKENS.labels(model=self.model, task=task, direction="input").inc(chunk.input_tokens)
-                        LLM_TOKENS.labels(model=self.model, task=task, direction="output").inc(chunk.output_tokens)
+                        LLM_TOKENS.labels(
+                            model=self.model, task=task, direction="input"
+                        ).inc(chunk.input_tokens)
+                        LLM_TOKENS.labels(
+                            model=self.model, task=task, direction="output"
+                        ).inc(chunk.output_tokens)
                     breaker.record_success()
                     self._post_request(chunk.input_tokens, chunk.output_tokens)
                 yield chunk
@@ -200,7 +214,9 @@ class ResolvedModel:
             elapsed = time.monotonic() - start
             LLM_REQUEST_DURATION.labels(model=self.model, task=task).observe(elapsed)
             LLM_ERRORS.labels(
-                model=self.model, task=task, error_type=type(exc).__name__,
+                model=self.model,
+                task=task,
+                error_type=type(exc).__name__,
             ).inc()
             breaker.record_failure()
             raise
@@ -224,7 +240,9 @@ class ResolvedModel:
             elapsed = time.monotonic() - start
             EMBEDDING_DURATION.labels(model=self.model).observe(elapsed)
             LLM_ERRORS.labels(
-                model=self.model, task=task, error_type=type(exc).__name__,
+                model=self.model,
+                task=task,
+                error_type=type(exc).__name__,
             ).inc()
             breaker.record_failure()
             raise
@@ -232,7 +250,9 @@ class ResolvedModel:
         EMBEDDING_DURATION.labels(model=self.model).observe(elapsed)
         EMBEDDING_BATCH_SIZE.labels(model=self.model).observe(len(req.texts))
         if resp.input_tokens:
-            LLM_TOKENS.labels(model=self.model, task=task, direction="input").inc(resp.input_tokens)
+            LLM_TOKENS.labels(model=self.model, task=task, direction="input").inc(
+                resp.input_tokens
+            )
         breaker.record_success()
         self._post_request(resp.input_tokens, 0)
         return resp

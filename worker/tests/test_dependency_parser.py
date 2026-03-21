@@ -463,10 +463,14 @@ class TestDependsOnStructure:
     def test_hint_subject_props(self) -> None:
         text = '{"dependencies": {"lodash": "^4.17"}}'
         parser = RepositoryParser()
-        docs = parser.parse(_manifest_event(
-            "package.json", text,
-            repo_name="web-app", remote_url="https://github.com/org/web-app",
-        ))
+        docs = parser.parse(
+            _manifest_event(
+                "package.json",
+                text,
+                repo_name="web-app",
+                remote_url="https://github.com/org/web-app",
+            )
+        )
         deps = _dep_hints(docs[0].graph_hints)
         h = deps[0]
         assert h.subject_props["name"] == "web-app"

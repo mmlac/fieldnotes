@@ -65,9 +65,7 @@ class RateLimiter:
             with self._lock:
                 cutoff = now - 60.0
                 # Prune timestamps older than the 60-second window
-                self._timestamps = [
-                    ts for ts in self._timestamps if ts > cutoff
-                ]
+                self._timestamps = [ts for ts in self._timestamps if ts > cutoff]
                 if len(self._timestamps) < self._rpm:
                     self._timestamps.append(now)
                     return
@@ -173,9 +171,7 @@ class ConcurrencyLimiter:
 
     def __init__(self, max_concurrency: int) -> None:
         if max_concurrency < 1:
-            raise ValueError(
-                f"max_concurrency must be >= 1, got {max_concurrency}"
-            )
+            raise ValueError(f"max_concurrency must be >= 1, got {max_concurrency}")
         self._semaphore = threading.Semaphore(max_concurrency)
         self._max = max_concurrency
 
@@ -200,6 +196,6 @@ class ConcurrencyLimiter:
 class RateLimitConfig:
     """Parsed ``[rate_limits]`` section."""
 
-    requests_per_minute: int = 0    # 0 = disabled
-    daily_token_budget: int = 0     # 0 = disabled (unlimited)
-    max_concurrency: int = 0        # 0 = disabled (unlimited)
+    requests_per_minute: int = 0  # 0 = disabled
+    daily_token_budget: int = 0  # 0 = disabled (unlimited)
+    max_concurrency: int = 0  # 0 = disabled (unlimited)

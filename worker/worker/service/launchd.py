@@ -78,7 +78,9 @@ class LaunchdBackend:
 
     def start(self) -> None:
         if not self._plist_path.exists():
-            raise SystemExit("error: service not installed — run 'fieldnotes service install' first")
+            raise SystemExit(
+                "error: service not installed — run 'fieldnotes service install' first"
+            )
         subprocess.run(
             ["launchctl", "load", "-w", str(self._plist_path)],
             check=True,

@@ -31,6 +31,7 @@ def _use_rich() -> bool:
         return False
     try:
         import rich  # noqa: F401
+
         return True
     except ImportError:
         return False
@@ -56,6 +57,7 @@ _SOURCE_TYPE_LABELS = {
 @dataclass
 class _SourceGroup:
     """A group of results from one source type."""
+
     source_type: str
     count: int
     identifiers: list[str] = field(default_factory=list)
@@ -110,6 +112,7 @@ def _group_sources(hybrid: HybridResult) -> list[_SourceGroup]:
 # Plain-text fallback
 # ---------------------------------------------------------------------------
 
+
 def _format_tree_plain(total: int, groups: list[_SourceGroup]) -> str:
     """Format the progress tree using Unicode box-drawing characters."""
     lines = [f"Searching... {total} source{'s' if total != 1 else ''} found"]
@@ -145,6 +148,7 @@ def _format_verbose_plain(
 # ---------------------------------------------------------------------------
 # Rich output
 # ---------------------------------------------------------------------------
+
 
 def _print_tree_rich(total: int, groups: list[_SourceGroup]) -> None:
     """Print the progress tree using rich."""
@@ -184,12 +188,15 @@ def _print_verbose_rich(
         ctx_len = len(hybrid.context)
         parts.append(f"[bold]Context:[/bold] {ctx_len:,} chars")
     if parts:
-        console.print(Panel("\n".join(parts), title="[dim]verbose[/dim]", border_style="dim"))
+        console.print(
+            Panel("\n".join(parts), title="[dim]verbose[/dim]", border_style="dim")
+        )
 
 
 # ---------------------------------------------------------------------------
 # Spinner context manager
 # ---------------------------------------------------------------------------
+
 
 @contextmanager
 def spinner(message: str = "Searching...") -> Iterator[None]:
@@ -217,6 +224,7 @@ def spinner(message: str = "Searching...") -> Iterator[None]:
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
 
 def display_progress(
     hybrid: HybridResult,

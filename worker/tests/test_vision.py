@@ -123,12 +123,14 @@ class TestParseResponse:
         assert result.entities == []
 
     def test_skips_entities_without_name(self) -> None:
-        resp = _json_response({
-            "entities": [
-                {"type": "Person"},  # no name
-                {"name": "Alice", "type": "Person"},
-            ],
-        })
+        resp = _json_response(
+            {
+                "entities": [
+                    {"type": "Person"},  # no name
+                    {"name": "Alice", "type": "Person"},
+                ],
+            }
+        )
         result = _parse_response(resp)
         assert len(result.entities) == 1
         assert result.entities[0]["name"] == "Alice"

@@ -38,6 +38,7 @@ async def _check_neo4j_health(cfg: Config, driver: Any = None) -> dict[str, Any]
     reused — no new connection is opened.  Otherwise a short-lived driver is
     created and closed after the probe.
     """
+
     def _probe() -> dict[str, Any]:
         if driver is not None:
             try:
@@ -46,6 +47,7 @@ async def _check_neo4j_health(cfg: Config, driver: Any = None) -> dict[str, Any]
             except Exception as exc:
                 return {"status": "unhealthy", "error": type(exc).__name__}
         from neo4j import GraphDatabase
+
         d = GraphDatabase.driver(
             cfg.neo4j.uri,
             auth=(cfg.neo4j.user, cfg.neo4j.password),
@@ -74,6 +76,7 @@ async def _check_qdrant_health(cfg: Config, client: Any = None) -> dict[str, Any
     reused — no new connection is opened.  Otherwise a short-lived client is
     created and closed after the probe.
     """
+
     def _probe() -> dict[str, Any]:
         if client is not None:
             try:
@@ -82,6 +85,7 @@ async def _check_qdrant_health(cfg: Config, client: Any = None) -> dict[str, Any
             except Exception as exc:
                 return {"status": "unhealthy", "error": type(exc).__name__}
         from qdrant_client import QdrantClient
+
         c = QdrantClient(host=cfg.qdrant.host, port=cfg.qdrant.port)
         try:
             c.get_collections()
@@ -164,7 +168,8 @@ class HealthServer:
     ) -> None:
         try:
             request_line = await asyncio.wait_for(
-                reader.readline(), timeout=5.0,
+                reader.readline(),
+                timeout=5.0,
             )
             parts = request_line.decode(errors="replace").split()
             method = parts[0] if parts else ""
@@ -172,18 +177,16 @@ class HealthServer:
 
             if method == "GET" and path == "/health":
                 payload = await _build_health_payload(
-                    self._cfg, self._queue, self._start_time,
+                    self._cfg,
+                    self._queue,
+                    self._start_time,
                     neo4j_driver=self._neo4j_driver,
                     qdrant_client=self._qdrant_client,
                 )
-                status_line = (
-                    _HTTP_200 if payload["status"] == "ok" else _HTTP_503
-                )
+                status_line = _HTTP_200 if payload["status"] == "ok" else _HTTP_503
                 writer.write(_json_response(status_line, payload))
             else:
-                writer.write(
-                    _json_response(_HTTP_404, {"error": "not found"})
-                )
+                writer.write(_json_response(_HTTP_404, {"error": "not found"}))
         except Exception:
             logger.debug("Health endpoint request error", exc_info=True)
         finally:
@@ -197,7 +200,9 @@ class HealthServer:
         bind = self._cfg.health.bind
         port = self._cfg.health.port
         self._server = await asyncio.start_server(
-            self._handle, bind, port,
+            self._handle,
+            bind,
+            port,
         )
         logger.info("Health endpoint listening on %s:%d", bind, port)
 

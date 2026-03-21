@@ -193,7 +193,9 @@ class CircuitBreaker:
                     "Circuit breaker '%s': HALF_OPEN → OPEN (probe failed)",
                     self.name,
                 )
-            elif state == State.CLOSED and self._failure_count >= self.failure_threshold:
+            elif (
+                state == State.CLOSED and self._failure_count >= self.failure_threshold
+            ):
                 self._state = State.OPEN
                 self._opened_at = time.monotonic()
                 logger.warning(

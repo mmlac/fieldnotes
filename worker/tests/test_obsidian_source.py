@@ -62,10 +62,12 @@ def test_obsidian_source_configure_basic(tmp_path: Path):
 
 def test_obsidian_source_configure_extensions(tmp_path: Path):
     s = ObsidianSource()
-    s.configure({
-        "vault_paths": [str(tmp_path)],
-        "include_extensions": [".md", "canvas"],
-    })
+    s.configure(
+        {
+            "vault_paths": [str(tmp_path)],
+            "include_extensions": [".md", "canvas"],
+        }
+    )
     assert s._include_extensions == {".md", ".canvas"}
 
 
@@ -79,10 +81,12 @@ async def test_obsidian_source_detects_create(tmp_path: Path):
     (vault / ".obsidian").mkdir()
 
     s = ObsidianSource()
-    s.configure({
-        "vault_paths": [str(tmp_path)],
-        "cursor_path": str(tmp_path / "cursor.json"),
-    })
+    s.configure(
+        {
+            "vault_paths": [str(tmp_path)],
+            "cursor_path": str(tmp_path / "cursor.json"),
+        }
+    )
     q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
 
     task = asyncio.create_task(s.start(q))
@@ -124,10 +128,12 @@ async def test_obsidian_source_skips_dotobsidian_files(tmp_path: Path):
     (vault / ".obsidian").mkdir()
 
     s = ObsidianSource()
-    s.configure({
-        "vault_paths": [str(tmp_path)],
-        "cursor_path": str(tmp_path / "cursor.json"),
-    })
+    s.configure(
+        {
+            "vault_paths": [str(tmp_path)],
+            "cursor_path": str(tmp_path / "cursor.json"),
+        }
+    )
     q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
 
     task = asyncio.create_task(s.start(q))
@@ -164,10 +170,12 @@ async def test_obsidian_source_skips_dotobsidian_files(tmp_path: Path):
 async def test_obsidian_source_no_vaults_found(tmp_path: Path):
     """Source should start and be cancellable even with no vaults."""
     s = ObsidianSource()
-    s.configure({
-        "vault_paths": [str(tmp_path)],
-        "cursor_path": str(tmp_path / "cursor.json"),
-    })
+    s.configure(
+        {
+            "vault_paths": [str(tmp_path)],
+            "cursor_path": str(tmp_path / "cursor.json"),
+        }
+    )
     q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
 
     task = asyncio.create_task(s.start(q))
@@ -269,10 +277,12 @@ async def test_initial_scan_first_startup(tmp_path: Path):
     cursor_path = tmp_path / "cursor.json"
 
     s = ObsidianSource()
-    s.configure({
-        "vault_paths": [str(tmp_path)],
-        "cursor_path": str(cursor_path),
-    })
+    s.configure(
+        {
+            "vault_paths": [str(tmp_path)],
+            "cursor_path": str(cursor_path),
+        }
+    )
     q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
 
     task = asyncio.create_task(s.start(q))
@@ -322,10 +332,12 @@ async def test_initial_scan_detects_modifications(tmp_path: Path):
 
     # First scan — builds cursor
     s = ObsidianSource()
-    s.configure({
-        "vault_paths": [str(tmp_path)],
-        "cursor_path": str(cursor_path),
-    })
+    s.configure(
+        {
+            "vault_paths": [str(tmp_path)],
+            "cursor_path": str(cursor_path),
+        }
+    )
     q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
     task = asyncio.create_task(s.start(q))
     await asyncio.sleep(1.0)
@@ -344,10 +356,12 @@ async def test_initial_scan_detects_modifications(tmp_path: Path):
 
     # Second scan — should detect modification
     s2 = ObsidianSource()
-    s2.configure({
-        "vault_paths": [str(tmp_path)],
-        "cursor_path": str(cursor_path),
-    })
+    s2.configure(
+        {
+            "vault_paths": [str(tmp_path)],
+            "cursor_path": str(cursor_path),
+        }
+    )
     q2: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
     task2 = asyncio.create_task(s2.start(q2))
     await asyncio.sleep(1.0)
@@ -380,10 +394,12 @@ async def test_initial_scan_detects_deletions(tmp_path: Path):
 
     # First scan
     s = ObsidianSource()
-    s.configure({
-        "vault_paths": [str(tmp_path)],
-        "cursor_path": str(cursor_path),
-    })
+    s.configure(
+        {
+            "vault_paths": [str(tmp_path)],
+            "cursor_path": str(cursor_path),
+        }
+    )
     q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
     task = asyncio.create_task(s.start(q))
     await asyncio.sleep(1.0)
@@ -398,10 +414,12 @@ async def test_initial_scan_detects_deletions(tmp_path: Path):
 
     # Second scan — should detect deletion
     s2 = ObsidianSource()
-    s2.configure({
-        "vault_paths": [str(tmp_path)],
-        "cursor_path": str(cursor_path),
-    })
+    s2.configure(
+        {
+            "vault_paths": [str(tmp_path)],
+            "cursor_path": str(cursor_path),
+        }
+    )
     q2: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
     task2 = asyncio.create_task(s2.start(q2))
     await asyncio.sleep(1.0)
@@ -432,10 +450,12 @@ async def test_initial_scan_no_events_when_unchanged(tmp_path: Path):
 
     # First scan
     s = ObsidianSource()
-    s.configure({
-        "vault_paths": [str(tmp_path)],
-        "cursor_path": str(cursor_path),
-    })
+    s.configure(
+        {
+            "vault_paths": [str(tmp_path)],
+            "cursor_path": str(cursor_path),
+        }
+    )
     q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
     task = asyncio.create_task(s.start(q))
     await asyncio.sleep(1.0)
@@ -451,10 +471,12 @@ async def test_initial_scan_no_events_when_unchanged(tmp_path: Path):
 
     # Second scan — nothing changed
     s2 = ObsidianSource()
-    s2.configure({
-        "vault_paths": [str(tmp_path)],
-        "cursor_path": str(cursor_path),
-    })
+    s2.configure(
+        {
+            "vault_paths": [str(tmp_path)],
+            "cursor_path": str(cursor_path),
+        }
+    )
     q2: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
     task2 = asyncio.create_task(s2.start(q2))
     await asyncio.sleep(1.0)
@@ -469,7 +491,9 @@ async def test_initial_scan_no_events_when_unchanged(tmp_path: Path):
         events.append(q2.get_nowait())
 
     # No scan events should be emitted (only watcher events if any)
-    scan_events = [e for e in events if e["operation"] in ("created", "modified", "deleted")]
+    scan_events = [
+        e for e in events if e["operation"] in ("created", "modified", "deleted")
+    ]
     assert len(scan_events) == 0
 
 
@@ -478,8 +502,10 @@ async def test_initial_scan_cursor_path_config(tmp_path: Path):
     """cursor_path config should be respected."""
     s = ObsidianSource()
     custom_path = tmp_path / "custom" / "cursor.json"
-    s.configure({
-        "vault_paths": [str(tmp_path)],
-        "cursor_path": str(custom_path),
-    })
+    s.configure(
+        {
+            "vault_paths": [str(tmp_path)],
+            "cursor_path": str(custom_path),
+        }
+    )
     assert s._cursor_path == custom_path

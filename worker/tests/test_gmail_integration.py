@@ -32,16 +32,22 @@ def _make_config() -> Config:
     """Build a minimal Config for the pipeline."""
     cfg = Config()
     cfg.providers["local"] = ProviderConfig(
-        name="local", type="ollama", settings={},
+        name="local",
+        type="ollama",
+        settings={},
     )
     cfg.models["llm"] = ModelConfig(alias="llm", provider="local", model="qwen3.5:27b")
     cfg.models["embedder"] = ModelConfig(
-        alias="embedder", provider="local", model="nomic-embed-text",
+        alias="embedder",
+        provider="local",
+        model="nomic-embed-text",
     )
-    cfg.roles = RolesConfig(mapping={
-        "extraction": "llm",
-        "embedding": "embedder",
-    })
+    cfg.roles = RolesConfig(
+        mapping={
+            "extraction": "llm",
+            "embedding": "embedder",
+        }
+    )
     return cfg
 
 
@@ -78,7 +84,10 @@ class TestGmailEndToEnd:
     @patch("worker.pipeline.extract_chunks")
     @patch("worker.pipeline.embed_chunks")
     def test_gmail_full_pipeline(
-        self, mock_embed, mock_extract, mock_resolve,
+        self,
+        mock_embed,
+        mock_extract,
+        mock_resolve,
     ) -> None:
         """Mock Gmail API message → parser → pipeline → verify WriteUnit
         has Email node, Person/Thread graph hints, and correct structure."""
@@ -133,9 +142,7 @@ class TestGmailEndToEnd:
         assert part_of_hints[0].object_merge_key == "thread_id"
 
         # 3. Mock pipeline stages
-        mock_embed.side_effect = lambda texts, reg: [
-            (t, [0.1] * 768) for t in texts
-        ]
+        mock_embed.side_effect = lambda texts, reg: [(t, [0.1] * 768) for t in texts]
         mock_extract.side_effect = lambda chunks, reg: [
             ExtractionResult(
                 entities=[{"name": "API", "type": "Technology", "confidence": 0.9}],
@@ -146,7 +153,10 @@ class TestGmailEndToEnd:
         mock_resolve.return_value = ResolutionResult(
             entities=[
                 ResolvedEntity(
-                    name="API", type="Technology", confidence=0.9, merged_into=None,
+                    name="API",
+                    type="Technology",
+                    confidence=0.9,
+                    merged_into=None,
                 ),
             ],
         )
@@ -227,7 +237,10 @@ class TestGmailEndToEnd:
     @patch("worker.pipeline.extract_chunks")
     @patch("worker.pipeline.embed_chunks")
     def test_gmail_multiple_messages_same_thread(
-        self, mock_embed, mock_extract, mock_resolve,
+        self,
+        mock_embed,
+        mock_extract,
+        mock_resolve,
     ) -> None:
         """Multiple emails in the same thread share the same Thread node
         via PART_OF hints with matching thread_id merge keys."""
@@ -236,9 +249,7 @@ class TestGmailEndToEnd:
         writer.fetch_existing_entities.return_value = []
         pipeline = Pipeline(registry=registry, writer=writer)
 
-        mock_embed.side_effect = lambda texts, reg: [
-            (t, [0.1] * 768) for t in texts
-        ]
+        mock_embed.side_effect = lambda texts, reg: [(t, [0.1] * 768) for t in texts]
         mock_extract.side_effect = lambda chunks, reg: [
             ExtractionResult(entities=[], triples=[]) for _ in chunks
         ]
@@ -264,9 +275,7 @@ class TestGmailEndToEnd:
         # Both WriteUnits should have PART_OF hints pointing to same thread
         for call in writer.write.call_args_list:
             unit: WriteUnit = call[0][0]
-            part_of = [
-                h for h in unit.doc.graph_hints if h.predicate == "PART_OF"
-            ]
+            part_of = [h for h in unit.doc.graph_hints if h.predicate == "PART_OF"]
             assert len(part_of) == 1
             assert part_of[0].object_id == "gmail-thread:thread-shared"
             assert part_of[0].object_merge_key == "thread_id"
@@ -299,12 +308,14 @@ class TestGmailEndToEnd:
         secrets.write_text("{}")
 
         source = GmailSource()
-        source.configure({
-            "client_secrets_path": str(secrets),
-            "poll_interval_seconds": 60,
-            "max_initial_threads": 100,
-            "label_filter": "IMPORTANT",
-        })
+        source.configure(
+            {
+                "client_secrets_path": str(secrets),
+                "poll_interval_seconds": 60,
+                "max_initial_threads": 100,
+                "label_filter": "IMPORTANT",
+            }
+        )
 
         assert source.name() == "gmail"
         assert source._poll_interval == 60
@@ -322,7 +333,10 @@ class TestGmailEndToEnd:
     @patch("worker.pipeline.extract_chunks")
     @patch("worker.pipeline.embed_chunks")
     def test_gmail_person_merge_keys(
-        self, mock_embed, mock_extract, mock_resolve,
+        self,
+        mock_embed,
+        mock_extract,
+        mock_resolve,
     ) -> None:
         """Person nodes use email as merge key for deduplication across emails."""
         registry = ModelRegistry(_make_config())
@@ -330,9 +344,7 @@ class TestGmailEndToEnd:
         writer.fetch_existing_entities.return_value = []
         pipeline = Pipeline(registry=registry, writer=writer)
 
-        mock_embed.side_effect = lambda texts, reg: [
-            (t, [0.1] * 768) for t in texts
-        ]
+        mock_embed.side_effect = lambda texts, reg: [(t, [0.1] * 768) for t in texts]
         mock_extract.side_effect = lambda chunks, reg: [
             ExtractionResult(entities=[], triples=[]) for _ in chunks
         ]
@@ -369,7 +381,10 @@ class TestGmailEndToEnd:
     @patch("worker.pipeline.extract_chunks")
     @patch("worker.pipeline.embed_chunks")
     def test_gmail_batch_processing(
-        self, mock_embed, mock_extract, mock_resolve,
+        self,
+        mock_embed,
+        mock_extract,
+        mock_resolve,
     ) -> None:
         """process_batch isolates failures between gmail documents."""
         registry = ModelRegistry(_make_config())

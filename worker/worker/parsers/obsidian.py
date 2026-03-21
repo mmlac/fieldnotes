@@ -20,13 +20,17 @@ logger = logging.getLogger(__name__)
 
 # Max image size to load into memory (50 MiB) — prevents OOM on huge files.
 _MAX_IMAGE_BYTES = 50 * 1024 * 1024
-_MAX_EMBEDS_PER_NOTE = 50  # Cap embedded images to prevent loading 50GB+ from a single note
+_MAX_EMBEDS_PER_NOTE = (
+    50  # Cap embedded images to prevent loading 50GB+ from a single note
+)
 
 # [[target]] or [[target|alias]]  — but NOT ![[embed]]
 _WIKILINK_RE = re.compile(r"(?<!\!)\[\[([^\]|]+)(?:\|[^\]]+)?\]\]")
 
 # ![[image.png]] or ![[path/to/image.jpg]]
-_EMBED_RE = re.compile(r"\!\[\[([^\]]+\.(?:png|jpg|jpeg|gif|svg|webp|bmp))\]\]", re.IGNORECASE)
+_EMBED_RE = re.compile(
+    r"\!\[\[([^\]]+\.(?:png|jpg|jpeg|gif|svg|webp|bmp))\]\]", re.IGNORECASE
+)
 
 # #tag but not inside code fences or frontmatter; simplified inline match
 _TAG_RE = re.compile(r"(?:^|\s)#([\w][\w/\-]*)", re.MULTILINE)
@@ -46,7 +50,9 @@ def _read_image_bytes(path: Path) -> bytes | None:
         if size > _MAX_IMAGE_BYTES:
             logger.warning(
                 "Skipping image %s — exceeds max size (%d > %d bytes)",
-                path, size, _MAX_IMAGE_BYTES,
+                path,
+                size,
+                _MAX_IMAGE_BYTES,
             )
             return None
         return path.read_bytes()
@@ -206,7 +212,9 @@ class ObsidianParser(BaseParser):
         if len(embed_matches) > _MAX_EMBEDS_PER_NOTE:
             logger.warning(
                 "Note %s has %d image embeds, truncating to %d",
-                source_id, len(embed_matches), _MAX_EMBEDS_PER_NOTE,
+                source_id,
+                len(embed_matches),
+                _MAX_EMBEDS_PER_NOTE,
             )
             embed_matches = embed_matches[:_MAX_EMBEDS_PER_NOTE]
         for embed_path in embed_matches:

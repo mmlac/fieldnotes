@@ -57,7 +57,9 @@ class TestRegister:
 
 class TestGet:
     def test_unknown_source_type_raises(self) -> None:
-        with pytest.raises(ValueError, match="No parser registered for source_type='nonexistent'"):
+        with pytest.raises(
+            ValueError, match="No parser registered for source_type='nonexistent'"
+        ):
             get("nonexistent")
 
     def test_error_lists_known_types(self) -> None:

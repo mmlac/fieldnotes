@@ -41,8 +41,7 @@ def redact_uri(uri: str) -> str:
     if parsed.username or parsed.password:
         # Rebuild without credentials
         replaced = parsed._replace(
-            netloc=f"***@{parsed.hostname}"
-            + (f":{parsed.port}" if parsed.port else "")
+            netloc=f"***@{parsed.hostname}" + (f":{parsed.port}" if parsed.port else "")
         )
         return urlunparse(replaced)
     return uri

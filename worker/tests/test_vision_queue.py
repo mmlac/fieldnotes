@@ -49,11 +49,13 @@ def _make_queue(
 ) -> VisionQueue:
     config = config or VisionConfig(concurrency=1, queue_size=16)
     dedup_checker = dedup_checker or (lambda sha: False)
-    process_fn = process_fn or (lambda doc: VisionResult(
-        source_id=doc.source_id,
-        sha256=hashlib.sha256(doc.image_bytes).hexdigest(),
-        text="extracted text",
-    ))
+    process_fn = process_fn or (
+        lambda doc: VisionResult(
+            source_id=doc.source_id,
+            sha256=hashlib.sha256(doc.image_bytes).hexdigest(),
+            text="extracted text",
+        )
+    )
     result_callback = result_callback or (lambda r: None)
     return VisionQueue(
         config=config,
@@ -233,11 +235,11 @@ class TestSha256Dedup:
         assert q.stats.skipped_dedup == 1
 
     @pytest.mark.asyncio
-    async def test_seen_hashes_lru_eviction(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_seen_hashes_lru_eviction(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """_seen_hashes should evict the oldest entry when it exceeds the cap."""
-        monkeypatch.setattr(
-            "worker.pipeline.vision_queue._SEEN_HASHES_MAX", 2
-        )
+        monkeypatch.setattr("worker.pipeline.vision_queue._SEEN_HASHES_MAX", 2)
         q = _make_queue()
 
         img_a = b"image-a" * 200

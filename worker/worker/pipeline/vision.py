@@ -200,13 +200,19 @@ def _parse_response(resp: CompletionResponse) -> VisionResult:
     raw_desc = data.get("description", "")
     description = raw_desc if isinstance(raw_desc, str) else ""
     if not isinstance(raw_desc, str):
-        logger.warning("Vision description is %s, expected str — discarding", type(raw_desc).__name__)
+        logger.warning(
+            "Vision description is %s, expected str — discarding",
+            type(raw_desc).__name__,
+        )
     description = description[:MAX_DESCRIPTION_LEN]
 
     raw_vt = data.get("visible_text", "")
     visible_text = raw_vt if isinstance(raw_vt, str) else ""
     if not isinstance(raw_vt, str):
-        logger.warning("Vision visible_text is %s, expected str — discarding", type(raw_vt).__name__)
+        logger.warning(
+            "Vision visible_text is %s, expected str — discarding",
+            type(raw_vt).__name__,
+        )
     visible_text = visible_text[:MAX_VISIBLE_TEXT_LEN]
 
     entities_raw = data.get("entities", [])
@@ -224,13 +230,18 @@ def _parse_response(resp: CompletionResponse) -> VisionResult:
         if len(name) > MAX_ENTITY_NAME_LEN:
             logger.warning(
                 "Vision entity name too long (%d chars, limit %d), skipping",
-                len(name), MAX_ENTITY_NAME_LEN,
+                len(name),
+                MAX_ENTITY_NAME_LEN,
             )
             continue
-        entities.append({
-            "name": name,
-            "type": ent.get("type", "Concept") if isinstance(ent.get("type"), str) else "Concept",
-        })
+        entities.append(
+            {
+                "name": name,
+                "type": ent.get("type", "Concept")
+                if isinstance(ent.get("type"), str)
+                else "Concept",
+            }
+        )
 
     return VisionResult(
         description=description,

@@ -21,24 +21,33 @@ from worker.cli.history import (
 # Path safety: _conversation_path
 # ---------------------------------------------------------------------------
 
+
 class TestConversationPathSafety:
-    def test_normal_id_resolves_inside_dir(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_normal_id_resolves_inside_dir(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.setattr("worker.cli.history._CONVERSATIONS_DIR", tmp_path)
         path = _conversation_path("abc123def456")
         assert path.parent == tmp_path.resolve()
         assert path.name == "abc123def456.json"
 
-    def test_dotdot_raises(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_dotdot_raises(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.setattr("worker.cli.history._CONVERSATIONS_DIR", tmp_path)
         with pytest.raises(ValueError, match="Invalid conversation ID"):
             _conversation_path("../evil")
 
-    def test_absolute_style_traversal_raises(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_absolute_style_traversal_raises(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.setattr("worker.cli.history._CONVERSATIONS_DIR", tmp_path)
         with pytest.raises(ValueError, match="Invalid conversation ID"):
             _conversation_path("../../etc/passwd")
 
-    def test_slash_in_id_raises(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_slash_in_id_raises(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.setattr("worker.cli.history._CONVERSATIONS_DIR", tmp_path)
         with pytest.raises(ValueError, match="Invalid conversation ID"):
             _conversation_path("subdir/evil")
@@ -48,18 +57,28 @@ class TestConversationPathSafety:
 # load_conversation: returns None instead of escaping
 # ---------------------------------------------------------------------------
 
+
 class TestLoadConversationSafety:
-    def test_traversal_id_returns_none(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+    def test_traversal_id_returns_none(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
         monkeypatch.setattr("worker.cli.history._CONVERSATIONS_DIR", tmp_path)
         result = load_conversation("../../../etc/passwd")
         assert result is None
 
-    def test_valid_id_not_found_returns_none(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_valid_id_not_found_returns_none(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.setattr("worker.cli.history._CONVERSATIONS_DIR", tmp_path)
         result = load_conversation("nonexistentid")
         assert result is None
 
-    def test_valid_id_loads_correctly(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_valid_id_loads_correctly(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.setattr("worker.cli.history._CONVERSATIONS_DIR", tmp_path)
         conv = Conversation(id="abc123def456")
         conv.add_turn(TurnRecord(question="hello", answer="world"))
@@ -75,8 +94,11 @@ class TestLoadConversationSafety:
 # save_conversation: refuses unsafe IDs
 # ---------------------------------------------------------------------------
 
+
 class TestSaveConversationSafety:
-    def test_traversal_id_not_written(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_traversal_id_not_written(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.setattr("worker.cli.history._CONVERSATIONS_DIR", tmp_path)
         evil_id = "../evil"
         conv = Conversation(id=evil_id)
@@ -84,7 +106,9 @@ class TestSaveConversationSafety:
         # The file must NOT have been written outside the conversations dir.
         assert not (tmp_path.parent / "evil.json").exists()
 
-    def test_normal_save_creates_file(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_normal_save_creates_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.setattr("worker.cli.history._CONVERSATIONS_DIR", tmp_path)
         conv = Conversation(id="safe000id001")
         save_conversation(conv)
@@ -95,8 +119,11 @@ class TestSaveConversationSafety:
 # prune_old_conversations: skips unsafe IDs loaded from disk
 # ---------------------------------------------------------------------------
 
+
 class TestPruneConversationSafety:
-    def test_malicious_id_in_file_not_deleted_elsewhere(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_malicious_id_in_file_not_deleted_elsewhere(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.setattr("worker.cli.history._CONVERSATIONS_DIR", tmp_path)
 
         # Write a conversation file whose embedded `id` contains a traversal path.
@@ -117,5 +144,7 @@ class TestPruneConversationSafety:
         prune_old_conversations(max_keep=0)
 
         # The sentinel must still be there — unsafe id was ignored.
-        assert sentinel.exists(), "prune_old_conversations deleted a file outside the conversations dir"
+        assert sentinel.exists(), (
+            "prune_old_conversations deleted a file outside the conversations dir"
+        )
         sentinel.unlink(missing_ok=True)

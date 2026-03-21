@@ -15,7 +15,11 @@ from worker.service import (
     start,
     stop,
 )
-from worker.service.launchd import LaunchdBackend, _fieldnotes_executable, _render_template
+from worker.service.launchd import (
+    LaunchdBackend,
+    _fieldnotes_executable,
+    _render_template,
+)
 from worker.service.systemd import SystemdBackend
 
 
@@ -25,7 +29,9 @@ from worker.service.systemd import SystemdBackend
 
 
 class TestFieldnotesExecutable:
-    @patch("worker.service.launchd.shutil.which", return_value="/usr/local/bin/fieldnotes")
+    @patch(
+        "worker.service.launchd.shutil.which", return_value="/usr/local/bin/fieldnotes"
+    )
     def test_found_on_path(self, _mock: object) -> None:
         assert _fieldnotes_executable() == ["/usr/local/bin/fieldnotes"]
 
@@ -41,7 +47,8 @@ class TestFieldnotesExecutable:
 class TestRenderTemplate:
     def test_plist_template(self) -> None:
         exe_strings = "\n        ".join(
-            f"<string>{p}</string>" for p in ["/usr/bin/fieldnotes", "serve", "--daemon"]
+            f"<string>{p}</string>"
+            for p in ["/usr/bin/fieldnotes", "serve", "--daemon"]
         )
         content = _render_template(
             "com.fieldnotes.daemon.plist",
@@ -93,7 +100,10 @@ class TestPlatformBackend:
 
 class TestLaunchdBackend:
     @patch("worker.service.launchd.subprocess.run")
-    @patch("worker.service.launchd._fieldnotes_executable", return_value=["/usr/bin/fieldnotes"])
+    @patch(
+        "worker.service.launchd._fieldnotes_executable",
+        return_value=["/usr/bin/fieldnotes"],
+    )
     def test_install(
         self, _mock_exe: object, mock_run: MagicMock, tmp_path: Path
     ) -> None:
@@ -116,9 +126,7 @@ class TestLaunchdBackend:
         assert "launchctl" in mock_run.call_args[0][0]
 
     @patch("worker.service.launchd.subprocess.run")
-    def test_uninstall_removes_plist(
-        self, mock_run: MagicMock, tmp_path: Path
-    ) -> None:
+    def test_uninstall_removes_plist(self, mock_run: MagicMock, tmp_path: Path) -> None:
         backend = LaunchdBackend()
         plist_path = tmp_path / "com.fieldnotes.daemon.plist"
         plist_path.write_text("<plist>test</plist>")
@@ -152,9 +160,7 @@ class TestLaunchdBackend:
             backend.start()
 
     @patch("worker.service.launchd.subprocess.run")
-    def test_start_installed(
-        self, mock_run: MagicMock, tmp_path: Path
-    ) -> None:
+    def test_start_installed(self, mock_run: MagicMock, tmp_path: Path) -> None:
         backend = LaunchdBackend()
         plist_path = tmp_path / "com.fieldnotes.daemon.plist"
         plist_path.write_text("<plist/>")
@@ -175,7 +181,9 @@ class TestLaunchdBackend:
     def test_status_loaded(
         self, mock_run: MagicMock, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        mock_run.return_value = MagicMock(returncode=0, stdout="PID: 1234\nStatus: running")
+        mock_run.return_value = MagicMock(
+            returncode=0, stdout="PID: 1234\nStatus: running"
+        )
         backend = LaunchdBackend()
         backend._plist_path = tmp_path / "test.plist"
         backend._log_path = tmp_path / "nonexistent.log"
@@ -207,7 +215,10 @@ class TestLaunchdBackend:
 
 class TestSystemdBackend:
     @patch("worker.service.systemd.subprocess.run")
-    @patch("worker.service.systemd._fieldnotes_executable", return_value=["/usr/bin/fieldnotes"])
+    @patch(
+        "worker.service.systemd._fieldnotes_executable",
+        return_value=["/usr/bin/fieldnotes"],
+    )
     def test_install(
         self, _mock_exe: object, mock_run: MagicMock, tmp_path: Path
     ) -> None:
@@ -227,9 +238,7 @@ class TestSystemdBackend:
         assert mock_run.call_count == 2
 
     @patch("worker.service.systemd.subprocess.run")
-    def test_uninstall_removes_unit(
-        self, mock_run: MagicMock, tmp_path: Path
-    ) -> None:
+    def test_uninstall_removes_unit(self, mock_run: MagicMock, tmp_path: Path) -> None:
         backend = SystemdBackend()
         unit_path = tmp_path / "fieldnotes.service"
         unit_path.write_text("[Unit]\ntest")
@@ -262,9 +271,7 @@ class TestSystemdBackend:
             backend.start()
 
     @patch("worker.service.systemd.subprocess.run")
-    def test_start_installed(
-        self, mock_run: MagicMock, tmp_path: Path
-    ) -> None:
+    def test_start_installed(self, mock_run: MagicMock, tmp_path: Path) -> None:
         backend = SystemdBackend()
         unit_path = tmp_path / "fieldnotes.service"
         unit_path.write_text("[Unit]")
@@ -382,6 +389,7 @@ class TestDaemonCompat:
             install,
             platform_backend,
         )
+
         # Just verify they're callable
         assert callable(install)
         assert callable(platform_backend)

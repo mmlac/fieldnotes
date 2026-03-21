@@ -27,7 +27,9 @@ from .registry import register
 logger = logging.getLogger(__name__)
 
 _MAX_MANIFEST_SIZE = 1 * 1024 * 1024  # 1 MiB — manifests should never be this large
-_MAX_DEPS_PER_MANIFEST = 500  # Cap dependencies to prevent 100k GraphHints from a single manifest
+_MAX_DEPS_PER_MANIFEST = (
+    500  # Cap dependencies to prevent 100k GraphHints from a single manifest
+)
 
 # Manifest filenames that trigger dependency extraction
 _MANIFEST_FILENAMES: set[str] = {
@@ -282,7 +284,10 @@ def _extract_dependencies(
     if len(text) > _MAX_MANIFEST_SIZE:
         logger.warning(
             "Manifest %s in %s too large (%d bytes > %d), skipping dependency extraction",
-            filename, repo_name, len(text), _MAX_MANIFEST_SIZE,
+            filename,
+            repo_name,
+            len(text),
+            _MAX_MANIFEST_SIZE,
         )
         return []
     hints: list[GraphHint] = []
@@ -298,17 +303,30 @@ def _extract_dependencies(
         elif _file_ext(filename) in _MANIFEST_EXTENSIONS:
             hints = _parse_dotnet_project(text, repo_path, repo_name, remote_url)
         elif filename == "Directory.Packages.props":
-            hints = _parse_directory_packages_props(text, repo_path, repo_name, remote_url)
+            hints = _parse_directory_packages_props(
+                text, repo_path, repo_name, remote_url
+            )
         elif filename == "packages.config":
             hints = _parse_packages_config(text, repo_path, repo_name, remote_url)
-    except (json.JSONDecodeError, tomllib.TOMLDecodeError, ET.ParseError, KeyError, ValueError) as exc:
-        logger.error("Failed to parse dependencies from %s in %s: %s", filename, repo_name, exc)
+    except (
+        json.JSONDecodeError,
+        tomllib.TOMLDecodeError,
+        ET.ParseError,
+        KeyError,
+        ValueError,
+    ) as exc:
+        logger.error(
+            "Failed to parse dependencies from %s in %s: %s", filename, repo_name, exc
+        )
         return []
 
     if len(hints) > _MAX_DEPS_PER_MANIFEST:
         logger.warning(
             "Manifest %s in %s has %d dependencies, truncating to %d",
-            filename, repo_name, len(hints), _MAX_DEPS_PER_MANIFEST,
+            filename,
+            repo_name,
+            len(hints),
+            _MAX_DEPS_PER_MANIFEST,
         )
         hints = hints[:_MAX_DEPS_PER_MANIFEST]
     return hints
@@ -365,7 +383,9 @@ def _parse_cargo_toml(
         for pkg, spec in deps.items():
             version = _cargo_version(spec)
             hints.append(
-                _dep_hint(repo_path, repo_name, remote_url, pkg, version, dep_type, "cargo")
+                _dep_hint(
+                    repo_path, repo_name, remote_url, pkg, version, dep_type, "cargo"
+                )
             )
     return hints
 
@@ -392,17 +412,19 @@ def _parse_pyproject_toml(
     for req in data.get("project", {}).get("dependencies", []):
         name, constraint = _parse_pep508(req)
         hints.append(
-            _dep_hint(repo_path, repo_name, remote_url, name, constraint, "runtime", "pypi")
+            _dep_hint(
+                repo_path, repo_name, remote_url, name, constraint, "runtime", "pypi"
+            )
         )
 
     # [project.optional-dependencies.*]
-    for group, reqs in (
-        data.get("project", {}).get("optional-dependencies", {}).items()
-    ):
+    for group, reqs in data.get("project", {}).get("optional-dependencies", {}).items():
         for req in reqs:
             name, constraint = _parse_pep508(req)
             hints.append(
-                _dep_hint(repo_path, repo_name, remote_url, name, constraint, "dev", "pypi")
+                _dep_hint(
+                    repo_path, repo_name, remote_url, name, constraint, "dev", "pypi"
+                )
             )
 
     # [tool.poetry.dependencies]
@@ -410,7 +432,13 @@ def _parse_pyproject_toml(
     for pkg, spec in poetry_deps.items():
         if pkg.lower() == "python":
             continue
-        version = spec if isinstance(spec, str) else spec.get("version", "*") if isinstance(spec, dict) else "*"
+        version = (
+            spec
+            if isinstance(spec, str)
+            else spec.get("version", "*")
+            if isinstance(spec, dict)
+            else "*"
+        )
         hints.append(
             _dep_hint(repo_path, repo_name, remote_url, pkg, version, "runtime", "pypi")
         )
@@ -428,12 +456,12 @@ def _parse_pep508(requirement: str) -> tuple[str, str]:
     if not m:
         return requirement, "*"
     name = m.group(1)
-    rest = requirement[m.end():].strip()
+    rest = requirement[m.end() :].strip()
     # Strip extras like [extra1,extra2]
     if rest.startswith("["):
         bracket_end = rest.find("]")
         if bracket_end != -1:
-            rest = rest[bracket_end + 1:].strip()
+            rest = rest[bracket_end + 1 :].strip()
     # Strip environment markers after ;
     if ";" in rest:
         rest = rest[: rest.index(";")].strip()
@@ -461,8 +489,13 @@ def _parse_package_json(
         for pkg, version in deps.items():
             hints.append(
                 _dep_hint(
-                    repo_path, repo_name, remote_url, pkg,
-                    version if isinstance(version, str) else "*", dep_type, "npm",
+                    repo_path,
+                    repo_name,
+                    remote_url,
+                    pkg,
+                    version if isinstance(version, str) else "*",
+                    dep_type,
+                    "npm",
                 )
             )
     return hints
@@ -489,14 +522,18 @@ def _parse_go_mod(
             if module.startswith("//"):
                 continue
             hints.append(
-                _dep_hint(repo_path, repo_name, remote_url, module, version, "runtime", "go")
+                _dep_hint(
+                    repo_path, repo_name, remote_url, module, version, "runtime", "go"
+                )
             )
 
     # Single-line requires (e.g. "require github.com/foo/bar v1.0.0")
     for m in _GO_REQUIRE_SINGLE_RE.finditer(text):
         module, version = m.group(1), m.group(2)
         hints.append(
-            _dep_hint(repo_path, repo_name, remote_url, module, version, "runtime", "go")
+            _dep_hint(
+                repo_path, repo_name, remote_url, module, version, "runtime", "go"
+            )
         )
 
     return hints
@@ -518,7 +555,9 @@ def _parse_dotnet_xml(text: str) -> ET.Element | None:
     except defusedxml.DefusedXmlException:
         # DTDForbidden / EntitiesForbidden / ExternalReferenceForbidden
         # for malicious XML payloads (billion laughs, XXE, etc.)
-        logger.error("Rejected unsafe XML in .NET project file (DTD/entity attack), skipping")
+        logger.error(
+            "Rejected unsafe XML in .NET project file (DTD/entity attack), skipping"
+        )
         return None
 
 
@@ -545,7 +584,9 @@ def _parse_dotnet_project(
         if not version:
             version = "*"
         hints.append(
-            _dep_hint(repo_path, repo_name, remote_url, pkg, version, "runtime", "nuget")
+            _dep_hint(
+                repo_path, repo_name, remote_url, pkg, version, "runtime", "nuget"
+            )
         )
     return hints
 
@@ -564,7 +605,9 @@ def _parse_directory_packages_props(
             continue
         version = ref.get("Version") or ref.get("version") or "*"
         hints.append(
-            _dep_hint(repo_path, repo_name, remote_url, pkg, version, "runtime", "nuget")
+            _dep_hint(
+                repo_path, repo_name, remote_url, pkg, version, "runtime", "nuget"
+            )
         )
     return hints
 
@@ -583,7 +626,9 @@ def _parse_packages_config(
             continue
         version = ref.get("version") or "*"
         hints.append(
-            _dep_hint(repo_path, repo_name, remote_url, pkg, version, "runtime", "nuget")
+            _dep_hint(
+                repo_path, repo_name, remote_url, pkg, version, "runtime", "nuget"
+            )
         )
     return hints
 

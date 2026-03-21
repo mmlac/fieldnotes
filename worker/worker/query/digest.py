@@ -33,10 +33,10 @@ _HIGHLIGHTS_LIMIT = 5
 class SourceActivity:
     """Activity summary for a single source type."""
 
-    source_type: str         # obsidian, omnifocus, gmail, file, repositories, apps
-    created: int = 0         # count of new documents
-    modified: int = 0        # count of modified documents
-    deleted: int = 0         # count of deleted documents (not yet tracked — always 0)
+    source_type: str  # obsidian, omnifocus, gmail, file, repositories, apps
+    created: int = 0  # count of new documents
+    modified: int = 0  # count of modified documents
+    deleted: int = 0  # count of deleted documents (not yet tracked — always 0)
     highlights: list[str] = field(default_factory=list)  # top titles/names
 
 
@@ -44,12 +44,12 @@ class SourceActivity:
 class DigestResult:
     """Structured result from a digest query."""
 
-    since: str                                  # ISO 8601
-    until: str                                  # ISO 8601
+    since: str  # ISO 8601
+    until: str  # ISO 8601
     sources: list[SourceActivity] = field(default_factory=list)
-    new_connections: int = 0                    # entities newly linked across sources
-    new_topics: int = 0                         # topics discovered since last digest
-    summary: str | None = None                  # LLM-generated summary (optional)
+    new_connections: int = 0  # entities newly linked across sources
+    new_topics: int = 0  # topics discovered since last digest
+    summary: str | None = None  # LLM-generated summary (optional)
     error: str | None = None
 
 
@@ -250,7 +250,11 @@ class DigestQuerier:
                                 modified=modified,
                                 highlights=highlights,
                             )
-                        total = created + modified + (completed if source_type == "omnifocus" else 0)
+                        total = (
+                            created
+                            + modified
+                            + (completed if source_type == "omnifocus" else 0)
+                        )
                         if total > 0:
                             sources.append(activity)
                 except Exception:

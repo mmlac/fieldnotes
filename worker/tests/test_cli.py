@@ -74,7 +74,9 @@ class TestTopKValidation:
 
 
 class TestExceptionHandling:
-    @patch("worker.cli.load_config", side_effect=FileNotFoundError("config.toml not found"))
+    @patch(
+        "worker.cli.load_config", side_effect=FileNotFoundError("config.toml not found")
+    )
     def test_search_exception_caught(
         self,
         mock_load: MagicMock,
@@ -174,9 +176,7 @@ class TestRunSearch:
         mock_gq_cls.return_value = _mock_graph_querier(
             GraphQueryResult(question="q", cypher="")
         )
-        mock_vq_cls.return_value = _mock_vector_querier(
-            VectorQueryResult(question="q")
-        )
+        mock_vq_cls.return_value = _mock_vector_querier(VectorQueryResult(question="q"))
 
         rc = _run_search("q", config_path=None, top_k=10)
 

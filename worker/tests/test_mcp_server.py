@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import anyio
 import pytest
@@ -29,7 +29,17 @@ class TestToolDefinitions:
 
     def test_all_tools_present(self) -> None:
         names = {t.name for t in TOOLS}
-        assert names == {"search", "ask", "list_topics", "show_topic", "topic_gaps", "ingest_status", "timeline", "suggest_connections", "digest"}
+        assert names == {
+            "search",
+            "ask",
+            "list_topics",
+            "show_topic",
+            "topic_gaps",
+            "ingest_status",
+            "timeline",
+            "suggest_connections",
+            "digest",
+        }
 
     def test_search_schema_requires_query(self) -> None:
         search = next(t for t in TOOLS if t.name == "search")
@@ -250,7 +260,9 @@ class TestAuthGate:
     @pytest.mark.asyncio
     async def test_valid_token_returns_stream(self) -> None:
         msg = _make_init_message(auth_token="good-token")
-        send_r, recv_r = anyio.create_memory_object_stream[SessionMessage | Exception](8)
+        send_r, recv_r = anyio.create_memory_object_stream[SessionMessage | Exception](
+            8
+        )
         send_w, recv_w = anyio.create_memory_object_stream[SessionMessage](8)
 
         await send_r.send(msg)
@@ -264,7 +276,9 @@ class TestAuthGate:
     @pytest.mark.asyncio
     async def test_wrong_token_raises_and_sends_error(self) -> None:
         msg = _make_init_message(auth_token="wrong")
-        send_r, recv_r = anyio.create_memory_object_stream[SessionMessage | Exception](8)
+        send_r, recv_r = anyio.create_memory_object_stream[SessionMessage | Exception](
+            8
+        )
         send_w, recv_w = anyio.create_memory_object_stream[SessionMessage](8)
 
         await send_r.send(msg)
@@ -279,7 +293,9 @@ class TestAuthGate:
     @pytest.mark.asyncio
     async def test_missing_token_raises(self) -> None:
         msg = _make_init_message(auth_token=None)
-        send_r, recv_r = anyio.create_memory_object_stream[SessionMessage | Exception](8)
+        send_r, recv_r = anyio.create_memory_object_stream[SessionMessage | Exception](
+            8
+        )
         send_w, recv_w = anyio.create_memory_object_stream[SessionMessage](8)
 
         await send_r.send(msg)
@@ -289,7 +305,9 @@ class TestAuthGate:
 
     @pytest.mark.asyncio
     async def test_exception_on_stream_propagates(self) -> None:
-        send_r, recv_r = anyio.create_memory_object_stream[SessionMessage | Exception](8)
+        send_r, recv_r = anyio.create_memory_object_stream[SessionMessage | Exception](
+            8
+        )
         send_w, recv_w = anyio.create_memory_object_stream[SessionMessage](8)
 
         await send_r.send(RuntimeError("connection lost"))
@@ -374,7 +392,6 @@ class TestShutdownSignalHandler:
     ) -> None:
         """Signal-driven cancellation must not cause a double _disconnect call."""
         import asyncio
-        from unittest.mock import AsyncMock, patch as _patch
 
         cfg = _make_cfg()
         server = FieldnotesServer(cfg)
@@ -434,7 +451,9 @@ class TestInputValidation:
     async def test_search_invalid_source_type_returns_error(self) -> None:
         cfg = _make_cfg()
         server = FieldnotesServer(cfg)
-        result = await server._call_tool("search", {"query": "hello", "source_type": "bogus"})
+        result = await server._call_tool(
+            "search", {"query": "hello", "source_type": "bogus"}
+        )
         assert len(result) == 1
         assert "error" in result[0].text.lower()
 
@@ -450,7 +469,9 @@ class TestInputValidation:
     async def test_ask_invalid_source_type_returns_error(self) -> None:
         cfg = _make_cfg()
         server = FieldnotesServer(cfg)
-        result = await server._call_tool("ask", {"question": "what?", "source_type": "unknown"})
+        result = await server._call_tool(
+            "ask", {"question": "what?", "source_type": "unknown"}
+        )
         assert len(result) == 1
         assert "error" in result[0].text.lower()
 
@@ -478,7 +499,9 @@ class TestInputValidation:
         from worker.query.vector import VectorQueryResult
 
         cfg = Config(
-            neo4j=Neo4jConfig(uri="bolt://localhost:7687", user="neo4j", password="test"),
+            neo4j=Neo4jConfig(
+                uri="bolt://localhost:7687", user="neo4j", password="test"
+            ),
             qdrant=QdrantConfig(host="localhost", port=6333, collection="fieldnotes"),
         )
         server = FieldnotesServer(cfg)

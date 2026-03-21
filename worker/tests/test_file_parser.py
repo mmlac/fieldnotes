@@ -249,7 +249,11 @@ class TestFileParserPdf:
         assert docs == []
 
     def test_returns_empty_for_empty_raw_bytes(self, parser: FileParser) -> None:
-        event = {"mime_type": "application/pdf", "source_id": "test.pdf", "raw_bytes": b""}
+        event = {
+            "mime_type": "application/pdf",
+            "source_id": "test.pdf",
+            "raw_bytes": b"",
+        }
         docs = parser.parse(event)
         assert docs == []
 
@@ -344,7 +348,9 @@ class TestFileParserMetadataOnly:
         assert _EXTENSION_DESCRIPTIONS[".exe"] == "executable"
         assert _EXTENSION_DESCRIPTIONS[".dmg"] == "disk image"
 
-    def test_unknown_extension_falls_back_to_extension(self, parser: FileParser) -> None:
+    def test_unknown_extension_falls_back_to_extension(
+        self, parser: FileParser
+    ) -> None:
         event = {
             "mime_type": "application/octet-stream",
             "source_id": "/data/file.xyz",

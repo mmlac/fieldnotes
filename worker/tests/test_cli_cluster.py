@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from worker.cli import main, _build_parser
-from worker.clustering.cluster import ClusterResult, CorpusTooSmallError
+from worker.clustering.cluster import ClusterResult
 
 
 # ------------------------------------------------------------------

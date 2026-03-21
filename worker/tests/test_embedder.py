@@ -16,9 +16,7 @@ VECTOR_DIM = 768
 
 def _make_config(role_name: str = "embed") -> Config:
     cfg = Config()
-    cfg.providers["local"] = ProviderConfig(
-        name="local", type="ollama", settings={}
-    )
+    cfg.providers["local"] = ProviderConfig(name="local", type="ollama", settings={})
     cfg.models["embedder"] = ModelConfig(
         alias="embedder", provider="local", model="nomic-embed-text"
     )
@@ -51,7 +49,9 @@ class FakeProvider(ModelProvider):
     def embed(self, model: str, req: EmbedRequest) -> EmbedResponse:
         self.embed_calls.append(req)
         vectors = [_fake_vector(t) for t in req.texts]
-        return EmbedResponse(vectors=vectors, model=model, input_tokens=len(req.texts) * 10)
+        return EmbedResponse(
+            vectors=vectors, model=model, input_tokens=len(req.texts) * 10
+        )
 
 
 @pytest.fixture()

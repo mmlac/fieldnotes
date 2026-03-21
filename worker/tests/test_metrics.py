@@ -57,27 +57,31 @@ class TestCollectNeo4j:
         driver.session.return_value.__exit__ = MagicMock(return_value=False)
 
         # Build results for each session.run() call
-        source_records = _neo4j_records([
-            {"type": "File", "count": 42},
-            {"type": "Email", "count": 10},
-        ])
+        source_records = _neo4j_records(
+            [
+                {"type": "File", "count": 42},
+                {"type": "Email", "count": 10},
+            ]
+        )
         entity_count = _single_record({"count": 100.0})
         chunk_count = _single_record({"count": 500.0})
         topic_count = _single_record({"count": 5.0})
-        edge_records = _neo4j_records([
-            {"type": "MENTIONS", "count": 200},
-            {"type": "HAS_CHUNK", "count": 500},
-        ])
+        edge_records = _neo4j_records(
+            [
+                {"type": "MENTIONS", "count": 200},
+                {"type": "HAS_CHUNK", "count": 500},
+            ]
+        )
         # Store size query — raise to simulate unavailable
         store_err = MagicMock(side_effect=Exception("JMX not available"))
 
         session.run.side_effect = [
-            source_records,       # source counts
-            entity_count,         # Entity count
-            chunk_count,          # Chunk count
-            topic_count,          # Topic count
-            edge_records,         # edge counts
-            store_err,            # store size (will fail)
+            source_records,  # source counts
+            entity_count,  # Entity count
+            chunk_count,  # Chunk count
+            topic_count,  # Topic count
+            edge_records,  # edge counts
+            store_err,  # store size (will fail)
         ]
 
         qdrant = MagicMock()

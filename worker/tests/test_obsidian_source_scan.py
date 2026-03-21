@@ -125,7 +125,9 @@ async def test_multiple_vaults_independent_cursors(tmp_path: Path) -> None:
                 result = _read_file_atomic(fpath, 100 * 1024 * 1024)
                 if result:
                     data, mtime_ns = result
-                    cursor[str(fpath)] = FileEntry(_sha256_of(data), mtime_ns, len(data))
+                    cursor[str(fpath)] = FileEntry(
+                        _sha256_of(data), mtime_ns, len(data)
+                    )
     save_cursor(tmp_path / "cursor.json", cursor)
 
     # Modify only vault_b
@@ -136,7 +138,9 @@ async def test_multiple_vaults_independent_cursors(tmp_path: Path) -> None:
     q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
     events = await _run_source_briefly(s, q)
 
-    scan_events = [e for e in events if e["operation"] in ("created", "modified", "deleted")]
+    scan_events = [
+        e for e in events if e["operation"] in ("created", "modified", "deleted")
+    ]
     assert len(scan_events) == 1
     assert scan_events[0]["operation"] == "modified"
     assert "note_b.md" in scan_events[0]["source_id"]
@@ -157,10 +161,14 @@ async def test_vault_removed_emits_deleted_events(tmp_path: Path) -> None:
     vaults_dir.mkdir()
 
     vault_a = _make_vault(vaults_dir, "vault_a", {"note_a.md": "keep"})
-    vault_b = _make_vault(vaults_dir, "vault_b", {
-        "note_b1.md": "remove",
-        "note_b2.md": "remove too",
-    })
+    vault_b = _make_vault(
+        vaults_dir,
+        "vault_b",
+        {
+            "note_b1.md": "remove",
+            "note_b2.md": "remove too",
+        },
+    )
 
     # Build cursor manually to simulate previous run
     cursor: dict[str, FileEntry] = {}
@@ -170,7 +178,9 @@ async def test_vault_removed_emits_deleted_events(tmp_path: Path) -> None:
                 result = _read_file_atomic(fpath, 100 * 1024 * 1024)
                 if result:
                     data, mtime_ns = result
-                    cursor[str(fpath)] = FileEntry(_sha256_of(data), mtime_ns, len(data))
+                    cursor[str(fpath)] = FileEntry(
+                        _sha256_of(data), mtime_ns, len(data)
+                    )
     save_cursor(tmp_path / "cursor.json", cursor)
 
     # Remove vault_b entirely
@@ -190,7 +200,9 @@ async def test_vault_removed_emits_deleted_events(tmp_path: Path) -> None:
 
     # vault_a should have no events (unchanged)
     a_events = [e for e in events if "vault_a" in e.get("source_id", "")]
-    scan_a = [e for e in a_events if e["operation"] in ("created", "modified", "deleted")]
+    scan_a = [
+        e for e in a_events if e["operation"] in ("created", "modified", "deleted")
+    ]
     assert len(scan_a) == 0
 
 
@@ -231,10 +243,14 @@ async def test_vault_metadata_in_events(tmp_path: Path) -> None:
     vaults_dir = tmp_path / "vaults"
     vaults_dir.mkdir()
 
-    vault = _make_vault(vaults_dir, "my_vault", {
-        "top.md": "top level note",
-        "sub/nested.md": "nested note",
-    })
+    vault = _make_vault(
+        vaults_dir,
+        "my_vault",
+        {
+            "top.md": "top level note",
+            "sub/nested.md": "nested note",
+        },
+    )
 
     s = _make_source(tmp_path)
     q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
@@ -299,7 +315,8 @@ async def test_obsidian_dedup_window(tmp_path: Path) -> None:
 
     # No duplicate created events for unchanged content
     note_created = [
-        e for e in post_events
+        e
+        for e in post_events
         if "note.md" in e.get("source_id", "") and e["operation"] == "created"
     ]
     assert len(note_created) == 0

@@ -20,6 +20,7 @@ from worker.clustering.cluster import (
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_blobs(
     n_points: int = 60,
     n_clusters: int = 3,
@@ -56,6 +57,7 @@ def _make_scroll_point(point_id: str, vector: list[float]) -> MagicMock:
 # ---------------------------------------------------------------------------
 # _scroll_vectors
 # ---------------------------------------------------------------------------
+
 
 class TestScrollVectors:
     def test_scrolls_single_page(self) -> None:
@@ -123,6 +125,7 @@ class TestScrollVectors:
 # _umap_reduce
 # ---------------------------------------------------------------------------
 
+
 class TestUmapReduce:
     def test_reduces_dimensions(self) -> None:
         rng = np.random.default_rng(42)
@@ -136,7 +139,9 @@ class TestUmapReduce:
         rng = np.random.default_rng(0)
         matrix = rng.standard_normal((30, 100)).astype(np.float32)
 
-        reduced = _umap_reduce(matrix, n_components=5, n_neighbors=10, metric="euclidean")
+        reduced = _umap_reduce(
+            matrix, n_components=5, n_neighbors=10, metric="euclidean"
+        )
 
         assert reduced.shape[0] == 30
 
@@ -144,6 +149,7 @@ class TestUmapReduce:
 # ---------------------------------------------------------------------------
 # _hdbscan_cluster
 # ---------------------------------------------------------------------------
+
 
 class TestHdbscanCluster:
     def test_returns_label_array(self) -> None:
@@ -167,6 +173,7 @@ class TestHdbscanCluster:
 # ---------------------------------------------------------------------------
 # _build_results
 # ---------------------------------------------------------------------------
+
 
 class TestBuildResults:
     def test_excludes_noise(self) -> None:
@@ -225,6 +232,7 @@ class TestBuildResults:
 # cluster_embeddings (integration with mocked Qdrant)
 # ---------------------------------------------------------------------------
 
+
 class TestClusterEmbeddings:
     def test_corpus_too_small_raises(self) -> None:
         with patch("worker.clustering.cluster.QdrantClient") as MockClient:
@@ -243,8 +251,7 @@ class TestClusterEmbeddings:
             client = MockClient.return_value
             # Return all points in one scroll page
             points = [
-                _make_scroll_point(ids[i], matrix[i].tolist())
-                for i in range(len(ids))
+                _make_scroll_point(ids[i], matrix[i].tolist()) for i in range(len(ids))
             ]
             client.scroll.return_value = (points, None)
 
@@ -272,8 +279,7 @@ class TestClusterEmbeddings:
             rng = np.random.default_rng(99)
             matrix = rng.standard_normal((n, 768)).astype(np.float32)
             points = [
-                _make_scroll_point(f"id-{i}", matrix[i].tolist())
-                for i in range(n)
+                _make_scroll_point(f"id-{i}", matrix[i].tolist()) for i in range(n)
             ]
             client.scroll.return_value = (points, None)
             mock_umap.return_value = rng.standard_normal((n, 32)).astype(np.float32)

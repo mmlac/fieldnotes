@@ -141,7 +141,9 @@ async def test_second_startup_only_changed_files(tmp_path: Path) -> None:
     q2: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
     events = await _run_source_briefly(fs2, q2)
 
-    scan_events = [e for e in events if e["operation"] in ("created", "modified", "deleted")]
+    scan_events = [
+        e for e in events if e["operation"] in ("created", "modified", "deleted")
+    ]
     assert len(scan_events) == 1
     assert scan_events[0]["operation"] == "modified"
     assert "will_change.md" in scan_events[0]["source_id"]
@@ -190,7 +192,9 @@ async def test_unchanged_files_no_events(tmp_path: Path) -> None:
     q2: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
     events = await _run_source_briefly(fs2, q2)
 
-    scan_events = [e for e in events if e["operation"] in ("created", "modified", "deleted")]
+    scan_events = [
+        e for e in events if e["operation"] in ("created", "modified", "deleted")
+    ]
     assert len(scan_events) == 0
 
 
@@ -324,10 +328,12 @@ async def test_scan_rejects_symlinks(tmp_path: Path) -> None:
     link.symlink_to(real_dir)
 
     fs = FileSource()
-    fs.configure({
-        "watch_paths": [str(link)],
-        "cursor_path": str(tmp_path / "cursor.json"),
-    })
+    fs.configure(
+        {
+            "watch_paths": [str(link)],
+            "cursor_path": str(tmp_path / "cursor.json"),
+        }
+    )
 
     # Symlinked path should have been filtered out
     assert len(fs._watch_paths) == 0
@@ -375,7 +381,9 @@ async def test_initial_scan_updates_metrics(tmp_path: Path) -> None:
     assert duration > 0
 
     # File count metric should reflect new files
-    new_count = INITIAL_SCAN_FILES_TOTAL.labels(source_type="files", result="new")._value.get()
+    new_count = INITIAL_SCAN_FILES_TOTAL.labels(
+        source_type="files", result="new"
+    )._value.get()
     assert new_count >= 2
 
 
@@ -422,10 +430,7 @@ async def test_dedup_window_drops_matching_event(tmp_path: Path) -> None:
 
     # File was touched but content unchanged — watchdog event gets
     # deduplicated because sha256 matches the scan result
-    watcher_events = [
-        e for e in post_events
-        if "note.md" in e.get("source_id", "")
-    ]
+    watcher_events = [e for e in post_events if "note.md" in e.get("source_id", "")]
     # Either dedup dropped it or watchdog didn't fire — both valid
     # The key assertion: no duplicate "created" events for same content
     created = [e for e in watcher_events if e["operation"] == "created"]
@@ -466,7 +471,8 @@ async def test_dedup_window_passes_changed_content(tmp_path: Path) -> None:
 
     # Should have at least one modified event for the changed file
     modified = [
-        e for e in events
+        e
+        for e in events
         if "note.md" in e.get("source_id", "")
         and e["operation"] in ("modified", "created")
     ]
@@ -637,7 +643,9 @@ async def test_restart_after_checkpoint_only_new_changes(tmp_path: Path) -> None
     q2: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
     events = await _run_source_briefly(fs2, q2, duration=2.0)
 
-    scan_events = [e for e in events if e["operation"] in ("created", "modified", "deleted")]
+    scan_events = [
+        e for e in events if e["operation"] in ("created", "modified", "deleted")
+    ]
     created = [e for e in scan_events if e["operation"] == "created"]
     assert len(created) == 1
     assert "new.md" in created[0]["source_id"]

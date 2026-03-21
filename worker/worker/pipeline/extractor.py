@@ -26,7 +26,9 @@ EXTRACT_ROLE = "extract"
 FALLBACK_ROLE = "extract_fallback"
 LLM_TIMEOUT = 120.0  # seconds
 
-ALLOWED_ENTITY_TYPES = frozenset({"Person", "Technology", "Project", "Organization", "Concept"})
+ALLOWED_ENTITY_TYPES = frozenset(
+    {"Person", "Technology", "Project", "Organization", "Concept"}
+)
 DEFAULT_CONFIDENCE = 0.75
 MAX_ENTITY_NAME_LEN = 512
 
@@ -138,9 +140,7 @@ def extract_chunk(
     try:
         return _call_and_parse(model, req)
     except (json.JSONDecodeError, ValidationError, ExtractionError) as exc:
-        logger.warning(
-            "Primary extraction failed for chunk %d: %s", chunk.index, exc
-        )
+        logger.warning("Primary extraction failed for chunk %d: %s", chunk.index, exc)
         if fallback_model is not None:
             try:
                 return _call_and_parse(fallback_model, req)
@@ -185,9 +185,7 @@ def extract_chunks(
     return [extract_chunk(c, model, fallback_model) for c in chunks]
 
 
-def _call_and_parse(
-    model: ResolvedModel, req: CompletionRequest
-) -> ExtractionResult:
+def _call_and_parse(model: ResolvedModel, req: CompletionRequest) -> ExtractionResult:
     """Call the model and parse tool_call arguments into an ExtractionResult.
 
     Raises
@@ -233,9 +231,13 @@ def _validate_and_build(data: dict[str, Any]) -> ExtractionResult:
     triples_raw = data.get("triples", [])
 
     if not isinstance(entities_raw, list):
-        raise ValidationError(f"'entities' must be a list, got {type(entities_raw).__name__}")
+        raise ValidationError(
+            f"'entities' must be a list, got {type(entities_raw).__name__}"
+        )
     if not isinstance(triples_raw, list):
-        raise ValidationError(f"'triples' must be a list, got {type(triples_raw).__name__}")
+        raise ValidationError(
+            f"'triples' must be a list, got {type(triples_raw).__name__}"
+        )
 
     entities: list[dict[str, Any]] = []
     for ent in entities_raw:
@@ -258,11 +260,13 @@ def _validate_and_build(data: dict[str, Any]) -> ExtractionResult:
         except (ValueError, TypeError):
             confidence = DEFAULT_CONFIDENCE
         confidence = max(0.0, min(1.0, confidence))
-        entities.append({
-            "name": name,
-            "type": entity_type,
-            "confidence": confidence,
-        })
+        entities.append(
+            {
+                "name": name,
+                "type": entity_type,
+                "confidence": confidence,
+            }
+        )
 
     triples: list[dict[str, str]] = []
     for tri in triples_raw:
@@ -274,10 +278,16 @@ def _validate_and_build(data: dict[str, Any]) -> ExtractionResult:
         pred = tri["predicate"]
         obj = tri["object"]
         # Reject non-string values instead of coercing (dicts/lists become garbage repr)
-        if not isinstance(subj, str) or not isinstance(pred, str) or not isinstance(obj, str):
+        if (
+            not isinstance(subj, str)
+            or not isinstance(pred, str)
+            or not isinstance(obj, str)
+        ):
             logger.warning(
                 "Rejecting triple with non-string field(s): subject=%s, predicate=%s, object=%s",
-                type(subj).__name__, type(pred).__name__, type(obj).__name__,
+                type(subj).__name__,
+                type(pred).__name__,
+                type(obj).__name__,
             )
             continue
         if len(subj) > MAX_ENTITY_NAME_LEN or len(obj) > MAX_ENTITY_NAME_LEN:
@@ -292,14 +302,17 @@ def _validate_and_build(data: dict[str, Any]) -> ExtractionResult:
         if len(pred) > MAX_ENTITY_NAME_LEN:
             logger.warning(
                 "Rejecting triple with oversized predicate (%d chars, limit %d)",
-                len(pred), MAX_ENTITY_NAME_LEN,
+                len(pred),
+                MAX_ENTITY_NAME_LEN,
             )
             continue
-        triples.append({
-            "subject": subj,
-            "predicate": pred,
-            "object": obj,
-        })
+        triples.append(
+            {
+                "subject": subj,
+                "predicate": pred,
+                "object": obj,
+            }
+        )
 
     return ExtractionResult(entities=entities, triples=triples)
 

@@ -27,7 +27,13 @@ from worker.metrics import (
     WATCHER_ACTIVE,
 )
 
-from ._handler import DEFAULT_MAX_FILE_SIZE, BaseHandler, _read_file_atomic, _sha256_of, guess_mime
+from ._handler import (
+    DEFAULT_MAX_FILE_SIZE,
+    BaseHandler,
+    _read_file_atomic,
+    _sha256_of,
+    guess_mime,
+)
 from .base import PythonSource
 from .cursor import CursorDiff, FileEntry, diff_cursor, load_cursor, save_cursor
 
@@ -112,7 +118,9 @@ def _scan_vault(
             fpath = root_path / fname
             if fpath.is_symlink():
                 continue
-            if _should_skip_scan(fpath, vault_path, include_extensions, exclude_patterns):
+            if _should_skip_scan(
+                fpath, vault_path, include_extensions, exclude_patterns
+            ):
                 continue
             try:
                 result = _read_file_atomic(fpath, max_file_size)
@@ -315,7 +323,6 @@ class ObsidianSource(PythonSource):
         if interval is not None:
             self._checkpoint_interval = int(interval)
 
-
     async def start(self, queue: asyncio.Queue[dict[str, Any]]) -> None:
         loop = asyncio.get_running_loop()
         vaults = discover_vaults(self._vault_paths)
@@ -341,7 +348,10 @@ class ObsidianSource(PythonSource):
         for vault in vaults:
             vault_name = vault.name
             vault_entries = _scan_vault(
-                vault, self._include_extensions, self._exclude_patterns, self._max_file_size
+                vault,
+                self._include_extensions,
+                self._exclude_patterns,
+                self._max_file_size,
             )
             current_cursor.update(vault_entries)
 
@@ -410,10 +420,18 @@ class ObsidianSource(PythonSource):
         total_files = len(current_cursor)
         total_unchanged = total_files - total_new - total_modified
         INITIAL_SCAN_DURATION_SECONDS.labels(source_type="obsidian").set(scan_duration)
-        INITIAL_SCAN_FILES_TOTAL.labels(source_type="obsidian", result="new").inc(total_new)
-        INITIAL_SCAN_FILES_TOTAL.labels(source_type="obsidian", result="modified").inc(total_modified)
-        INITIAL_SCAN_FILES_TOTAL.labels(source_type="obsidian", result="deleted").inc(total_deleted)
-        INITIAL_SCAN_FILES_TOTAL.labels(source_type="obsidian", result="unchanged").inc(total_unchanged)
+        INITIAL_SCAN_FILES_TOTAL.labels(source_type="obsidian", result="new").inc(
+            total_new
+        )
+        INITIAL_SCAN_FILES_TOTAL.labels(source_type="obsidian", result="modified").inc(
+            total_modified
+        )
+        INITIAL_SCAN_FILES_TOTAL.labels(source_type="obsidian", result="deleted").inc(
+            total_deleted
+        )
+        INITIAL_SCAN_FILES_TOTAL.labels(source_type="obsidian", result="unchanged").inc(
+            total_unchanged
+        )
         logger.info(
             "Initial scan complete: %d files in %.2fs (%d new, %d modified, %d deleted)",
             total_files,
@@ -452,9 +470,7 @@ class ObsidianSource(PythonSource):
             }
             handler.set_cursor(vault_current)
             # Filter dedup set to entries belonging to this vault
-            vault_dedup = {
-                (p, s) for p, s in scan_pairs if p.startswith(vault_prefix)
-            }
+            vault_dedup = {(p, s) for p, s in scan_pairs if p.startswith(vault_prefix)}
             handler.set_dedup_window(vault_dedup)
             handlers.append(handler)
             observer.schedule(handler, str(vault), recursive=self._recursive)

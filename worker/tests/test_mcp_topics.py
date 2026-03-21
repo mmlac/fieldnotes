@@ -140,7 +140,10 @@ class TestShowTopicTool:
         server = _make_server()
         result = await server._call_tool("show_topic", {"name": "nonexistent"})
 
-        assert "not found" in result[0].text.lower() or result[0].text == "Topic not found."
+        assert (
+            "not found" in result[0].text.lower()
+            or result[0].text == "Topic not found."
+        )
 
 
 # ------------------------------------------------------------------

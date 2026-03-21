@@ -89,7 +89,10 @@ def _load_cursor(path: Path) -> dict[str, str]:
         data = json.loads(path.read_text())
         return data if isinstance(data, dict) else {}
     except (json.JSONDecodeError, OSError):
-        logger.warning("Failed to read repo cursor file %s, starting fresh", redact_home_path(str(path)))
+        logger.warning(
+            "Failed to read repo cursor file %s, starting fresh",
+            redact_home_path(str(path)),
+        )
         return {}
 
 
@@ -144,7 +147,9 @@ def _discover_repos(roots: list[Path]) -> list[Path]:
     repos: list[Path] = []
     for root in roots:
         if not root.is_dir():
-            logger.warning("repo_root %s is not a directory, skipping", redact_home_path(str(root)))
+            logger.warning(
+                "repo_root %s is not a directory, skipping", redact_home_path(str(root))
+            )
             continue
         # Check if root itself is a repo
         if (root / ".git").exists():
@@ -209,10 +214,16 @@ def _build_event(
                         encoding="utf-8", errors="replace"
                     )
                 except OSError:
-                    logger.warning("Failed to read text content from %s", redact_home_path(str(file_path)))
+                    logger.warning(
+                        "Failed to read text content from %s",
+                        redact_home_path(str(file_path)),
+                    )
                     event["text"] = ""
         except OSError:
-            logger.warning("Failed to stat %s, emitting without content hash", redact_home_path(str(file_path)))
+            logger.warning(
+                "Failed to stat %s, emitting without content hash",
+                redact_home_path(str(file_path)),
+            )
             event["source_modified_at"] = now
     else:
         event["source_modified_at"] = now
@@ -285,9 +296,7 @@ class RepositorySource(PythonSource):
     def configure(self, cfg: dict[str, Any]) -> None:
         roots = cfg.get("repo_roots")
         if not roots:
-            raise ValueError(
-                "RepositorySource requires 'repo_roots' in config"
-            )
+            raise ValueError("RepositorySource requires 'repo_roots' in config")
         self._repo_roots = [Path(r).expanduser().resolve() for r in roots]
 
         self._poll_interval = int(
@@ -302,12 +311,8 @@ class RepositorySource(PythonSource):
         if cursor:
             self._cursor_path = Path(cursor).expanduser().resolve()
 
-        self._max_file_size = int(
-            cfg.get("max_file_size", DEFAULT_MAX_FILE_SIZE)
-        )
-        self._max_commits = int(
-            cfg.get("max_commits", DEFAULT_MAX_COMMITS)
-        )
+        self._max_file_size = int(cfg.get("max_file_size", DEFAULT_MAX_FILE_SIZE))
+        self._max_commits = int(cfg.get("max_commits", DEFAULT_MAX_COMMITS))
 
     async def start(self, queue: asyncio.Queue[dict[str, Any]]) -> None:
         cursors = _load_cursor(self._cursor_path)
@@ -339,7 +344,9 @@ class RepositorySource(PythonSource):
         try:
             repo = git.Repo(repo_path)
         except git.InvalidGitRepositoryError:
-            logger.warning("Invalid git repo at %s, skipping", redact_home_path(str(repo_path)))
+            logger.warning(
+                "Invalid git repo at %s, skipping", redact_home_path(str(repo_path))
+            )
             return
 
         # Skip bare repos
@@ -351,7 +358,9 @@ class RepositorySource(PythonSource):
             head_sha = repo.head.commit.hexsha
         except ValueError:
             # Empty repo with no commits
-            logger.debug("Skipping empty repo %s (no commits)", redact_home_path(str(repo_path)))
+            logger.debug(
+                "Skipping empty repo %s (no commits)", redact_home_path(str(repo_path))
+            )
             return
 
         prev_sha = cursors.get(repo_key)
@@ -427,22 +436,25 @@ class RepositorySource(PythonSource):
                 continue
 
             event = _build_event(
-                file_path, repo_path, repo_name, remote_url,
-                "created", self._max_file_size,
+                file_path,
+                repo_path,
+                repo_name,
+                remote_url,
+                "created",
+                self._max_file_size,
             )
             if event is not None:
                 await queue.put(event)
                 SOURCE_WATCHER_EVENTS.labels(
-                    source_type="repositories", event_type="created",
+                    source_type="repositories",
+                    event_type="created",
                 ).inc()
                 WATCHER_LAST_EVENT_TIMESTAMP.labels(
                     source_type="repositories",
                 ).set_to_current_time()
                 count += 1
 
-        logger.info(
-            "Initial scan of %s: %d matching files indexed", repo_name, count
-        )
+        logger.info("Initial scan of %s: %d matching files indexed", repo_name, count)
 
     async def _scan_diff(
         self,
@@ -478,7 +490,8 @@ class RepositorySource(PythonSource):
             # Fall back to full scan
             logger.warning(
                 "Previous cursor %s not found in %s, doing full re-scan",
-                prev_sha, repo_name,
+                prev_sha,
+                repo_name,
             )
             await self._scan_all_files(repo, repo_path, repo_name, remote_url, queue)
             return
@@ -502,13 +515,18 @@ class RepositorySource(PythonSource):
 
             file_path = repo_path / rel_path
             event = _build_event(
-                file_path, repo_path, repo_name, remote_url,
-                operation, self._max_file_size,
+                file_path,
+                repo_path,
+                repo_name,
+                remote_url,
+                operation,
+                self._max_file_size,
             )
             if event is not None:
                 await queue.put(event)
                 SOURCE_WATCHER_EVENTS.labels(
-                    source_type="repositories", event_type=operation,
+                    source_type="repositories",
+                    event_type=operation,
                 ).inc()
                 WATCHER_LAST_EVENT_TIMESTAMP.labels(
                     source_type="repositories",
@@ -518,7 +536,10 @@ class RepositorySource(PythonSource):
         if count:
             logger.info(
                 "Incremental scan of %s (%s..%s): %d file(s) changed",
-                repo_name, prev_sha[:8], head_sha[:8], count,
+                repo_name,
+                prev_sha[:8],
+                head_sha[:8],
+                count,
             )
 
     async def _scan_commits(
@@ -544,9 +565,7 @@ class RepositorySource(PythonSource):
             commits = await asyncio.wait_for(
                 loop.run_in_executor(
                     None,
-                    lambda: list(
-                        repo.iter_commits(rev, max_count=self._max_commits)
-                    ),
+                    lambda: list(repo.iter_commits(rev, max_count=self._max_commits)),
                 ),
                 timeout=GIT_OPERATION_TIMEOUT,
             )
@@ -558,9 +577,7 @@ class RepositorySource(PythonSource):
             )
             return
         except (git.GitCommandError, ValueError) as exc:
-            logger.warning(
-                "Failed to enumerate commits in %s: %s", repo_name, exc
-            )
+            logger.warning("Failed to enumerate commits in %s: %s", repo_name, exc)
             return
 
         count = 0
@@ -584,7 +601,8 @@ class RepositorySource(PythonSource):
             )
             await queue.put(event)
             SOURCE_WATCHER_EVENTS.labels(
-                source_type="repositories", event_type="created",
+                source_type="repositories",
+                event_type="created",
             ).inc()
             WATCHER_LAST_EVENT_TIMESTAMP.labels(
                 source_type="repositories",

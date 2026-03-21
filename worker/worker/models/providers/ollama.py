@@ -34,16 +34,16 @@ logger = logging.getLogger(__name__)
 # user-supplied base_url.  The built-in default (localhost:11434) bypasses
 # validation, so blocking loopback here does not break normal usage.
 _BLOCKED_NETWORKS = [
-    ipaddress.ip_network("10.0.0.0/8"),        # RFC 1918
-    ipaddress.ip_network("172.16.0.0/12"),     # RFC 1918
-    ipaddress.ip_network("192.168.0.0/16"),    # RFC 1918
-    ipaddress.ip_network("127.0.0.0/8"),       # Loopback
-    ipaddress.ip_network("169.254.0.0/16"),    # Link-local / cloud metadata
-    ipaddress.ip_network("100.64.0.0/10"),     # CGNAT (RFC 6598)
-    ipaddress.ip_network("::1/128"),           # IPv6 loopback
-    ipaddress.ip_network("::ffff:0:0/96"),     # IPv4-mapped IPv6 (RFC 4291 §2.5.5.2)
-    ipaddress.ip_network("fe80::/10"),         # IPv6 link-local
-    ipaddress.ip_network("fd00::/8"),          # IPv6 ULA
+    ipaddress.ip_network("10.0.0.0/8"),  # RFC 1918
+    ipaddress.ip_network("172.16.0.0/12"),  # RFC 1918
+    ipaddress.ip_network("192.168.0.0/16"),  # RFC 1918
+    ipaddress.ip_network("127.0.0.0/8"),  # Loopback
+    ipaddress.ip_network("169.254.0.0/16"),  # Link-local / cloud metadata
+    ipaddress.ip_network("100.64.0.0/10"),  # CGNAT (RFC 6598)
+    ipaddress.ip_network("::1/128"),  # IPv6 loopback
+    ipaddress.ip_network("::ffff:0:0/96"),  # IPv4-mapped IPv6 (RFC 4291 §2.5.5.2)
+    ipaddress.ip_network("fe80::/10"),  # IPv6 link-local
+    ipaddress.ip_network("fd00::/8"),  # IPv6 ULA
 ]
 
 _ALLOWED_SCHEMES = {"http", "https"}
@@ -73,15 +73,16 @@ def _validate_ollama_url(url: str) -> str:
     try:
         addrinfos = socket.getaddrinfo(hostname, None, proto=socket.IPPROTO_TCP)
     except socket.gaierror as exc:
-        raise ValueError(f"Cannot resolve Ollama base_url host {hostname!r}: {exc}") from exc
+        raise ValueError(
+            f"Cannot resolve Ollama base_url host {hostname!r}: {exc}"
+        ) from exc
 
     for _family, _type, _proto, _canonname, sockaddr in addrinfos:
         addr = ipaddress.ip_address(sockaddr[0])
         for net in _BLOCKED_NETWORKS:
             if addr in net:
                 raise ValueError(
-                    f"Ollama base_url resolves to blocked address {addr} "
-                    f"(in {net})"
+                    f"Ollama base_url resolves to blocked address {addr} (in {net})"
                 )
 
     return url
@@ -101,7 +102,9 @@ _ollama_retry = retry(
     stop=stop_after_attempt(4),
     wait=wait_exponential_jitter(initial=0.5, max=10),
     before_sleep=lambda rs: logger.warning(
-        "Ollama call failed (%s), retry %d", sanitize_exception(rs.outcome.exception()), rs.attempt_number
+        "Ollama call failed (%s), retry %d",
+        sanitize_exception(rs.outcome.exception()),
+        rs.attempt_number,
     ),
     reraise=True,
 )
@@ -132,7 +135,9 @@ class OllamaProvider(ModelProvider):
                 self._base_url = _validate_ollama_url(normalized)
         # When no base_url is provided the built-in default
         # (http://localhost:11434) is trusted and skips validation.
-        self._completion_timeout = float(cfg.get("completion_timeout", self._completion_timeout))
+        self._completion_timeout = float(
+            cfg.get("completion_timeout", self._completion_timeout)
+        )
         self._embed_timeout = float(cfg.get("embed_timeout", self._embed_timeout))
 
     @_ollama_retry
@@ -157,7 +162,9 @@ class OllamaProvider(ModelProvider):
         resp = httpx.post(
             f"{self._base_url}/api/chat",
             json=payload,
-            timeout=req.timeout if req.timeout is not None else self._completion_timeout,
+            timeout=req.timeout
+            if req.timeout is not None
+            else self._completion_timeout,
         )
         resp.raise_for_status()
         data = resp.json()
@@ -172,7 +179,9 @@ class OllamaProvider(ModelProvider):
             output_tokens=data.get("eval_count", 0),
         )
 
-    def stream_complete(self, model: str, req: CompletionRequest) -> Iterator[StreamChunk]:
+    def stream_complete(
+        self, model: str, req: CompletionRequest
+    ) -> Iterator[StreamChunk]:
         messages: list[dict[str, Any]] = []
         if req.system:
             messages.append({"role": "system", "content": req.system})
@@ -200,6 +209,7 @@ class OllamaProvider(ModelProvider):
                 if not line:
                     continue
                 import json as _json
+
                 data = _json.loads(line)
                 message = data.get("message", {})
                 token = message.get("content", "")

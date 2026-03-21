@@ -292,7 +292,8 @@ class OmniFocusSource(PythonSource):
             event = _build_event(task, operation)
             await queue.put(event)
             SOURCE_WATCHER_EVENTS.labels(
-                source_type=_SOURCE_TYPE, event_type=operation,
+                source_type=_SOURCE_TYPE,
+                event_type=operation,
             ).inc()
             WATCHER_LAST_EVENT_TIMESTAMP.labels(
                 source_type=_SOURCE_TYPE,
@@ -302,12 +303,19 @@ class OmniFocusSource(PythonSource):
         # Detect deleted tasks (present in old state, absent now)
         for task_id in set(state) - set(current):
             event = _build_event(
-                {"id": task_id, "name": "", "note": "", "status": "deleted", "tags": []},
+                {
+                    "id": task_id,
+                    "name": "",
+                    "note": "",
+                    "status": "deleted",
+                    "tags": [],
+                },
                 "deleted",
             )
             await queue.put(event)
             SOURCE_WATCHER_EVENTS.labels(
-                source_type=_SOURCE_TYPE, event_type="deleted",
+                source_type=_SOURCE_TYPE,
+                event_type="deleted",
             ).inc()
             WATCHER_LAST_EVENT_TIMESTAMP.labels(
                 source_type=_SOURCE_TYPE,
@@ -321,7 +329,8 @@ class OmniFocusSource(PythonSource):
         if count:
             logger.info(
                 "OmniFocus poll complete: %d event(s) emitted (%d tasks)",
-                count, len(current),
+                count,
+                len(current),
             )
         else:
             logger.debug(

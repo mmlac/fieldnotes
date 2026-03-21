@@ -19,9 +19,11 @@ def _make_server() -> FieldnotesServer:
     return FieldnotesServer(cfg)
 
 
-def _mock_neo4j_session(label_counts: dict[str, int] | None = None,
-                         entity_rows: list[dict] | None = None,
-                         topic_rows: list[dict] | None = None) -> MagicMock:
+def _mock_neo4j_session(
+    label_counts: dict[str, int] | None = None,
+    entity_rows: list[dict] | None = None,
+    topic_rows: list[dict] | None = None,
+) -> MagicMock:
     """Build a mock Neo4j session that returns prescribed counts."""
     if label_counts is None:
         label_counts = {}
@@ -36,8 +38,16 @@ def _mock_neo4j_session(label_counts: dict[str, int] | None = None,
         result = MagicMock()
         # Label count queries
         if "MATCH (n:" in query:
-            for label in ("File", "Email", "Commit", "Entity",
-                          "Topic", "Chunk", "Image", "Repository"):
+            for label in (
+                "File",
+                "Email",
+                "Commit",
+                "Entity",
+                "Topic",
+                "Chunk",
+                "Image",
+                "Repository",
+            ):
                 if f"`{label}`" in query:
                     row = MagicMock()
                     row.__getitem__ = lambda self, key, lb=label: (
@@ -53,9 +63,7 @@ def _mock_neo4j_session(label_counts: dict[str, int] | None = None,
         if "t.source AS source" in query:
             result.data.return_value = topic_rows
             return result
-        result.single.return_value = MagicMock(
-            __getitem__=lambda self, key: 0
-        )
+        result.single.return_value = MagicMock(__getitem__=lambda self, key: 0)
         return result
 
     session.run = _run_query
@@ -77,7 +85,9 @@ def _setup_server_with_mocks(
     else:
         mock_driver = MagicMock()
         if mock_session is not None:
-            mock_driver.session.return_value.__enter__ = MagicMock(return_value=mock_session)
+            mock_driver.session.return_value.__enter__ = MagicMock(
+                return_value=mock_session
+            )
             mock_driver.session.return_value.__exit__ = MagicMock(return_value=False)
 
         mock_graph = MagicMock()

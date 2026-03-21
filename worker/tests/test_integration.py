@@ -30,14 +30,20 @@ def _make_config() -> Config:
     """Build a minimal Config for the pipeline."""
     cfg = Config()
     cfg.providers["local"] = ProviderConfig(
-        name="local", type="ollama", settings={},
+        name="local",
+        type="ollama",
+        settings={},
     )
     cfg.models["llm"] = ModelConfig(alias="llm", provider="local", model="qwen3.5:27b")
-    cfg.models["embedder"] = ModelConfig(alias="embedder", provider="local", model="nomic-embed-text")
-    cfg.roles = RolesConfig(mapping={
-        "extraction": "llm",
-        "embedding": "embedder",
-    })
+    cfg.models["embedder"] = ModelConfig(
+        alias="embedder", provider="local", model="nomic-embed-text"
+    )
+    cfg.roles = RolesConfig(
+        mapping={
+            "extraction": "llm",
+            "embedding": "embedder",
+        }
+    )
     return cfg
 
 
@@ -48,7 +54,10 @@ class TestEndToEndTextPipeline:
     @patch("worker.pipeline.extract_chunks")
     @patch("worker.pipeline.embed_chunks")
     def test_text_file_full_pipeline(
-        self, mock_embed, mock_extract, mock_resolve,
+        self,
+        mock_embed,
+        mock_extract,
+        mock_resolve,
     ) -> None:
         # --- Setup ---
         registry = ModelRegistry(_make_config())
@@ -72,6 +81,7 @@ class TestEndToEndTextPipeline:
         # 2. Mock embeddings — return one vector per chunk
         def fake_embed(texts, reg):
             return [(t, [0.1] * 768) for t in texts]
+
         mock_embed.side_effect = fake_embed
 
         # 3. Mock extraction — return one entity per chunk
@@ -79,17 +89,24 @@ class TestEndToEndTextPipeline:
             return [
                 ExtractionResult(
                     entities=[{"name": "Fox", "type": "Animal", "confidence": 0.9}],
-                    triples=[{"subject": "Fox", "predicate": "JUMPED_OVER", "object": "Dog"}],
+                    triples=[
+                        {"subject": "Fox", "predicate": "JUMPED_OVER", "object": "Dog"}
+                    ],
                 )
                 for _ in chunks
             ]
+
         mock_extract.side_effect = fake_extract
 
         # 4. Mock resolution — pass through entities
         mock_resolve.return_value = ResolutionResult(
             entities=[
-                ResolvedEntity(name="Fox", type="Animal", confidence=0.9, merged_into=None),
-                ResolvedEntity(name="Dog", type="Animal", confidence=0.9, merged_into=None),
+                ResolvedEntity(
+                    name="Fox", type="Animal", confidence=0.9, merged_into=None
+                ),
+                ResolvedEntity(
+                    name="Dog", type="Animal", confidence=0.9, merged_into=None
+                ),
             ],
         )
 
@@ -144,7 +161,10 @@ class TestEndToEndBatch:
     @patch("worker.pipeline.extract_chunks")
     @patch("worker.pipeline.embed_chunks")
     def test_batch_isolates_failure(
-        self, mock_embed, mock_extract, mock_resolve,
+        self,
+        mock_embed,
+        mock_extract,
+        mock_resolve,
     ) -> None:
         registry = ModelRegistry(_make_config())
         writer = MagicMock(spec=Writer)
@@ -173,8 +193,7 @@ class TestEndToEndBatch:
         assert failed[0].source_id == "fail.md"
         # The deletion should have succeeded
         assert any(
-            call[0][0].doc.source_id == "ok.md"
-            for call in writer.write.call_args_list
+            call[0][0].doc.source_id == "ok.md" for call in writer.write.call_args_list
         )
 
 
@@ -185,7 +204,10 @@ class TestEndToEndGraphHints:
     @patch("worker.pipeline.extract_chunks")
     @patch("worker.pipeline.embed_chunks")
     def test_graph_hints_preserved(
-        self, mock_embed, mock_extract, mock_resolve,
+        self,
+        mock_embed,
+        mock_extract,
+        mock_resolve,
     ) -> None:
         registry = ModelRegistry(_make_config())
         writer = MagicMock(spec=Writer)
@@ -228,16 +250,24 @@ def _make_vision_config() -> Config:
     """Build a Config with vision role configured."""
     cfg = Config()
     cfg.providers["local"] = ProviderConfig(
-        name="local", type="ollama", settings={},
+        name="local",
+        type="ollama",
+        settings={},
     )
     cfg.models["llm"] = ModelConfig(alias="llm", provider="local", model="qwen3.5:27b")
-    cfg.models["embedder"] = ModelConfig(alias="embedder", provider="local", model="nomic-embed-text")
-    cfg.models["vision_model"] = ModelConfig(alias="vision_model", provider="local", model="llava:13b")
-    cfg.roles = RolesConfig(mapping={
-        "extraction": "llm",
-        "embedding": "embedder",
-        "vision": "vision_model",
-    })
+    cfg.models["embedder"] = ModelConfig(
+        alias="embedder", provider="local", model="nomic-embed-text"
+    )
+    cfg.models["vision_model"] = ModelConfig(
+        alias="vision_model", provider="local", model="llava:13b"
+    )
+    cfg.roles = RolesConfig(
+        mapping={
+            "extraction": "llm",
+            "embedding": "embedder",
+            "vision": "vision_model",
+        }
+    )
     return cfg
 
 
@@ -257,7 +287,11 @@ class TestEndToEndVision:
     @patch("worker.pipeline.embed_chunks")
     @patch("worker.pipeline.extract_image_from_registry")
     def test_vision_full_pipeline(
-        self, mock_vision, mock_embed, mock_extract, mock_resolve,
+        self,
+        mock_vision,
+        mock_embed,
+        mock_extract,
+        mock_resolve,
     ) -> None:
         # --- Setup ---
         registry = ModelRegistry(_make_vision_config())
@@ -268,7 +302,10 @@ class TestEndToEndVision:
 
         # 1. Parse: ObsidianParser with an embedded image
         parser = ObsidianParser()
-        note_text = "---\ntitle: Test Note\n---\nHere is a diagram:\n\n![[architecture.png]]\n\n" + "More text here. " * 30
+        note_text = (
+            "---\ntitle: Test Note\n---\nHere is a diagram:\n\n![[architecture.png]]\n\n"
+            + "More text here. " * 30
+        )
         event = {
             "source_id": "notes/test-vision.md",
             "operation": "created",
@@ -316,6 +353,7 @@ class TestEndToEndVision:
         # 3. Mock embeddings
         def fake_embed(texts, reg):
             return [(t, [0.2] * 768) for t in texts]
+
         mock_embed.side_effect = fake_embed
 
         # 4. Mock extraction (for text doc)
@@ -326,9 +364,24 @@ class TestEndToEndVision:
         # 5. Mock resolution — pass through entities
         mock_resolve.return_value = ResolutionResult(
             entities=[
-                ResolvedEntity(name="API Gateway", type="Technology", confidence=0.8, merged_into=None),
-                ResolvedEntity(name="Auth Service", type="Technology", confidence=0.8, merged_into=None),
-                ResolvedEntity(name="Message Queue", type="Technology", confidence=0.8, merged_into=None),
+                ResolvedEntity(
+                    name="API Gateway",
+                    type="Technology",
+                    confidence=0.8,
+                    merged_into=None,
+                ),
+                ResolvedEntity(
+                    name="Auth Service",
+                    type="Technology",
+                    confidence=0.8,
+                    merged_into=None,
+                ),
+                ResolvedEntity(
+                    name="Message Queue",
+                    type="Technology",
+                    confidence=0.8,
+                    merged_into=None,
+                ),
             ],
         )
 
@@ -367,7 +420,10 @@ class TestEndToEndVision:
         # Image node properties
         assert vision_unit.doc.source_type == "image"
         assert vision_unit.doc.source_id == image_doc.source_id
-        assert vision_unit.doc.node_props["sha256"] == hashlib.sha256(_FAKE_PNG).hexdigest()
+        assert (
+            vision_unit.doc.node_props["sha256"]
+            == hashlib.sha256(_FAKE_PNG).hexdigest()
+        )
         assert vision_unit.doc.node_props["vision_processed"] is True
 
         # Synthetic text chunk was embedded
@@ -393,7 +449,11 @@ class TestEndToEndVision:
     @patch("worker.pipeline.embed_chunks")
     @patch("worker.pipeline.extract_image_from_registry")
     def test_vision_empty_result_skips_write(
-        self, mock_vision, mock_embed, mock_extract, mock_resolve,
+        self,
+        mock_vision,
+        mock_embed,
+        mock_extract,
+        mock_resolve,
     ) -> None:
         """Empty vision result (no description, no entities) should not write."""
         registry = ModelRegistry(_make_vision_config())
@@ -423,7 +483,11 @@ class TestEndToEndVision:
     @patch("worker.pipeline.embed_chunks")
     @patch("worker.pipeline.extract_image_from_registry")
     def test_vision_with_obsidian_parser_image_bytes(
-        self, mock_vision, mock_embed, mock_extract, mock_resolve,
+        self,
+        mock_vision,
+        mock_embed,
+        mock_extract,
+        mock_resolve,
         tmp_path: Path,
     ) -> None:
         """ObsidianParser loads image_bytes from disk when vault_path is set."""
@@ -459,7 +523,9 @@ class TestEndToEndVision:
         mock_embed.side_effect = lambda texts, reg: [(t, [0.3] * 768) for t in texts]
         mock_resolve.return_value = ResolutionResult(
             entities=[
-                ResolvedEntity(name="Mountains", type="Concept", confidence=0.8, merged_into=None),
+                ResolvedEntity(
+                    name="Mountains", type="Concept", confidence=0.8, merged_into=None
+                ),
             ],
         )
 
@@ -504,7 +570,11 @@ class TestEndToEndVision:
     @patch("worker.pipeline.embed_chunks")
     @patch("worker.pipeline.extract_image_from_registry")
     def test_vision_entities_use_depicts_not_mentions(
-        self, mock_vision, mock_embed, mock_extract, mock_resolve,
+        self,
+        mock_vision,
+        mock_embed,
+        mock_extract,
+        mock_resolve,
     ) -> None:
         """Vision entities must go through depicts_entities (DEPICTS edge), not entities (MENTIONS)."""
         registry = ModelRegistry(_make_vision_config())
@@ -520,7 +590,9 @@ class TestEndToEndVision:
         mock_embed.side_effect = lambda texts, reg: [(t, [0.1] * 768) for t in texts]
         mock_resolve.return_value = ResolutionResult(
             entities=[
-                ResolvedEntity(name="Claude", type="Technology", confidence=0.8, merged_into=None),
+                ResolvedEntity(
+                    name="Claude", type="Technology", confidence=0.8, merged_into=None
+                ),
             ],
         )
 

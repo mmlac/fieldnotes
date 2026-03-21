@@ -102,8 +102,10 @@ def run_cluster(
     try:
         link_apps_to_topics(labeled, clusters, registry, neo4j_cfg)
     except Exception:
-        print("warning: app-topic linking failed (clustering results saved)",
-              file=sys.stderr)
+        print(
+            "warning: app-topic linking failed (clustering results saved)",
+            file=sys.stderr,
+        )
 
     # 6. Summary
     orphaned = size - total_assigned

@@ -9,10 +9,16 @@ class TestValidateOllamaUrl:
     """Validate that user-supplied URLs are checked against all private ranges."""
 
     def test_accepts_public_ip(self) -> None:
-        assert _validate_ollama_url("http://203.0.113.1:11434") == "http://203.0.113.1:11434"
+        assert (
+            _validate_ollama_url("http://203.0.113.1:11434")
+            == "http://203.0.113.1:11434"
+        )
 
     def test_accepts_https(self) -> None:
-        assert _validate_ollama_url("https://203.0.113.1:11434") == "https://203.0.113.1:11434"
+        assert (
+            _validate_ollama_url("https://203.0.113.1:11434")
+            == "https://203.0.113.1:11434"
+        )
 
     # --- scheme checks ---
 

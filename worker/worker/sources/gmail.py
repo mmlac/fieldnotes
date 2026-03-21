@@ -65,11 +65,15 @@ def _load_cursor(path: Path) -> str | None:
         int(hid)
         return hid
     except (json.JSONDecodeError, OSError):
-        logger.warning("Failed to read cursor file %s, starting fresh", redact_home_path(str(path)))
+        logger.warning(
+            "Failed to read cursor file %s, starting fresh", redact_home_path(str(path))
+        )
         return None
     except (ValueError, TypeError):
         logger.warning(
-            "Corrupted cursor in %s (non-integer value %r), resetting", redact_home_path(str(path)), hid
+            "Corrupted cursor in %s (non-integer value %r), resetting",
+            redact_home_path(str(path)),
+            hid,
         )
         return None
 
@@ -113,7 +117,9 @@ def _extract_body(payload: dict[str, Any]) -> tuple[str, str]:
     if mime in ("text/plain", "text/html"):
         data = payload.get("body", {}).get("data", "")
         if data:
-            decoded = base64.urlsafe_b64decode(data + "==").decode("utf-8", errors="replace")
+            decoded = base64.urlsafe_b64decode(data + "==").decode(
+                "utf-8", errors="replace"
+            )
             return decoded, mime
         return "", mime
 
@@ -192,9 +198,7 @@ class GmailSource(PythonSource):
     def configure(self, cfg: dict[str, Any]) -> None:
         secrets = cfg.get("client_secrets_path")
         if not secrets:
-            raise ValueError(
-                "GmailSource requires 'client_secrets_path' in config"
-            )
+            raise ValueError("GmailSource requires 'client_secrets_path' in config")
         self._client_secrets_path = Path(secrets).expanduser().resolve()
 
         self._poll_interval = int(
@@ -331,13 +335,16 @@ class GmailSource(PythonSource):
                 msg = await self._api_call_with_retry(
                     loop,
                     lambda mid=stub["id"]: messages_api.get(
-                        userId="me", id=mid, format="full",
+                        userId="me",
+                        id=mid,
+                        format="full",
                     ).execute(),
                 )
                 event = _build_ingest_event(msg)
                 await queue.put(event)
                 SOURCE_WATCHER_EVENTS.labels(
-                    source_type="gmail", event_type="created",
+                    source_type="gmail",
+                    event_type="created",
                 ).inc()
                 WATCHER_LAST_EVENT_TIMESTAMP.labels(
                     source_type="gmail",
@@ -488,7 +495,9 @@ class GmailSource(PythonSource):
                         loop.run_in_executor(
                             None,
                             lambda m=mid: messages_api.get(
-                                userId="me", id=m, format="full",
+                                userId="me",
+                                id=m,
+                                format="full",
                             ).execute(),
                         ),
                         timeout=API_CALL_TIMEOUT,
@@ -496,7 +505,8 @@ class GmailSource(PythonSource):
                     event = _build_ingest_event(msg)
                     await queue.put(event)
                     SOURCE_WATCHER_EVENTS.labels(
-                        source_type="gmail", event_type="created",
+                        source_type="gmail",
+                        event_type="created",
                     ).inc()
                     WATCHER_LAST_EVENT_TIMESTAMP.labels(
                         source_type="gmail",
@@ -505,7 +515,8 @@ class GmailSource(PythonSource):
                 except asyncio.TimeoutError:
                     logger.error(
                         "Timed out fetching message %s after %ds",
-                        mid, API_CALL_TIMEOUT,
+                        mid,
+                        API_CALL_TIMEOUT,
                     )
                 except HttpError:
                     logger.error("Failed to fetch message %s", mid, exc_info=True)

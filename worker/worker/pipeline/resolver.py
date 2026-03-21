@@ -130,15 +130,17 @@ def resolve_entities(
         # Strategy 1: exact match on lowercased name
         if name_lower in existing_by_lower:
             target = existing_by_lower[name_lower]
-            result.entities.append(ResolvedEntity(
-                name=target["name"],
-                type=entity.get("type", target.get("type", "Concept")),
-                confidence=max(
-                    entity.get("confidence", 0.75),
-                    target.get("confidence", 0.75),
-                ),
-                merged_into=target["name"],
-            ))
+            result.entities.append(
+                ResolvedEntity(
+                    name=target["name"],
+                    type=entity.get("type", target.get("type", "Concept")),
+                    confidence=max(
+                        entity.get("confidence", 0.75),
+                        target.get("confidence", 0.75),
+                    ),
+                    merged_into=target["name"],
+                )
+            )
             continue
 
         # Strategy 2: fuzzy match via rapidfuzz
@@ -162,11 +164,13 @@ def resolve_entities(
     else:
         # No embedding model or no existing entities — keep as new
         for entity in unresolved:
-            result.entities.append(ResolvedEntity(
-                name=entity["name"],
-                type=entity.get("type", "Concept"),
-                confidence=entity.get("confidence", 0.75),
-            ))
+            result.entities.append(
+                ResolvedEntity(
+                    name=entity["name"],
+                    type=entity.get("type", "Concept"),
+                    confidence=entity.get("confidence", 0.75),
+                )
+            )
 
     return result
 
@@ -301,16 +305,24 @@ def _resolve_by_embedding(
     existing_names = [e["name"] for e in existing]
 
     try:
-        unresolved_resp = embed_model.embed(EmbedRequest(texts=unresolved_names), task="resolve_entities")
-        existing_resp = embed_model.embed(EmbedRequest(texts=existing_names), task="resolve_entities")
+        unresolved_resp = embed_model.embed(
+            EmbedRequest(texts=unresolved_names), task="resolve_entities"
+        )
+        existing_resp = embed_model.embed(
+            EmbedRequest(texts=existing_names), task="resolve_entities"
+        )
     except Exception:
-        logger.warning("Embedding fallback failed, keeping entities as new", exc_info=True)
+        logger.warning(
+            "Embedding fallback failed, keeping entities as new", exc_info=True
+        )
         for entity in unresolved:
-            result.entities.append(ResolvedEntity(
-                name=entity["name"],
-                type=entity.get("type", "Concept"),
-                confidence=entity.get("confidence", 0.75),
-            ))
+            result.entities.append(
+                ResolvedEntity(
+                    name=entity["name"],
+                    type=entity.get("type", "Concept"),
+                    confidence=entity.get("confidence", 0.75),
+                )
+            )
         return
 
     unresolved_vecs = unresolved_resp.vectors
@@ -322,11 +334,13 @@ def _resolve_by_embedding(
         row = sim_matrix[i]
         # Handle NaN vectors: if entire row is NaN, treat as no match
         if np.all(np.isnan(row)):
-            result.entities.append(ResolvedEntity(
-                name=entity["name"],
-                type=entity.get("type", "Concept"),
-                confidence=entity.get("confidence", 0.75),
-            ))
+            result.entities.append(
+                ResolvedEntity(
+                    name=entity["name"],
+                    type=entity.get("type", "Concept"),
+                    confidence=entity.get("confidence", 0.75),
+                )
+            )
             continue
         # Replace NaN entries with -1 so argmax ignores them
         safe_row = np.where(np.isnan(row), -1.0, row)
@@ -335,23 +349,29 @@ def _resolve_by_embedding(
 
         if best_sim > COSINE_THRESHOLD and best_idx < len(existing_names):
             target_name = existing_names[best_idx]
-            result.entities.append(ResolvedEntity(
-                name=entity["name"],
-                type=entity.get("type", "Concept"),
-                confidence=entity.get("confidence", 0.75),
-                same_as=target_name,
-            ))
+            result.entities.append(
+                ResolvedEntity(
+                    name=entity["name"],
+                    type=entity.get("type", "Concept"),
+                    confidence=entity.get("confidence", 0.75),
+                    same_as=target_name,
+                )
+            )
             result.same_as_edges.append((entity["name"], target_name))
             logger.debug(
                 "SAME_AS edge: %r → %r (cosine=%.3f)",
-                entity["name"], target_name, best_sim,
+                entity["name"],
+                target_name,
+                best_sim,
             )
         else:
-            result.entities.append(ResolvedEntity(
-                name=entity["name"],
-                type=entity.get("type", "Concept"),
-                confidence=entity.get("confidence", 0.75),
-            ))
+            result.entities.append(
+                ResolvedEntity(
+                    name=entity["name"],
+                    type=entity.get("type", "Concept"),
+                    confidence=entity.get("confidence", 0.75),
+                )
+            )
 
 
 @dataclass
@@ -391,7 +411,7 @@ def resolve_cross_source(
     source_types = list(entities_by_source.keys())
 
     for i, src_a in enumerate(source_types):
-        for src_b in source_types[i + 1:]:
+        for src_b in source_types[i + 1 :]:
             entities_a = entities_by_source[src_a]
             entities_b = entities_by_source[src_b]
             matches.extend(
@@ -430,12 +450,14 @@ def _match_entity_lists(
         if name_a_lower in name_index_b:
             idx_b = name_index_b[name_a_lower]
             if idx_b not in matched_b:
-                matches.append(CrossSourceMatch(
-                    entity_a=name_a,
-                    entity_b=entities_b[idx_b]["name"],
-                    confidence=1.0,
-                    match_type="exact",
-                ))
+                matches.append(
+                    CrossSourceMatch(
+                        entity_a=name_a,
+                        entity_b=entities_b[idx_b]["name"],
+                        confidence=1.0,
+                        match_type="exact",
+                    )
+                )
                 matched_b.add(idx_b)
                 continue
 
@@ -446,12 +468,14 @@ def _match_entity_lists(
             if norm_email in email_index_b:
                 idx_b = email_index_b[norm_email]
                 if idx_b not in matched_b:
-                    matches.append(CrossSourceMatch(
-                        entity_a=name_a,
-                        entity_b=entities_b[idx_b]["name"],
-                        confidence=0.95,
-                        match_type="email",
-                    ))
+                    matches.append(
+                        CrossSourceMatch(
+                            entity_a=name_a,
+                            entity_b=entities_b[idx_b]["name"],
+                            confidence=0.95,
+                            match_type="email",
+                        )
+                    )
                     matched_b.add(idx_b)
                     continue
 
@@ -482,20 +506,20 @@ def _match_entity_lists(
             actual_idx = indices[match_idx]
             confidence = score / 100.0
             if confidence >= confidence_threshold:
-                matches.append(CrossSourceMatch(
-                    entity_a=name_a,
-                    entity_b=entities_b[actual_idx]["name"],
-                    confidence=confidence,
-                    match_type="fuzzy",
-                ))
+                matches.append(
+                    CrossSourceMatch(
+                        entity_a=name_a,
+                        entity_b=entities_b[actual_idx]["name"],
+                        confidence=confidence,
+                        match_type="fuzzy",
+                    )
+                )
                 matched_b.add(actual_idx)
 
     return matches
 
 
-def _batch_cosine_similarity(
-    a: list[list[float]], b: list[list[float]]
-) -> np.ndarray:
+def _batch_cosine_similarity(a: list[list[float]], b: list[list[float]]) -> np.ndarray:
     """Compute cosine similarity matrix between two sets of vectors.
 
     Returns an (n, m) matrix where entry [i, j] is the cosine similarity

@@ -240,6 +240,7 @@ class TestResolveChunkSources:
             ]
 
             from worker.config import QdrantConfig
+
             result = _resolve_chunk_sources(chunk_ids_by_cluster, QdrantConfig())
 
         assert result[0] == {"notes/a.md"}
@@ -257,6 +258,7 @@ class TestResolveChunkSources:
             ]
 
             from worker.config import QdrantConfig
+
             result = _resolve_chunk_sources(chunk_ids_by_cluster, QdrantConfig())
 
         assert result[0] == {"notes/a.md", "notes/b.md"}
@@ -268,6 +270,7 @@ class TestResolveChunkSources:
             client = MockClient.return_value
 
             from worker.config import QdrantConfig
+
             result = _resolve_chunk_sources(chunk_ids_by_cluster, QdrantConfig())
 
         assert result[0] == set()
@@ -283,6 +286,7 @@ class TestResolveChunkSources:
             ]
 
             from worker.config import QdrantConfig
+
             _resolve_chunk_sources(chunk_ids_by_cluster, QdrantConfig())
 
             client.close.assert_called_once()
@@ -295,6 +299,7 @@ class TestResolveChunkSources:
             client.retrieve.side_effect = RuntimeError("connection failed")
 
             from worker.config import QdrantConfig
+
             with pytest.raises(RuntimeError):
                 _resolve_chunk_sources(chunk_ids_by_cluster, QdrantConfig())
 
@@ -314,6 +319,7 @@ class TestResolveChunkSources:
             ]
 
             from worker.config import QdrantConfig
+
             result = _resolve_chunk_sources(chunk_ids_by_cluster, QdrantConfig())
 
         assert result[0] == {"notes/a.md"}

@@ -161,26 +161,32 @@ class TestRepositorySourceConfigure:
 
     def test_custom_include_patterns(self, tmp_path: Path) -> None:
         s = RepositorySource()
-        s.configure({
-            "repo_roots": [str(tmp_path)],
-            "include_patterns": ["*.py"],
-        })
+        s.configure(
+            {
+                "repo_roots": [str(tmp_path)],
+                "include_patterns": ["*.py"],
+            }
+        )
         assert s._include_patterns == ["*.py"]
 
     def test_custom_exclude_patterns(self, tmp_path: Path) -> None:
         s = RepositorySource()
-        s.configure({
-            "repo_roots": [str(tmp_path)],
-            "exclude_patterns": ["build/"],
-        })
+        s.configure(
+            {
+                "repo_roots": [str(tmp_path)],
+                "exclude_patterns": ["build/"],
+            }
+        )
         assert s._exclude_patterns == ["build/"]
 
     def test_poll_interval_config(self, tmp_path: Path) -> None:
         s = RepositorySource()
-        s.configure({
-            "repo_roots": [str(tmp_path)],
-            "poll_interval_seconds": 60,
-        })
+        s.configure(
+            {
+                "repo_roots": [str(tmp_path)],
+                "poll_interval_seconds": 60,
+            }
+        )
         assert s._poll_interval == 60
 
     def test_name(self) -> None:
@@ -198,11 +204,13 @@ async def test_initial_scan_emits_file_events(tmp_path: Path) -> None:
 
     s = RepositorySource()
     cursor_file = tmp_path / "cursor.json"
-    s.configure({
-        "repo_roots": [str(tmp_path)],
-        "cursor_path": str(cursor_file),
-        "poll_interval_seconds": 3600,
-    })
+    s.configure(
+        {
+            "repo_roots": [str(tmp_path)],
+            "cursor_path": str(cursor_file),
+            "poll_interval_seconds": 3600,
+        }
+    )
 
     q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
     task = asyncio.create_task(s.start(q))
@@ -238,11 +246,13 @@ async def test_incremental_scan_only_new_changes(tmp_path: Path) -> None:
 
     cursor_file = tmp_path / "cursor.json"
     s = RepositorySource()
-    s.configure({
-        "repo_roots": [str(tmp_path)],
-        "cursor_path": str(cursor_file),
-        "poll_interval_seconds": 3600,
-    })
+    s.configure(
+        {
+            "repo_roots": [str(tmp_path)],
+            "cursor_path": str(cursor_file),
+            "poll_interval_seconds": 3600,
+        }
+    )
 
     # First scan
     q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
@@ -262,11 +272,13 @@ async def test_incremental_scan_only_new_changes(tmp_path: Path) -> None:
 
     # Second scan (incremental)
     s2 = RepositorySource()
-    s2.configure({
-        "repo_roots": [str(tmp_path)],
-        "cursor_path": str(cursor_file),
-        "poll_interval_seconds": 3600,
-    })
+    s2.configure(
+        {
+            "repo_roots": [str(tmp_path)],
+            "cursor_path": str(cursor_file),
+            "poll_interval_seconds": 3600,
+        }
+    )
 
     q2: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
     task2 = asyncio.create_task(s2.start(q2))
@@ -294,18 +306,23 @@ async def test_incremental_scan_only_new_changes(tmp_path: Path) -> None:
 async def test_include_patterns_filter_files(tmp_path: Path) -> None:
     """Only files matching include patterns should emit events."""
     repo_path = tmp_path / "myrepo"
-    _init_repo(repo_path, {
-        "README.md": "# Hello\n",
-        "src/main.py": "print('hi')\n",
-    })
+    _init_repo(
+        repo_path,
+        {
+            "README.md": "# Hello\n",
+            "src/main.py": "print('hi')\n",
+        },
+    )
 
     s = RepositorySource()
-    s.configure({
-        "repo_roots": [str(tmp_path)],
-        "cursor_path": str(tmp_path / "cursor.json"),
-        "poll_interval_seconds": 3600,
-        "include_patterns": ["README*"],  # Only READMEs
-    })
+    s.configure(
+        {
+            "repo_roots": [str(tmp_path)],
+            "cursor_path": str(tmp_path / "cursor.json"),
+            "poll_interval_seconds": 3600,
+            "include_patterns": ["README*"],  # Only READMEs
+        }
+    )
 
     q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
     task = asyncio.create_task(s.start(q))
@@ -329,11 +346,13 @@ async def test_commit_event_structure(tmp_path: Path) -> None:
     _init_repo(repo_path, {"README.md": "content\n"})
 
     s = RepositorySource()
-    s.configure({
-        "repo_roots": [str(tmp_path)],
-        "cursor_path": str(tmp_path / "cursor.json"),
-        "poll_interval_seconds": 3600,
-    })
+    s.configure(
+        {
+            "repo_roots": [str(tmp_path)],
+            "cursor_path": str(tmp_path / "cursor.json"),
+            "poll_interval_seconds": 3600,
+        }
+    )
 
     q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
     task = asyncio.create_task(s.start(q))
@@ -371,11 +390,13 @@ async def test_skips_bare_repo_during_scan(tmp_path: Path) -> None:
     _init_repo(tmp_path / "normal", {"README.md": "hi\n"})
 
     s = RepositorySource()
-    s.configure({
-        "repo_roots": [str(tmp_path)],
-        "cursor_path": str(tmp_path / "cursor.json"),
-        "poll_interval_seconds": 3600,
-    })
+    s.configure(
+        {
+            "repo_roots": [str(tmp_path)],
+            "cursor_path": str(tmp_path / "cursor.json"),
+            "poll_interval_seconds": 3600,
+        }
+    )
 
     q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
     task = asyncio.create_task(s.start(q))
@@ -399,11 +420,13 @@ async def test_handles_invalid_git_repo(tmp_path: Path) -> None:
     (bad_repo / ".git").write_text("not a valid git dir")
 
     s = RepositorySource()
-    s.configure({
-        "repo_roots": [str(tmp_path)],
-        "cursor_path": str(tmp_path / "cursor.json"),
-        "poll_interval_seconds": 3600,
-    })
+    s.configure(
+        {
+            "repo_roots": [str(tmp_path)],
+            "cursor_path": str(tmp_path / "cursor.json"),
+            "poll_interval_seconds": 3600,
+        }
+    )
 
     q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
     task = asyncio.create_task(s.start(q))

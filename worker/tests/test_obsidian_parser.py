@@ -243,7 +243,9 @@ class TestObsidianParser:
         note = "---\ncategory: ProjectX\ntitle: AlphaTask\n---\nContent."
         docs = self.parser.parse(_make_event(note))
         tag_hints = [h for h in docs[0].graph_hints if h.predicate == "TAGGED_BY_USER"]
-        omnifocus_hints = [h for h in tag_hints if h.object_id.startswith("omnifocus-tag:")]
+        omnifocus_hints = [
+            h for h in tag_hints if h.object_id.startswith("omnifocus-tag:")
+        ]
         assert len(omnifocus_hints) == 1
         hint = omnifocus_hints[0]
         assert hint.object_id == "omnifocus-tag:ProjectX/AlphaTask"
@@ -252,9 +254,13 @@ class TestObsidianParser:
 
     def test_category_name_from_filename(self):
         note = "---\ncategory: ProjectX\n---\nContent."
-        docs = self.parser.parse(_make_event(note, meta={"relative_path": "BetaTask.md"}))
+        docs = self.parser.parse(
+            _make_event(note, meta={"relative_path": "BetaTask.md"})
+        )
         tag_hints = [h for h in docs[0].graph_hints if h.predicate == "TAGGED_BY_USER"]
-        omnifocus_hints = [h for h in tag_hints if h.object_id.startswith("omnifocus-tag:")]
+        omnifocus_hints = [
+            h for h in tag_hints if h.object_id.startswith("omnifocus-tag:")
+        ]
         assert len(omnifocus_hints) == 1
         assert omnifocus_hints[0].object_id == "omnifocus-tag:ProjectX/BetaTask"
 
@@ -262,14 +268,18 @@ class TestObsidianParser:
         note = "---\ntitle: AlphaTask\n---\nContent."
         docs = self.parser.parse(_make_event(note))
         tag_hints = [h for h in docs[0].graph_hints if h.predicate == "TAGGED_BY_USER"]
-        omnifocus_hints = [h for h in tag_hints if h.object_id.startswith("omnifocus-tag:")]
+        omnifocus_hints = [
+            h for h in tag_hints if h.object_id.startswith("omnifocus-tag:")
+        ]
         assert len(omnifocus_hints) == 0
 
     def test_category_without_name_no_hint(self):
         note = "---\ncategory: ProjectX\n---\nContent."
         docs = self.parser.parse(_make_event(note))
         tag_hints = [h for h in docs[0].graph_hints if h.predicate == "TAGGED_BY_USER"]
-        omnifocus_hints = [h for h in tag_hints if h.object_id.startswith("omnifocus-tag:")]
+        omnifocus_hints = [
+            h for h in tag_hints if h.object_id.startswith("omnifocus-tag:")
+        ]
         assert len(omnifocus_hints) == 0
 
     def test_registry_registration(self):

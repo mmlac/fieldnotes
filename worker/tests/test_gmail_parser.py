@@ -67,8 +67,7 @@ class TestParseEmailAddress:
 
     def test_quoted_display_name(self):
         assert (
-            _parse_email_address('"Alice B" <alice@example.com>')
-            == "alice@example.com"
+            _parse_email_address('"Alice B" <alice@example.com>') == "alice@example.com"
         )
 
 

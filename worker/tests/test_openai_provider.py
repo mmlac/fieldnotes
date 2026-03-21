@@ -75,15 +75,21 @@ class TestOpenAIProviderConfigure:
 
     def test_configure_sets_timeouts(self) -> None:
         p = OpenAIProvider()
-        p.configure({"api_key": "sk-test", "completion_timeout": 60, "embed_timeout": 15})
+        p.configure(
+            {"api_key": "sk-test", "completion_timeout": 60, "embed_timeout": 15}
+        )
         assert p._completion_timeout == 60.0
         assert p._embed_timeout == 15.0
 
 
 class TestOpenAIComplete:
     def test_basic_completion(self, provider: OpenAIProvider) -> None:
-        provider._client.chat.completions.create.return_value = _make_completion_response(
-            content="Hello back!", prompt_tokens=10, completion_tokens=5,
+        provider._client.chat.completions.create.return_value = (
+            _make_completion_response(
+                content="Hello back!",
+                prompt_tokens=10,
+                completion_tokens=5,
+            )
         )
 
         req = CompletionRequest(
@@ -101,7 +107,9 @@ class TestOpenAIComplete:
         assert resp.tool_calls is None
 
     def test_sends_correct_kwargs(self, provider: OpenAIProvider) -> None:
-        provider._client.chat.completions.create.return_value = _make_completion_response()
+        provider._client.chat.completions.create.return_value = (
+            _make_completion_response()
+        )
 
         req = CompletionRequest(
             system="sys prompt",
@@ -120,7 +128,9 @@ class TestOpenAIComplete:
         assert messages[1] == {"role": "user", "content": "hi"}
 
     def test_no_system_message_when_empty(self, provider: OpenAIProvider) -> None:
-        provider._client.chat.completions.create.return_value = _make_completion_response()
+        provider._client.chat.completions.create.return_value = (
+            _make_completion_response()
+        )
 
         req = CompletionRequest(
             system="",
@@ -138,8 +148,11 @@ class TestOpenAIComplete:
                 arguments=json.dumps({"q": "test"}),
             )
         )
-        provider._client.chat.completions.create.return_value = _make_completion_response(
-            content="", tool_calls=[tc],
+        provider._client.chat.completions.create.return_value = (
+            _make_completion_response(
+                content="",
+                tool_calls=[tc],
+            )
         )
 
         req = CompletionRequest(
@@ -148,17 +161,24 @@ class TestOpenAIComplete:
             tools=[{"type": "function", "function": {"name": "search"}}],
         )
         resp = provider.complete("m", req)
-        assert resp.tool_calls == [{"function": {"name": "search", "arguments": {"q": "test"}}}]
+        assert resp.tool_calls == [
+            {"function": {"name": "search", "arguments": {"q": "test"}}}
+        ]
 
-    def test_malformed_tool_call_json_uses_raw_string(self, provider: OpenAIProvider) -> None:
+    def test_malformed_tool_call_json_uses_raw_string(
+        self, provider: OpenAIProvider
+    ) -> None:
         tc = SimpleNamespace(
             function=SimpleNamespace(
                 name="search",
                 arguments="{bad json",
             )
         )
-        provider._client.chat.completions.create.return_value = _make_completion_response(
-            content="", tool_calls=[tc],
+        provider._client.chat.completions.create.return_value = (
+            _make_completion_response(
+                content="",
+                tool_calls=[tc],
+            )
         )
 
         req = CompletionRequest(
@@ -167,10 +187,14 @@ class TestOpenAIComplete:
             tools=[{"type": "function", "function": {"name": "search"}}],
         )
         resp = provider.complete("m", req)
-        assert resp.tool_calls == [{"function": {"name": "search", "arguments": "{bad json"}}]
+        assert resp.tool_calls == [
+            {"function": {"name": "search", "arguments": "{bad json"}}
+        ]
 
     def test_tools_in_kwargs_when_provided(self, provider: OpenAIProvider) -> None:
-        provider._client.chat.completions.create.return_value = _make_completion_response()
+        provider._client.chat.completions.create.return_value = (
+            _make_completion_response()
+        )
 
         tools = [{"type": "function", "function": {"name": "foo"}}]
         req = CompletionRequest(
@@ -184,7 +208,9 @@ class TestOpenAIComplete:
         assert call_kwargs["tools"] == tools
 
     def test_no_tools_key_when_none(self, provider: OpenAIProvider) -> None:
-        provider._client.chat.completions.create.return_value = _make_completion_response()
+        provider._client.chat.completions.create.return_value = (
+            _make_completion_response()
+        )
 
         req = CompletionRequest(
             system="sys",
@@ -198,7 +224,9 @@ class TestOpenAIComplete:
 
     def test_unconfigured_raises(self) -> None:
         p = OpenAIProvider()
-        req = CompletionRequest(system="s", messages=[{"role": "user", "content": "hi"}])
+        req = CompletionRequest(
+            system="s", messages=[{"role": "user", "content": "hi"}]
+        )
         with pytest.raises(RuntimeError, match="not configured"):
             p.complete("m", req)
 
@@ -206,7 +234,8 @@ class TestOpenAIComplete:
 class TestOpenAIEmbed:
     def test_single_text_embedding(self, provider: OpenAIProvider) -> None:
         provider._client.embeddings.create.return_value = _make_embedding_response(
-            embeddings=[[0.1, 0.2, 0.3]], total_tokens=5,
+            embeddings=[[0.1, 0.2, 0.3]],
+            total_tokens=5,
         )
 
         req = EmbedRequest(texts=["hello world"])
@@ -220,7 +249,8 @@ class TestOpenAIEmbed:
 
     def test_multiple_texts_embedding(self, provider: OpenAIProvider) -> None:
         provider._client.embeddings.create.return_value = _make_embedding_response(
-            embeddings=[[0.1, 0.2], [0.3, 0.4]], total_tokens=7,
+            embeddings=[[0.1, 0.2], [0.3, 0.4]],
+            total_tokens=7,
         )
 
         req = EmbedRequest(texts=["hello", "world"])
@@ -233,7 +263,8 @@ class TestOpenAIEmbed:
 
     def test_embed_passes_texts_as_input(self, provider: OpenAIProvider) -> None:
         provider._client.embeddings.create.return_value = _make_embedding_response(
-            embeddings=[[0.1]], total_tokens=1,
+            embeddings=[[0.1]],
+            total_tokens=1,
         )
 
         req = EmbedRequest(texts=["test text"])

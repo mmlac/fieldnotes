@@ -101,17 +101,25 @@ class TestParseResponse:
     def test_parse_tool_call_response(self):
         resp = CompletionResponse(
             text="",
-            tool_calls=[{
-                "function": {
-                    "name": "submit_descriptions",
-                    "arguments": {
-                        "descriptions": [
-                            {"bundle_id": "com.docker.Docker", "description": "Container platform."},
-                            {"bundle_id": "com.apple.Safari", "description": "Apple's web browser."},
-                        ],
+            tool_calls=[
+                {
+                    "function": {
+                        "name": "submit_descriptions",
+                        "arguments": {
+                            "descriptions": [
+                                {
+                                    "bundle_id": "com.docker.Docker",
+                                    "description": "Container platform.",
+                                },
+                                {
+                                    "bundle_id": "com.apple.Safari",
+                                    "description": "Apple's web browser.",
+                                },
+                            ],
+                        },
                     },
-                },
-            }],
+                }
+            ],
             input_tokens=100,
             output_tokens=50,
             cached_tokens=0,
@@ -123,16 +131,23 @@ class TestParseResponse:
     def test_parse_tool_call_string_args(self):
         resp = CompletionResponse(
             text="",
-            tool_calls=[{
-                "function": {
-                    "name": "submit_descriptions",
-                    "arguments": json.dumps({
-                        "descriptions": [
-                            {"bundle_id": "com.docker.Docker", "description": "Container platform."},
-                        ],
-                    }),
-                },
-            }],
+            tool_calls=[
+                {
+                    "function": {
+                        "name": "submit_descriptions",
+                        "arguments": json.dumps(
+                            {
+                                "descriptions": [
+                                    {
+                                        "bundle_id": "com.docker.Docker",
+                                        "description": "Container platform.",
+                                    },
+                                ],
+                            }
+                        ),
+                    },
+                }
+            ],
             input_tokens=100,
             output_tokens=50,
             cached_tokens=0,
@@ -142,11 +157,16 @@ class TestParseResponse:
 
     def test_parse_text_fallback(self):
         resp = CompletionResponse(
-            text=json.dumps({
-                "descriptions": [
-                    {"bundle_id": "com.docker.Docker", "description": "Container platform."},
-                ],
-            }),
+            text=json.dumps(
+                {
+                    "descriptions": [
+                        {
+                            "bundle_id": "com.docker.Docker",
+                            "description": "Container platform.",
+                        },
+                    ],
+                }
+            ),
             tool_calls=None,
             input_tokens=100,
             output_tokens=50,
@@ -158,16 +178,21 @@ class TestParseResponse:
     def test_ignores_unknown_bundle_ids(self):
         resp = CompletionResponse(
             text="",
-            tool_calls=[{
-                "function": {
-                    "name": "submit_descriptions",
-                    "arguments": {
-                        "descriptions": [
-                            {"bundle_id": "com.unknown.Fake", "description": "Injected."},
-                        ],
+            tool_calls=[
+                {
+                    "function": {
+                        "name": "submit_descriptions",
+                        "arguments": {
+                            "descriptions": [
+                                {
+                                    "bundle_id": "com.unknown.Fake",
+                                    "description": "Injected.",
+                                },
+                            ],
+                        },
                     },
-                },
-            }],
+                }
+            ],
             input_tokens=100,
             output_tokens=50,
             cached_tokens=0,
@@ -198,17 +223,19 @@ class TestDescribeApps:
         model = MagicMock()
         model.complete.return_value = CompletionResponse(
             text="",
-            tool_calls=[{
-                "function": {
-                    "name": "submit_descriptions",
-                    "arguments": {
-                        "descriptions": [
-                            {"bundle_id": bid, "description": desc}
-                            for bid, desc in descriptions.items()
-                        ],
+            tool_calls=[
+                {
+                    "function": {
+                        "name": "submit_descriptions",
+                        "arguments": {
+                            "descriptions": [
+                                {"bundle_id": bid, "description": desc}
+                                for bid, desc in descriptions.items()
+                            ],
+                        },
                     },
-                },
-            }],
+                }
+            ],
             input_tokens=100,
             output_tokens=50,
             cached_tokens=0,

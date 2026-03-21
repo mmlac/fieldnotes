@@ -118,9 +118,9 @@ class TestWriteMcpConfig:
     @patch("worker.gastown.shutil.which", return_value="/usr/bin/fieldnotes")
     def test_preserves_existing_servers(self, _mock: object, tmp_path: Path) -> None:
         mcp_json = tmp_path / ".mcp.json"
-        mcp_json.write_text(json.dumps({
-            "mcpServers": {"other": {"command": "other-cmd", "args": []}}
-        }))
+        mcp_json.write_text(
+            json.dumps({"mcpServers": {"other": {"command": "other-cmd", "args": []}}})
+        )
 
         write_mcp_config(tmp_path)
 
@@ -144,7 +144,10 @@ class TestWriteMcpConfig:
 
         data = json.loads((tmp_path / ".mcp.json").read_text())
         assert data["mcpServers"]["fieldnotes"]["args"] == [
-            "-c", "/etc/fn.toml", "serve", "--mcp"
+            "-c",
+            "/etc/fn.toml",
+            "serve",
+            "--mcp",
         ]
 
 
@@ -314,7 +317,10 @@ class TestValidateConnectivity:
 
 class TestSetupGastown:
     @patch("worker.gastown.write_mcp_config")
-    @patch("worker.gastown.validate_connectivity", return_value={"neo4j": "ok", "qdrant": "ok"})
+    @patch(
+        "worker.gastown.validate_connectivity",
+        return_value={"neo4j": "ok", "qdrant": "ok"},
+    )
     @patch("worker.gastown.load_config")
     def test_success(
         self,
@@ -336,14 +342,15 @@ class TestSetupGastown:
         assert rc == 1
 
     @patch("worker.gastown.load_config", side_effect=RuntimeError("bad config"))
-    def test_config_load_failure_returns_1(
-        self, _mock: object, tmp_path: Path
-    ) -> None:
+    def test_config_load_failure_returns_1(self, _mock: object, tmp_path: Path) -> None:
         rc = setup_gastown(rig_root=tmp_path)
         assert rc == 1
 
     @patch("worker.gastown.write_mcp_config")
-    @patch("worker.gastown.validate_connectivity", return_value={"neo4j": "error: down", "qdrant": "ok"})
+    @patch(
+        "worker.gastown.validate_connectivity",
+        return_value={"neo4j": "error: down", "qdrant": "ok"},
+    )
     @patch("worker.gastown.load_config")
     def test_partial_health_still_succeeds(
         self,

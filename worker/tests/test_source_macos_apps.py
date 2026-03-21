@@ -113,7 +113,10 @@ class TestDiscoverApps:
 class TestParseInfoPlist:
     def test_parses_basic_plist(self, tmp_path: Path) -> None:
         app = _create_app(
-            tmp_path, "Test", bundle_id="com.test.app", version="2.1",
+            tmp_path,
+            "Test",
+            bundle_id="com.test.app",
+            version="2.1",
             category="public.app-category.developer-tools",
         )
         meta = _parse_info_plist(app)
@@ -221,7 +224,13 @@ class TestBuildEvent:
         assert "enqueued_at" in event
 
     def test_falls_back_to_name_for_source_id(self) -> None:
-        meta = {"name": "NoBundle", "bundle_id": "", "version": "", "path": "", "category": ""}
+        meta = {
+            "name": "NoBundle",
+            "bundle_id": "",
+            "version": "",
+            "path": "",
+            "category": "",
+        }
         event = _build_event(meta, "created")
         assert event["source_id"] == "app://NoBundle"
 
@@ -281,12 +290,14 @@ async def test_initial_scan_emits_created_events(tmp_path: Path) -> None:
     _create_app(tmp_path, "App2", bundle_id="com.test.app2")
 
     s = MacOSAppsSource()
-    s.configure({
-        "enabled": True,
-        "scan_dirs": [str(tmp_path)],
-        "state_path": str(tmp_path / "state.json"),
-        "poll_interval_seconds": 3600,
-    })
+    s.configure(
+        {
+            "enabled": True,
+            "scan_dirs": [str(tmp_path)],
+            "state_path": str(tmp_path / "state.json"),
+            "poll_interval_seconds": 3600,
+        }
+    )
 
     q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
     task = asyncio.create_task(s.start(q))
@@ -312,12 +323,14 @@ async def test_second_scan_detects_modifications(tmp_path: Path) -> None:
     state_path = tmp_path / "state.json"
 
     s = MacOSAppsSource()
-    s.configure({
-        "enabled": True,
-        "scan_dirs": [str(tmp_path)],
-        "state_path": str(state_path),
-        "poll_interval_seconds": 3600,
-    })
+    s.configure(
+        {
+            "enabled": True,
+            "scan_dirs": [str(tmp_path)],
+            "state_path": str(state_path),
+            "poll_interval_seconds": 3600,
+        }
+    )
 
     # First scan
     q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
@@ -342,12 +355,14 @@ async def test_second_scan_detects_modifications(tmp_path: Path) -> None:
 
     # Second scan
     s2 = MacOSAppsSource()
-    s2.configure({
-        "enabled": True,
-        "scan_dirs": [str(tmp_path)],
-        "state_path": str(state_path),
-        "poll_interval_seconds": 3600,
-    })
+    s2.configure(
+        {
+            "enabled": True,
+            "scan_dirs": [str(tmp_path)],
+            "state_path": str(state_path),
+            "poll_interval_seconds": 3600,
+        }
+    )
 
     q2: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
     task2 = asyncio.create_task(s2.start(q2))
@@ -370,12 +385,14 @@ async def test_detects_deleted_apps(tmp_path: Path) -> None:
     state_path = tmp_path / "state.json"
 
     s = MacOSAppsSource()
-    s.configure({
-        "enabled": True,
-        "scan_dirs": [str(tmp_path)],
-        "state_path": str(state_path),
-        "poll_interval_seconds": 3600,
-    })
+    s.configure(
+        {
+            "enabled": True,
+            "scan_dirs": [str(tmp_path)],
+            "state_path": str(state_path),
+            "poll_interval_seconds": 3600,
+        }
+    )
 
     # First scan
     q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
@@ -389,16 +406,19 @@ async def test_detects_deleted_apps(tmp_path: Path) -> None:
 
     # Remove the app
     import shutil
+
     shutil.rmtree(app)
 
     # Second scan
     s2 = MacOSAppsSource()
-    s2.configure({
-        "enabled": True,
-        "scan_dirs": [str(tmp_path)],
-        "state_path": str(state_path),
-        "poll_interval_seconds": 3600,
-    })
+    s2.configure(
+        {
+            "enabled": True,
+            "scan_dirs": [str(tmp_path)],
+            "state_path": str(state_path),
+            "poll_interval_seconds": 3600,
+        }
+    )
 
     q2: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
     task2 = asyncio.create_task(s2.start(q2))
@@ -421,12 +441,14 @@ async def test_unchanged_apps_emit_no_events(tmp_path: Path) -> None:
     state_path = tmp_path / "state.json"
 
     s = MacOSAppsSource()
-    s.configure({
-        "enabled": True,
-        "scan_dirs": [str(tmp_path)],
-        "state_path": str(state_path),
-        "poll_interval_seconds": 3600,
-    })
+    s.configure(
+        {
+            "enabled": True,
+            "scan_dirs": [str(tmp_path)],
+            "state_path": str(state_path),
+            "poll_interval_seconds": 3600,
+        }
+    )
 
     # First scan
     q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
@@ -440,12 +462,14 @@ async def test_unchanged_apps_emit_no_events(tmp_path: Path) -> None:
 
     # Second scan
     s2 = MacOSAppsSource()
-    s2.configure({
-        "enabled": True,
-        "scan_dirs": [str(tmp_path)],
-        "state_path": str(state_path),
-        "poll_interval_seconds": 3600,
-    })
+    s2.configure(
+        {
+            "enabled": True,
+            "scan_dirs": [str(tmp_path)],
+            "state_path": str(state_path),
+            "poll_interval_seconds": 3600,
+        }
+    )
 
     q2: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
     task2 = asyncio.create_task(s2.start(q2))
@@ -468,12 +492,14 @@ async def test_skips_broken_app_bundles(tmp_path: Path) -> None:
     _create_app(tmp_path, "Good", bundle_id="com.test.good")
 
     s = MacOSAppsSource()
-    s.configure({
-        "enabled": True,
-        "scan_dirs": [str(tmp_path)],
-        "state_path": str(tmp_path / "state.json"),
-        "poll_interval_seconds": 3600,
-    })
+    s.configure(
+        {
+            "enabled": True,
+            "scan_dirs": [str(tmp_path)],
+            "state_path": str(tmp_path / "state.json"),
+            "poll_interval_seconds": 3600,
+        }
+    )
 
     q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
     task = asyncio.create_task(s.start(q))
@@ -494,12 +520,14 @@ async def test_disabled_source_emits_nothing(tmp_path: Path) -> None:
     _create_app(tmp_path, "App", bundle_id="com.test")
 
     s = MacOSAppsSource()
-    s.configure({
-        "enabled": False,
-        "scan_dirs": [str(tmp_path)],
-        "state_path": str(tmp_path / "state.json"),
-        "poll_interval_seconds": 3600,
-    })
+    s.configure(
+        {
+            "enabled": False,
+            "scan_dirs": [str(tmp_path)],
+            "state_path": str(tmp_path / "state.json"),
+            "poll_interval_seconds": 3600,
+        }
+    )
 
     q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
     task = asyncio.create_task(s.start(q))
@@ -519,15 +547,16 @@ async def test_poll_interval_respected(tmp_path: Path) -> None:
     _create_app(tmp_path, "App", bundle_id="com.test.poll")
 
     s = MacOSAppsSource()
-    s.configure({
-        "enabled": True,
-        "scan_dirs": [str(tmp_path)],
-        "state_path": str(tmp_path / "state.json"),
-        "poll_interval_seconds": 42,
-    })
+    s.configure(
+        {
+            "enabled": True,
+            "scan_dirs": [str(tmp_path)],
+            "state_path": str(tmp_path / "state.json"),
+            "poll_interval_seconds": 42,
+        }
+    )
 
     sleep_args: list[float] = []
-    original_sleep = asyncio.sleep
 
     async def mock_sleep(delay: float, *args: Any, **kwargs: Any) -> None:
         sleep_args.append(delay)
@@ -550,12 +579,14 @@ async def test_graceful_shutdown_during_sleep(tmp_path: Path) -> None:
     _create_app(tmp_path, "App", bundle_id="com.test.shutdown")
 
     s = MacOSAppsSource()
-    s.configure({
-        "enabled": True,
-        "scan_dirs": [str(tmp_path)],
-        "state_path": str(tmp_path / "state.json"),
-        "poll_interval_seconds": 9999,
-    })
+    s.configure(
+        {
+            "enabled": True,
+            "scan_dirs": [str(tmp_path)],
+            "state_path": str(tmp_path / "state.json"),
+            "poll_interval_seconds": 9999,
+        }
+    )
 
     q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
     task = asyncio.create_task(s.start(q))

@@ -103,7 +103,9 @@ def test_large_cursor_save_load_roundtrip(tmp_path: Path) -> None:
     """10k+ entry cursor survives save/load roundtrip."""
     cursor_path = tmp_path / "cursor.json"
     n = 10_000
-    cursor = {f"/path/to/file_{i}.md": FileEntry(f"sha256_{i}", i * 1000, i) for i in range(n)}
+    cursor = {
+        f"/path/to/file_{i}.md": FileEntry(f"sha256_{i}", i * 1000, i) for i in range(n)
+    }
 
     save_cursor(cursor_path, cursor)
     loaded = load_cursor(cursor_path)

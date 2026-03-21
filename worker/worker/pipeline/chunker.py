@@ -104,10 +104,7 @@ def chunk_text(
     # Merge short trailing chunk into the previous one.
     chunks = _merge_short_chunks(chunks, min_chunk_tokens, chunk_size)
 
-    return [
-        Chunk(text=_detokenize(tokens), index=i)
-        for i, tokens in enumerate(chunks)
-    ]
+    return [Chunk(text=_detokenize(tokens), index=i) for i, tokens in enumerate(chunks)]
 
 
 def _merge_short_chunks(

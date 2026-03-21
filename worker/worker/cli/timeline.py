@@ -22,7 +22,9 @@ def _fmt_timestamp(ts: str) -> str:
     return ts[:16]
 
 
-def _group_by_day(entries: list[TimelineEntry]) -> list[tuple[str | None, list[TimelineEntry]]]:
+def _group_by_day(
+    entries: list[TimelineEntry],
+) -> list[tuple[str | None, list[TimelineEntry]]]:
     """Return entries grouped by calendar day, in order.
 
     Each group is (day_str | None, [entries]).  day_str is 'YYYY-MM-DD'.
@@ -54,9 +56,7 @@ def _format_human(result: TimelineResult) -> str:
 
     since_short = result.since[:10] if result.since else "?"
     until_short = result.until[:10] if result.until else "now"
-    lines.append(
-        f"\033[1mTimeline: {since_short} \u2192 {until_short}\033[0m"
-    )
+    lines.append(f"\033[1mTimeline: {since_short} \u2192 {until_short}\033[0m")
 
     if not result.entries:
         lines.append("\n  No activity found in this time range.")

@@ -52,7 +52,19 @@ JOB_NAME = "fieldnotes_worker"
 # ---------------------------------------------------------------------------
 
 DURATION_BUCKETS = (
-    0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120,
+    0.01,
+    0.025,
+    0.05,
+    0.1,
+    0.25,
+    0.5,
+    1,
+    2.5,
+    5,
+    10,
+    30,
+    60,
+    120,
 )
 
 # ---------------------------------------------------------------------------
@@ -432,9 +444,7 @@ def _collect_neo4j(driver: Driver) -> None:
                 ("Chunk", CHUNKS_TOTAL),
                 ("Topic", TOPICS_TOTAL),
             ]:
-                result = session.run(
-                    f"MATCH (n:{label}) RETURN count(n) AS count"
-                )
+                result = session.run(f"MATCH (n:{label}) RETURN count(n) AS count")
                 gauge.set(result.single()["count"])
 
             # Edge counts by type

@@ -122,8 +122,13 @@ class TestRunClusteringPipeline:
 
         with (
             patch("worker.clustering.scheduler._corpus_size", return_value=200),
-            patch("worker.clustering.scheduler.cluster_embeddings", return_value=mock_clusters) as mock_ce,
-            patch("worker.clustering.scheduler.label_clusters", return_value=mock_labeled) as mock_lc,
+            patch(
+                "worker.clustering.scheduler.cluster_embeddings",
+                return_value=mock_clusters,
+            ) as mock_ce,
+            patch(
+                "worker.clustering.scheduler.label_clusters", return_value=mock_labeled
+            ) as mock_lc,
             patch("worker.clustering.scheduler.write_clusters") as mock_wc,
         ):
             result = run_clustering_pipeline(
@@ -178,7 +183,9 @@ class TestRunClusteringPipeline:
     def test_passes_min_corpus_size_to_cluster(self) -> None:
         with (
             patch("worker.clustering.scheduler._corpus_size", return_value=200),
-            patch("worker.clustering.scheduler.cluster_embeddings", return_value=[]) as mock_ce,
+            patch(
+                "worker.clustering.scheduler.cluster_embeddings", return_value=[]
+            ) as mock_ce,
         ):
             run_clustering_pipeline(
                 _mock_registry(),
@@ -212,7 +219,10 @@ class TestClusteringLoop:
 
         with (
             patch("worker.clustering.scheduler._seconds_until_next", return_value=0.0),
-            patch("worker.clustering.scheduler.run_clustering_pipeline", side_effect=fake_pipeline),
+            patch(
+                "worker.clustering.scheduler.run_clustering_pipeline",
+                side_effect=fake_pipeline,
+            ),
         ):
             task = asyncio.create_task(
                 clustering_loop(
@@ -246,7 +256,10 @@ class TestClusteringLoop:
 
         with (
             patch("worker.clustering.scheduler._seconds_until_next", return_value=0.0),
-            patch("worker.clustering.scheduler.run_clustering_pipeline", side_effect=failing_pipeline),
+            patch(
+                "worker.clustering.scheduler.run_clustering_pipeline",
+                side_effect=failing_pipeline,
+            ),
         ):
             task = asyncio.create_task(
                 clustering_loop(
@@ -278,7 +291,10 @@ class TestClusteringLoop:
 
         with (
             patch("worker.clustering.scheduler._seconds_until_next", return_value=0.0),
-            patch("worker.clustering.scheduler.run_clustering_pipeline", side_effect=timed_pipeline),
+            patch(
+                "worker.clustering.scheduler.run_clustering_pipeline",
+                side_effect=timed_pipeline,
+            ),
         ):
             task = asyncio.create_task(
                 clustering_loop(

@@ -27,11 +27,13 @@ from ..registry import register
 logger = logging.getLogger(__name__)
 
 _anthropic_retry = retry(
-    retry=retry_if_exception_type((
-        anthropic.APIConnectionError,
-        anthropic.RateLimitError,
-        anthropic.InternalServerError,
-    )),
+    retry=retry_if_exception_type(
+        (
+            anthropic.APIConnectionError,
+            anthropic.RateLimitError,
+            anthropic.InternalServerError,
+        )
+    ),
     stop=stop_after_attempt(4),
     wait=wait_exponential_jitter(initial=0.5, max=10),
     before_sleep=lambda rs: logger.warning(
@@ -64,7 +66,9 @@ class AnthropicProvider(ModelProvider):
 
     def _get_client(self) -> anthropic.Anthropic:
         if self._client is None:
-            raise RuntimeError("AnthropicProvider.configure() must be called before use")
+            raise RuntimeError(
+                "AnthropicProvider.configure() must be called before use"
+            )
         return self._client
 
     @staticmethod
@@ -78,11 +82,15 @@ class AnthropicProvider(ModelProvider):
         for tool in tools:
             if "function" in tool:
                 func = tool["function"]
-                converted.append({
-                    "name": func["name"],
-                    "description": func.get("description", ""),
-                    "input_schema": func.get("parameters", {"type": "object", "properties": {}}),
-                })
+                converted.append(
+                    {
+                        "name": func["name"],
+                        "description": func.get("description", ""),
+                        "input_schema": func.get(
+                            "parameters", {"type": "object", "properties": {}}
+                        ),
+                    }
+                )
             else:
                 # Already in Anthropic format or unknown — pass through
                 converted.append(tool)
@@ -117,12 +125,14 @@ class AnthropicProvider(ModelProvider):
             if block.type == "text":
                 text_parts.append(block.text)
             elif block.type == "tool_use":
-                tool_calls.append({
-                    "function": {
-                        "name": block.name,
-                        "arguments": block.input,
-                    },
-                })
+                tool_calls.append(
+                    {
+                        "function": {
+                            "name": block.name,
+                            "arguments": block.input,
+                        },
+                    }
+                )
 
         usage = response.usage
         cached_tokens = getattr(usage, "cache_read_input_tokens", 0) or 0
@@ -135,7 +145,9 @@ class AnthropicProvider(ModelProvider):
             cached_tokens=cached_tokens,
         )
 
-    def stream_complete(self, model: str, req: CompletionRequest) -> Iterator[StreamChunk]:
+    def stream_complete(
+        self, model: str, req: CompletionRequest
+    ) -> Iterator[StreamChunk]:
         client = self._get_client()
 
         kwargs: dict[str, Any] = {

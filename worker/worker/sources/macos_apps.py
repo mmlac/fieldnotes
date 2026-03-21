@@ -87,9 +87,7 @@ def _parse_info_plist(app_path: Path) -> dict[str, Any] | None:
         return None
 
     display_name = (
-        plist.get("CFBundleDisplayName")
-        or plist.get("CFBundleName")
-        or app_path.stem
+        plist.get("CFBundleDisplayName") or plist.get("CFBundleName") or app_path.stem
     )
     bundle_id = plist.get("CFBundleIdentifier", "")
     version = plist.get("CFBundleShortVersionString", "")
@@ -257,7 +255,8 @@ class MacOSAppsSource(PythonSource):
             event = _build_event(metadata, operation)
             await queue.put(event)
             SOURCE_WATCHER_EVENTS.labels(
-                source_type=_SOURCE_TYPE, event_type=operation,
+                source_type=_SOURCE_TYPE,
+                event_type=operation,
             ).inc()
             WATCHER_LAST_EVENT_TIMESTAMP.labels(
                 source_type=_SOURCE_TYPE,
@@ -267,12 +266,19 @@ class MacOSAppsSource(PythonSource):
         removed_ids = set(state) - set(current)
         for bundle_id in removed_ids:
             event = _build_event(
-                {"bundle_id": bundle_id, "name": bundle_id, "path": "", "version": "", "category": ""},
+                {
+                    "bundle_id": bundle_id,
+                    "name": bundle_id,
+                    "path": "",
+                    "version": "",
+                    "category": "",
+                },
                 "deleted",
             )
             await queue.put(event)
             SOURCE_WATCHER_EVENTS.labels(
-                source_type=_SOURCE_TYPE, event_type="deleted",
+                source_type=_SOURCE_TYPE,
+                event_type="deleted",
             ).inc()
             WATCHER_LAST_EVENT_TIMESTAMP.labels(
                 source_type=_SOURCE_TYPE,
@@ -284,5 +290,8 @@ class MacOSAppsSource(PythonSource):
 
         logger.info(
             "App scan: %d new, %d removed, %d updated, %d total",
-            new_count, len(removed_ids), updated_count, len(current),
+            new_count,
+            len(removed_ids),
+            updated_count,
+            len(current),
         )

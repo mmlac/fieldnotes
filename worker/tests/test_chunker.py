@@ -1,6 +1,5 @@
 """Tests for pipeline/chunker.py — sentence-aware text splitting."""
 
-
 from worker.pipeline.chunker import (
     Chunk,
     chunk_text,
@@ -92,7 +91,9 @@ class TestChunkText:
 
     def test_chunk_indices_are_sequential(self) -> None:
         # Generate enough text to produce multiple chunks
-        sentences = [f"Sentence number {i} with enough words to matter." for i in range(200)]
+        sentences = [
+            f"Sentence number {i} with enough words to matter." for i in range(200)
+        ]
         text = " ".join(sentences)
         chunks = chunk_text(text, chunk_size=50, overlap=5, min_chunk_tokens=10)
         assert len(chunks) > 1
@@ -120,7 +121,9 @@ class TestChunkText:
         assert isinstance(chunks[0].index, int)
 
     def test_custom_chunk_size(self) -> None:
-        sentences = [f"This is sentence {i} with some extra padding words." for i in range(50)]
+        sentences = [
+            f"This is sentence {i} with some extra padding words." for i in range(50)
+        ]
         text = " ".join(sentences)
         small_chunks = chunk_text(text, chunk_size=20, overlap=2, min_chunk_tokens=5)
         large_chunks = chunk_text(text, chunk_size=200, overlap=10, min_chunk_tokens=5)

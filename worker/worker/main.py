@@ -48,6 +48,7 @@ from worker.sources.base import PythonSource
 
 # Importing parsers triggers @register decorators
 import worker.parsers  # noqa: F401
+
 # Importing providers triggers @register decorators
 import worker.models.providers  # noqa: F401
 from worker.parsers.registry import get as get_parser
@@ -245,7 +246,9 @@ async def _run(cfg: Config) -> None:
             except Exception:
                 logger.exception(
                     "Failed to process event %s %s (%s)",
-                    source_type, source_id, operation,
+                    source_type,
+                    source_id,
+                    operation,
                 )
     finally:
         _DRAIN_TIMEOUT = 10  # seconds to wait for in-progress work
@@ -284,7 +287,8 @@ def main() -> None:
         description="fieldnotes Phase 1 worker",
     )
     parser.add_argument(
-        "--config", "-c",
+        "--config",
+        "-c",
         type=Path,
         default=None,
         help="Path to config.toml (default: ~/.fieldnotes/config.toml)",
@@ -308,10 +312,18 @@ def main() -> None:
             break
         except Exception as exc:
             if attempt == max_retries:
-                logger.error("Neo4j health check failed after %d attempts: %s", max_retries, exc)
+                logger.error(
+                    "Neo4j health check failed after %d attempts: %s", max_retries, exc
+                )
                 sys.exit(1)
-            delay = 2 ** attempt  # 2, 4, 8, 16s — ~30s total
-            logger.warning("Neo4j health check failed (attempt %d/%d): %s — retrying in %ds", attempt, max_retries, exc, delay)
+            delay = 2**attempt  # 2, 4, 8, 16s — ~30s total
+            logger.warning(
+                "Neo4j health check failed (attempt %d/%d): %s — retrying in %ds",
+                attempt,
+                max_retries,
+                exc,
+                delay,
+            )
             time.sleep(delay)
 
     for attempt in range(1, max_retries + 1):
@@ -320,10 +332,18 @@ def main() -> None:
             break
         except Exception as exc:
             if attempt == max_retries:
-                logger.error("Qdrant health check failed after %d attempts: %s", max_retries, exc)
+                logger.error(
+                    "Qdrant health check failed after %d attempts: %s", max_retries, exc
+                )
                 sys.exit(1)
-            delay = 2 ** attempt
-            logger.warning("Qdrant health check failed (attempt %d/%d): %s — retrying in %ds", attempt, max_retries, exc, delay)
+            delay = 2**attempt
+            logger.warning(
+                "Qdrant health check failed (attempt %d/%d): %s — retrying in %ds",
+                attempt,
+                max_retries,
+                exc,
+                delay,
+            )
             time.sleep(delay)
 
     # Run the async event loop

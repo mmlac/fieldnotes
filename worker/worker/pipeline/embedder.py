@@ -55,9 +55,7 @@ def embed_chunks(
         resp = model.embed(EmbedRequest(texts=batch))
 
         if len(resp.vectors) != len(batch):
-            raise ValueError(
-                f"Expected {len(batch)} vectors, got {len(resp.vectors)}"
-            )
+            raise ValueError(f"Expected {len(batch)} vectors, got {len(resp.vectors)}")
 
         for text, vec in zip(batch, resp.vectors):
             results.append((text, vec))
@@ -69,5 +67,10 @@ def embed_chunks(
             resp.input_tokens,
         )
 
-    logger.info("Embedded %d chunks via %s/%s", len(results), model.provider.provider_type, model.model)
+    logger.info(
+        "Embedded %d chunks via %s/%s",
+        len(results),
+        model.provider.provider_type,
+        model.model,
+    )
     return results

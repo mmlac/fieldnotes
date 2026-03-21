@@ -97,9 +97,7 @@ def _prepare_context(
         except KeyError:
             extraction_model = None
         if extraction_model is not None:
-            history_pairs = [
-                (t.question, t.answer) for t in session.history
-            ]
+            history_pairs = [(t.question, t.answer) for t in session.history]
             search_query = reformulate(question, history_pairs, extraction_model)
             if search_query != question:
                 logger.info("Reformulated: %r -> %r", question, search_query)
@@ -127,7 +125,9 @@ def _prepare_context(
             graph_result = graph_querier.query(search_query)
         except Exception as exc:
             logger.debug("Graph query failed: %s", exc)
-            graph_result = GraphQueryResult(question=search_query, cypher="", error=str(exc))
+            graph_result = GraphQueryResult(
+                question=search_query, cypher="", error=str(exc)
+            )
 
         try:
             vector_result = vector_querier.query(search_query, top_k=20)
@@ -195,11 +195,7 @@ def _prepare_context(
         turns = []
         for turn in session.history[-5:]:  # last 5 turns for context window
             turns.append(f"Q: {turn.question}\nA: {turn.answer}")
-        history_block = (
-            "Previous conversation:\n"
-            + "\n---\n".join(turns)
-            + "\n\n"
-        )
+        history_block = "Previous conversation:\n" + "\n---\n".join(turns) + "\n\n"
 
     user_prompt = (
         f"{history_block}"
@@ -247,6 +243,7 @@ def _format_footer(
 
     if ctx.source_ids and show_sources:
         from worker.cli.stream import format_sources
+
         parts.append(format_sources(ctx.source_ids))
 
     if not ctx.has_context:
@@ -265,11 +262,13 @@ def _record_turn(
     source_ids: list[str],
 ) -> None:
     """Record a turn in session history and persist conversation."""
-    session.history.append(_Turn(
-        question=question,
-        context=context_text,
-        answer=answer,
-    ))
+    session.history.append(
+        _Turn(
+            question=question,
+            context=context_text,
+            answer=answer,
+        )
+    )
     session.conversation.add_turn(
         TurnRecord(
             question=question,
@@ -450,11 +449,13 @@ def _run_repl(
         session.id = conv.id
         # Restore in-memory history from persisted turns.
         for turn in conv.turns:
-            session.history.append(_Turn(
-                question=turn.question,
-                context="",
-                answer=turn.answer,
-            ))
+            session.history.append(
+                _Turn(
+                    question=turn.question,
+                    context="",
+                    answer=turn.answer,
+                )
+            )
     else:
         session.conversation = Conversation(id=session.id)
 
@@ -545,7 +546,9 @@ def _run_repl(
                     continue
                 else:
                     print(f"Unknown command: {cmd}")
-                    print("Available: /history, /sessions, /clear, /save, /verbose, /quit\n")
+                    print(
+                        "Available: /history, /sessions, /clear, /save, /verbose, /quit\n"
+                    )
                     continue
 
             # Ask the question.
@@ -694,7 +697,8 @@ def _run_json(
 
     if ctx.empty:
         answer = (
-            EMPTY_CORPUS_MESSAGE if ctx.empty_corpus
+            EMPTY_CORPUS_MESSAGE
+            if ctx.empty_corpus
             else "I don't have enough information in the knowledge graph to answer this question."
         )
         render_json(

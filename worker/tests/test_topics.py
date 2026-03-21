@@ -110,9 +110,7 @@ class TestFormatTopicDetail:
         assert "a.md" in out
 
     def test_json_output(self) -> None:
-        detail = TopicDetail(
-            name="ML", source="user", description="desc", documents=[]
-        )
+        detail = TopicDetail(name="ML", source="user", description="desc", documents=[])
         out = format_topic_detail(detail, use_json=True)
         data = json.loads(out)
         assert data["name"] == "ML"
@@ -245,8 +243,10 @@ class TestTopicsCLI:
     ) -> None:
         # topics with no subcommand should show usage and return 1
         # We need to mock load_config since it's called in _run_topics
-        with patch("worker.cli.load_config") as mock_load, \
-             patch("worker.query.topics.TopicQuerier"):
+        with (
+            patch("worker.cli.load_config") as mock_load,
+            patch("worker.query.topics.TopicQuerier"),
+        ):
             mock_load.return_value = MagicMock()
             rc = main(["topics"])
             assert rc == 1

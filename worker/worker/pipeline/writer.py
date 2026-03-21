@@ -78,64 +78,66 @@ MAX_ENTITY_NAME_LEN = 256
 # Allowed relationship types for LLM-generated entity triples.
 # Predicates not in this set are mapped to RELATED_TO to prevent
 # semantic pollution from unconstrained LLM output.
-ALLOWED_PREDICATES: frozenset[str] = frozenset({
-    "RELATED_TO",
-    "WORKS_AT",
-    "WORKS_FOR",
-    "WORKS_ON",
-    "KNOWS",
-    "COLLABORATES_WITH",
-    "USES",
-    "USED_BY",
-    "CREATED_BY",
-    "CREATED",
-    "PART_OF",
-    "BELONGS_TO",
-    "CONTAINS",
-    "DEPENDS_ON",
-    "IS_A",
-    "HAS_A",
-    "LOCATED_IN",
-    "MANAGES",
-    "REPORTS_TO",
-    "CONTRIBUTED_TO",
-    "BASED_ON",
-    "DERIVED_FROM",
-    "ASSOCIATED_WITH",
-    "FOUNDED",
-    "FUNDED_BY",
-    "PUBLISHED",
-    "AUTHORED",
-    "EMPLOYED_BY",
-    "AFFILIATED_WITH",
-    "MEMBER_OF",
-    "MENTIONS",
-    "REFERENCES",
-    "IMPLEMENTS",
-    "EXTENDS",
-    "INTEGRATES_WITH",
-    "SUCCEEDED_BY",
-    "PRECEDED_BY",
-    "SAME_AS",
-    "SIMILAR_TO",
-    "OPPOSITE_OF",
-    "INFLUENCED_BY",
-    "SUPPORTS",
-    "CONFLICTS_WITH",
-    "ACQUIRED_BY",
-    "INVESTED_IN",
-    "DEVELOPED_BY",
-    "MAINTAINED_BY",
-    "OWNED_BY",
-    "LED_BY",
-    "TAUGHT_BY",
-    "ATTENDED",
-    "PARTICIPATED_IN",
-    "SPOKE_AT",
-    "INSTALLED_VIA",
-    "CATEGORIZED_AS",
-    "PROVIDES",
-})
+ALLOWED_PREDICATES: frozenset[str] = frozenset(
+    {
+        "RELATED_TO",
+        "WORKS_AT",
+        "WORKS_FOR",
+        "WORKS_ON",
+        "KNOWS",
+        "COLLABORATES_WITH",
+        "USES",
+        "USED_BY",
+        "CREATED_BY",
+        "CREATED",
+        "PART_OF",
+        "BELONGS_TO",
+        "CONTAINS",
+        "DEPENDS_ON",
+        "IS_A",
+        "HAS_A",
+        "LOCATED_IN",
+        "MANAGES",
+        "REPORTS_TO",
+        "CONTRIBUTED_TO",
+        "BASED_ON",
+        "DERIVED_FROM",
+        "ASSOCIATED_WITH",
+        "FOUNDED",
+        "FUNDED_BY",
+        "PUBLISHED",
+        "AUTHORED",
+        "EMPLOYED_BY",
+        "AFFILIATED_WITH",
+        "MEMBER_OF",
+        "MENTIONS",
+        "REFERENCES",
+        "IMPLEMENTS",
+        "EXTENDS",
+        "INTEGRATES_WITH",
+        "SUCCEEDED_BY",
+        "PRECEDED_BY",
+        "SAME_AS",
+        "SIMILAR_TO",
+        "OPPOSITE_OF",
+        "INFLUENCED_BY",
+        "SUPPORTS",
+        "CONFLICTS_WITH",
+        "ACQUIRED_BY",
+        "INVESTED_IN",
+        "DEVELOPED_BY",
+        "MAINTAINED_BY",
+        "OWNED_BY",
+        "LED_BY",
+        "TAUGHT_BY",
+        "ATTENDED",
+        "PARTICIPATED_IN",
+        "SPOKE_AT",
+        "INSTALLED_VIA",
+        "CATEGORIZED_AS",
+        "PROVIDES",
+    }
+)
 
 _LUCENE_SPECIAL_RE = re.compile(r'([+\-&|!(){}[\]^"~*?:\\/])')
 
@@ -174,9 +176,7 @@ def _validate_cypher_identifier(value: str, context: str) -> str:
     Raises ValueError if the value does not match ^[A-Za-z_][A-Za-z0-9_]*$.
     """
     if not _SAFE_IDENTIFIER_RE.match(value):
-        raise ValueError(
-            f"Unsafe Cypher identifier in {context}: {value!r}"
-        )
+        raise ValueError(f"Unsafe Cypher identifier in {context}: {value!r}")
     return value
 
 
@@ -225,10 +225,14 @@ class Writer:
 
             # Circuit breakers for downstream services
             self.neo4j_breaker = CircuitBreaker(
-                "neo4j", failure_threshold=5, recovery_timeout=60.0,
+                "neo4j",
+                failure_threshold=5,
+                recovery_timeout=60.0,
             )
             self.qdrant_breaker = CircuitBreaker(
-                "qdrant", failure_threshold=5, recovery_timeout=60.0,
+                "qdrant",
+                failure_threshold=5,
+                recovery_timeout=60.0,
             )
 
             self._ensure_qdrant_collection()
@@ -240,9 +244,7 @@ class Writer:
     @_qdrant_retry
     def _ensure_qdrant_collection(self) -> None:
         """Create the Qdrant collection if it does not exist."""
-        collections = [
-            c.name for c in self._qdrant.get_collections().collections
-        ]
+        collections = [c.name for c in self._qdrant.get_collections().collections]
         if self._collection not in collections:
             self._qdrant.create_collection(
                 collection_name=self._collection,
@@ -271,8 +273,7 @@ class Writer:
         """Set vision_processed flag in Neo4j with retry."""
         with self._neo4j_driver.session() as session:
             session.run(
-                "MATCH (n:Image {source_id: $sid}) "
-                "SET n.vision_processed = true",
+                "MATCH (n:Image {source_id: $sid}) SET n.vision_processed = true",
                 sid=source_id,
             )
 
@@ -686,7 +687,9 @@ class Writer:
     def __enter__(self) -> Writer:
         return self
 
-    def __exit__(self, exc_type: type | None, exc_val: BaseException | None, exc_tb: Any) -> None:
+    def __exit__(
+        self, exc_type: type | None, exc_val: BaseException | None, exc_tb: Any
+    ) -> None:
         self.close()
 
     def close(self) -> None:
@@ -793,8 +796,7 @@ class Writer:
             # 9. Remove DEPICTS edges not pointing to current depicts entities;
             #    collect removed entity names as orphan candidates.
             current_depicts_names = [
-                _truncate_entity_name(e["name"])
-                for e in unit.depicts_entities
+                _truncate_entity_name(e["name"]) for e in unit.depicts_entities
             ]
             stale_depicts = _clean_stale_edges(
                 tx, doc.source_id, "DEPICTS", current_depicts_names
@@ -841,10 +843,12 @@ class Writer:
         with observe_duration(QDRANT_WRITE_DURATION):
             points = []
             for chunk, vector in zip(unit.chunks, unit.vectors):
-                point_id = str(uuid.uuid5(
-                    uuid.NAMESPACE_URL,
-                    f"{doc.source_id}:{chunk.index}",
-                ))
+                point_id = str(
+                    uuid.uuid5(
+                        uuid.NAMESPACE_URL,
+                        f"{doc.source_id}:{chunk.index}",
+                    )
+                )
                 payload = {
                     "source_type": doc.source_type,
                     "source_id": doc.source_id,
@@ -852,11 +856,13 @@ class Writer:
                     "text": chunk.text,
                     "date": doc.source_metadata.get("date", ""),
                 }
-                points.append(PointStruct(
-                    id=point_id,
-                    vector=vector,
-                    payload=payload,
-                ))
+                points.append(
+                    PointStruct(
+                        id=point_id,
+                        vector=vector,
+                        payload=payload,
+                    )
+                )
 
             if points:
                 self._qdrant.upsert(
@@ -1137,7 +1143,9 @@ def _cleanup_orphan_entities(tx: Any, candidate_names: list[str]) -> int:
     return removed
 
 
-def _merge_attached_to_edge(tx: Any, image_source_id: str, parent_source_id: str) -> None:
+def _merge_attached_to_edge(
+    tx: Any, image_source_id: str, parent_source_id: str
+) -> None:
     """Create an ATTACHED_TO edge from an Image node to its parent File node."""
     tx.run(
         """
@@ -1178,7 +1186,9 @@ def _merge_entity_edge(tx: Any, triple: dict[str, str]) -> None:
         predicate = "RELATED_TO"
     # Defense in depth: assert predicate is safe immediately before interpolation.
     # This guard prevents injection if the validation logic above is ever refactored.
-    assert predicate in ALLOWED_PREDICATES, f"predicate {predicate!r} not in ALLOWED_PREDICATES"
+    assert predicate in ALLOWED_PREDICATES, (
+        f"predicate {predicate!r} not in ALLOWED_PREDICATES"
+    )
     _validate_cypher_identifier(predicate, "triple predicate (pre-interpolation)")
     tx.run(
         f"""
@@ -1191,9 +1201,7 @@ def _merge_entity_edge(tx: Any, triple: dict[str, str]) -> None:
     )
 
 
-def _upsert_chunk(
-    tx: Any, chunk_id: str, source_id: str, chunk: Chunk
-) -> None:
+def _upsert_chunk(tx: Any, chunk_id: str, source_id: str, chunk: Chunk) -> None:
     """Create a Chunk node and link it to the source via HAS_CHUNK."""
     tx.run(
         """
@@ -1212,9 +1220,7 @@ def _upsert_chunk(
     )
 
 
-def _build_hint_set_parts(
-    alias: str, props: dict[str, Any], is_person: bool
-) -> str:
+def _build_hint_set_parts(alias: str, props: dict[str, Any], is_person: bool) -> str:
     """Build a Cypher SET clause for graph hint node properties.
 
     For Person nodes, the ``name`` property uses a conditional update that
@@ -1243,7 +1249,9 @@ def _write_graph_hint(tx: Any, hint: GraphHint) -> None:
     fall back to ``source_id``. All property values are passed as Cypher
     parameters (no f-string interpolation of values).
     """
-    subject_label = _validate_cypher_identifier(hint.subject_label, "hint subject_label")
+    subject_label = _validate_cypher_identifier(
+        hint.subject_label, "hint subject_label"
+    )
     object_label = _validate_cypher_identifier(hint.object_label, "hint object_label")
     predicate = hint.predicate.replace(" ", "_").upper()
     _validate_cypher_identifier(predicate, "hint predicate")
@@ -1262,9 +1270,7 @@ def _write_graph_hint(tx: Any, hint: GraphHint) -> None:
     # Determine merge value: use subject_props if the key exists there,
     # otherwise fall back to source_id (the default merge key).
     subj_merge_val = subj_props.get(subj_merge_key, hint.subject_id)
-    subj_set_parts = _build_hint_set_parts(
-        "s", subj_props, subject_label == "Person"
-    )
+    subj_set_parts = _build_hint_set_parts("s", subj_props, subject_label == "Person")
     subj_params = {f"s_{k}": v for k, v in subj_props.items()}
     subj_params["s_merge"] = subj_merge_val
     tx.run(
@@ -1278,14 +1284,11 @@ def _write_graph_hint(tx: Any, hint: GraphHint) -> None:
     for k in obj_props:
         _validate_cypher_identifier(k, "hint object_props key")
     obj_merge_val = obj_props.get(obj_merge_key, hint.object_id)
-    obj_set_parts = _build_hint_set_parts(
-        "o", obj_props, object_label == "Person"
-    )
+    obj_set_parts = _build_hint_set_parts("o", obj_props, object_label == "Person")
     obj_params = {f"o_{k}": v for k, v in obj_props.items()}
     obj_params["o_merge"] = obj_merge_val
     tx.run(
-        f"MERGE (o:{object_label} {{{obj_merge_key}: $o_merge}}) "
-        f"SET {obj_set_parts}",
+        f"MERGE (o:{object_label} {{{obj_merge_key}: $o_merge}}) SET {obj_set_parts}",
         **obj_params,
     )
 

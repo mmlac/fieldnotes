@@ -192,9 +192,7 @@ class TestCommitEventParsing:
 
     def test_commit_modified_files(self) -> None:
         parser = RepositoryParser()
-        docs = parser.parse(
-            _commit_event(changed_files=["a.py", "b.py", "c.py"])
-        )
+        docs = parser.parse(_commit_event(changed_files=["a.py", "b.py", "c.py"]))
         doc = docs[0]
 
         modified = [h for h in doc.graph_hints if h.predicate == "MODIFIED"]

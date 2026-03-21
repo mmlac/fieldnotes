@@ -19,6 +19,7 @@ from worker.models.base import CompletionResponse
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_cluster(
     cluster_id: int = 0,
     chunk_ids: list[str] | None = None,
@@ -39,9 +40,12 @@ def _make_qdrant_point(point_id: str, vector: list[float], text: str) -> MagicMo
     return p
 
 
-def _mock_model(label: str = "Test Topic", description: str = "A test topic.") -> MagicMock:
+def _mock_model(
+    label: str = "Test Topic", description: str = "A test topic."
+) -> MagicMock:
     model = MagicMock()
     import json
+
     model.complete.return_value = CompletionResponse(
         text=json.dumps({"label": label, "description": description}),
     )
@@ -51,6 +55,7 @@ def _mock_model(label: str = "Test Topic", description: str = "A test topic.") -
 # ---------------------------------------------------------------------------
 # _get_central_chunk_texts
 # ---------------------------------------------------------------------------
+
 
 class TestGetCentralChunkTexts:
     def test_returns_texts_sorted_by_distance(self) -> None:
@@ -129,6 +134,7 @@ class TestGetCentralChunkTexts:
 # _call_labeling_model
 # ---------------------------------------------------------------------------
 
+
 class TestCallLabelingModel:
     def test_parses_valid_json(self) -> None:
         model = _mock_model("Machine Learning", "Notes about ML techniques.")
@@ -159,9 +165,7 @@ class TestCallLabelingModel:
 
     def test_fallback_on_missing_keys(self) -> None:
         model = MagicMock()
-        model.complete.return_value = CompletionResponse(
-            text='{"wrong_key": "value"}'
-        )
+        model.complete.return_value = CompletionResponse(text='{"wrong_key": "value"}')
 
         label, desc = _call_labeling_model(model, ["chunk"])
 
@@ -190,6 +194,7 @@ class TestCallLabelingModel:
 # ---------------------------------------------------------------------------
 # label_clusters (integration with mocks)
 # ---------------------------------------------------------------------------
+
 
 class TestLabelClusters:
     def test_labels_multiple_clusters(self) -> None:

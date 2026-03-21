@@ -62,9 +62,7 @@ def run_connections(
         return 0
 
     count = len(result.suggestions)
-    print(
-        f"Suggested connections ({count} found, {result.checked} pairs checked):\n"
-    )
+    print(f"Suggested connections ({count} found, {result.checked} pairs checked):\n")
 
     if not result.suggestions:
         print("  No unlinked similar documents found.")

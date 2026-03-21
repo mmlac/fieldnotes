@@ -348,7 +348,9 @@ class TimelineQuerier:
             )
         except Exception as exc:
             logger.exception("Timeline Neo4j query failed")
-            return TimelineResult(error=f"Neo4j error: {exc}", since=since_iso, until=until_iso)
+            return TimelineResult(
+                error=f"Neo4j error: {exc}", since=since_iso, until=until_iso
+            )
 
         entries = self._build_entries(raw_rows, source_type)
 

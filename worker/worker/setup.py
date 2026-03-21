@@ -18,7 +18,13 @@ def _default_config_path() -> Path:
     """Return the default Claude Desktop config path for the current OS."""
     system = platform.system()
     if system == "Darwin":
-        return Path.home() / "Library" / "Application Support" / "Claude" / "claude_desktop_config.json"
+        return (
+            Path.home()
+            / "Library"
+            / "Application Support"
+            / "Claude"
+            / "claude_desktop_config.json"
+        )
     if system == "Windows":
         appdata = Path.home() / "AppData" / "Roaming" / "Claude"
         return appdata / "claude_desktop_config.json"

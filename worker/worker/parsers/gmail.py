@@ -83,7 +83,9 @@ class GmailParser(BaseParser):
             if len(body) > _MAX_HTML_BODY_SIZE:
                 logger.warning(
                     "Email %s HTML body too large (%d bytes > %d), skipping HTML parse",
-                    source_id, len(body), _MAX_HTML_BODY_SIZE,
+                    source_id,
+                    len(body),
+                    _MAX_HTML_BODY_SIZE,
                 )
                 body = body[:_MAX_HTML_BODY_SIZE]
             body = _strip_html(body)
@@ -119,7 +121,9 @@ class GmailParser(BaseParser):
         if len(recipients_raw) > _MAX_RECIPIENTS:
             logger.warning(
                 "Email %s has %d recipients, truncating to %d",
-                source_id, len(recipients_raw), _MAX_RECIPIENTS,
+                source_id,
+                len(recipients_raw),
+                _MAX_RECIPIENTS,
             )
             recipients_raw = recipients_raw[:_MAX_RECIPIENTS]
         for recip_raw in recipients_raw:

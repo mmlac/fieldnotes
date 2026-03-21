@@ -17,9 +17,6 @@ from worker.pipeline.writer import (
     COLLECTION_NAME,
     WriteUnit,
     Writer,
-    _batch_merge_entity_edges,
-    _batch_upsert_chunks,
-    _batch_upsert_entities,
     _chunk_node_id,
     _clean_source_edges,
     _clean_stale_edges,
@@ -232,7 +229,14 @@ class TestNeo4jHelpers:
 
     def test_allowed_predicates_contains_common_types(self):
         """Sanity check: common relationship types are in the whitelist."""
-        for pred in ("RELATED_TO", "WORKS_AT", "PART_OF", "KNOWS", "USES", "CREATED_BY"):
+        for pred in (
+            "RELATED_TO",
+            "WORKS_AT",
+            "PART_OF",
+            "KNOWS",
+            "USES",
+            "CREATED_BY",
+        ):
             assert pred in ALLOWED_PREDICATES
 
     def test_upsert_chunk(self):
@@ -312,10 +316,11 @@ class TestCleanSourceEdges:
 
         queries = [c[0][0] for c in tx.run.call_args_list]
         # The MENTIONS MERGE should appear before the stale edge DELETE
-        mentions_idx = next(i for i, q in enumerate(queries) if "MENTIONS" in q and "MERGE" in q)
+        mentions_idx = next(
+            i for i, q in enumerate(queries) if "MENTIONS" in q and "MERGE" in q
+        )
         delete_idx = next(
-            i for i, q in enumerate(queries)
-            if "DELETE r" in q and "MENTIONS" in q
+            i for i, q in enumerate(queries) if "DELETE r" in q and "MENTIONS" in q
         )
         assert mentions_idx < delete_idx
 
@@ -527,13 +532,19 @@ class TestWriterWrite:
         # delete is called for stale chunk cleanup, not blanket pre-deletion
         delete_calls = mock_qdrant.delete.call_args_list
         for c in delete_calls:
-            filt = c[1].get("points_selector") or c[0][0] if c[0] else c[1].get("points_selector")
+            filt = (
+                c[1].get("points_selector") or c[0][0]
+                if c[0]
+                else c[1].get("points_selector")
+            )
             # Stale cleanup filter has a Range condition on chunk_index
             conditions = filt.must
             has_range = any(
                 getattr(cond, "range", None) is not None for cond in conditions
             )
-            assert has_range, "delete should only be for stale chunk cleanup, not blanket deletion"
+            assert has_range, (
+                "delete should only be for stale chunk cleanup, not blanket deletion"
+            )
 
     def test_write_skips_qdrant_when_no_vectors(self, writer, mock_neo4j, mock_qdrant):
         """No qdrant upsert when there are no vectors."""
@@ -641,7 +652,9 @@ class TestWriterWrite:
         assert len(range_conds) == 1
         assert range_conds[0].range.gte == 2  # chunk count
 
-    def test_write_invalidates_entity_cache_when_entities(self, writer, mock_neo4j, mock_qdrant):
+    def test_write_invalidates_entity_cache_when_entities(
+        self, writer, mock_neo4j, mock_qdrant
+    ):
         """Entity cache should be invalidated after writing entities."""
         unit = _unit(
             entities=[{"name": "Test", "type": "Concept"}],
@@ -661,7 +674,9 @@ class TestWriterWrite:
         assert writer._entity_cache is None
         assert writer._entity_cache_ts == 0.0
 
-    def test_write_no_cache_invalidation_without_entities(self, writer, mock_neo4j, mock_qdrant):
+    def test_write_no_cache_invalidation_without_entities(
+        self, writer, mock_neo4j, mock_qdrant
+    ):
         """Entity cache should NOT be invalidated when no entities are written."""
         unit = _unit(
             chunks=[Chunk(text="hello", index=0)],
@@ -701,7 +716,9 @@ class TestWriterDelete:
         session.execute_write.assert_called_once()
         mock_qdrant.delete.assert_called_once()
 
-    def test_delete_neo4j_removes_chunks_then_source(self, writer, mock_neo4j, mock_qdrant):
+    def test_delete_neo4j_removes_chunks_then_source(
+        self, writer, mock_neo4j, mock_qdrant
+    ):
         """The delete tx should remove chunks first, then the source node."""
         tx = MagicMock()
         Writer._delete_neo4j_tx(tx, "notes/test.md")
@@ -757,16 +774,19 @@ class TestCypherIdentifierValidation:
         assert _validate_cypher_identifier("_private", "test") == "_private"
         assert _validate_cypher_identifier("Node123", "test") == "Node123"
 
-    @pytest.mark.parametrize("bad_value", [
-        "}) DETACH DELETE n //",
-        "File})--(n:Admin",
-        "RELATED TO",
-        "name; DROP",
-        "",
-        "123start",
-        "has-dash",
-        "has.dot",
-    ])
+    @pytest.mark.parametrize(
+        "bad_value",
+        [
+            "}) DETACH DELETE n //",
+            "File})--(n:Admin",
+            "RELATED TO",
+            "name; DROP",
+            "",
+            "123start",
+            "has-dash",
+            "has.dot",
+        ],
+    )
     def test_rejects_injection_payloads(self, bad_value):
         with pytest.raises(ValueError, match="Unsafe Cypher identifier"):
             _validate_cypher_identifier(bad_value, "test")
@@ -795,9 +815,13 @@ class TestCypherIdentifierValidation:
     def test_write_graph_hint_rejects_bad_subject_label(self):
         tx = MagicMock()
         hint = GraphHint(
-            subject_id="a", subject_label="Bad Label",
-            predicate="LINKS_TO", object_id="b", object_label="File",
-            object_props={}, confidence=1.0,
+            subject_id="a",
+            subject_label="Bad Label",
+            predicate="LINKS_TO",
+            object_id="b",
+            object_label="File",
+            object_props={},
+            confidence=1.0,
         )
         with pytest.raises(ValueError, match="hint subject_label"):
             _write_graph_hint(tx, hint)
@@ -805,9 +829,13 @@ class TestCypherIdentifierValidation:
     def test_write_graph_hint_rejects_bad_predicate(self):
         tx = MagicMock()
         hint = GraphHint(
-            subject_id="a", subject_label="File",
-            predicate="BAD; DROP", object_id="b", object_label="File",
-            object_props={}, confidence=1.0,
+            subject_id="a",
+            subject_label="File",
+            predicate="BAD; DROP",
+            object_id="b",
+            object_label="File",
+            object_props={},
+            confidence=1.0,
         )
         with pytest.raises(ValueError, match="hint predicate"):
             _write_graph_hint(tx, hint)
@@ -815,9 +843,13 @@ class TestCypherIdentifierValidation:
     def test_write_graph_hint_rejects_bad_object_props_key(self):
         tx = MagicMock()
         hint = GraphHint(
-            subject_id="a", subject_label="File",
-            predicate="LINKS_TO", object_id="b", object_label="File",
-            object_props={"evil}//": "value"}, confidence=1.0,
+            subject_id="a",
+            subject_label="File",
+            predicate="LINKS_TO",
+            object_id="b",
+            object_label="File",
+            object_props={"evil}//": "value"},
+            confidence=1.0,
         )
         with pytest.raises(ValueError, match="hint object_props key"):
             _write_graph_hint(tx, hint)
@@ -872,7 +904,9 @@ class TestImageNodeWriter:
         assert kwargs["vision_processed"] is False
         assert kwargs["parent_source_id"] == "notes/daily.md"
 
-    def test_write_image_creates_attached_to_edge(self, writer, mock_neo4j, mock_qdrant):
+    def test_write_image_creates_attached_to_edge(
+        self, writer, mock_neo4j, mock_qdrant
+    ):
         """Writing an Image node with parent_source_id should create ATTACHED_TO edge."""
         doc = _doc(
             node_label="Image",
@@ -902,15 +936,16 @@ class TestImageNodeWriter:
 
         # Find the ATTACHED_TO call among all tx.run calls
         attached_to_calls = [
-            c for c in tx.run.call_args_list
-            if "ATTACHED_TO" in str(c)
+            c for c in tx.run.call_args_list if "ATTACHED_TO" in str(c)
         ]
         assert len(attached_to_calls) == 1
         args, kwargs = attached_to_calls[0]
         assert kwargs["img_sid"] == "images/photo.png"
         assert kwargs["parent_sid"] == "notes/daily.md"
 
-    def test_write_image_no_attached_to_without_parent(self, writer, mock_neo4j, mock_qdrant):
+    def test_write_image_no_attached_to_without_parent(
+        self, writer, mock_neo4j, mock_qdrant
+    ):
         """Image without parent_source_id should NOT create ATTACHED_TO edge."""
         doc = _doc(
             node_label="Image",
@@ -928,8 +963,7 @@ class TestImageNodeWriter:
         Writer._write_neo4j_tx(tx, unit)
 
         attached_to_calls = [
-            c for c in tx.run.call_args_list
-            if "ATTACHED_TO" in str(c)
+            c for c in tx.run.call_args_list if "ATTACHED_TO" in str(c)
         ]
         assert len(attached_to_calls) == 0
 
@@ -937,7 +971,11 @@ class TestImageNodeWriter:
         """Non-Image nodes should NOT create ATTACHED_TO edge even with parent_source_id."""
         doc = _doc(
             node_label="File",
-            node_props={"name": "test.md", "path": "notes/test.md", "parent_source_id": "notes/"},
+            node_props={
+                "name": "test.md",
+                "path": "notes/test.md",
+                "parent_source_id": "notes/",
+            },
         )
         unit = _unit(doc=doc)
 
@@ -945,8 +983,7 @@ class TestImageNodeWriter:
         Writer._write_neo4j_tx(tx, unit)
 
         attached_to_calls = [
-            c for c in tx.run.call_args_list
-            if "ATTACHED_TO" in str(c)
+            c for c in tx.run.call_args_list if "ATTACHED_TO" in str(c)
         ]
         assert len(attached_to_calls) == 0
 
@@ -972,17 +1009,11 @@ class TestImageNodeWriter:
         Writer._write_neo4j_tx(tx, unit)
 
         # Should have DEPICTS edges for each entity
-        depicts_calls = [
-            c for c in tx.run.call_args_list
-            if "DEPICTS" in str(c)
-        ]
+        depicts_calls = [c for c in tx.run.call_args_list if "DEPICTS" in str(c)]
         assert len(depicts_calls) == 2
 
         # Should also have ATTACHED_TO
-        attached_calls = [
-            c for c in tx.run.call_args_list
-            if "ATTACHED_TO" in str(c)
-        ]
+        attached_calls = [c for c in tx.run.call_args_list if "ATTACHED_TO" in str(c)]
         assert len(attached_calls) == 1
 
 
@@ -1139,7 +1170,11 @@ class TestEmailGraphHints:
             source_type="gmail",
             source_id="gmail:msg-123",
             node_label="Email",
-            node_props={"message_id": "msg-123", "subject": "Test", "date": "2026-03-11"},
+            node_props={
+                "message_id": "msg-123",
+                "subject": "Test",
+                "date": "2026-03-11",
+            },
         )
         _upsert_source_node(tx, doc)
         args, kwargs = tx.run.call_args
@@ -1154,7 +1189,11 @@ class TestEmailGraphHints:
             source_type="gmail",
             source_id="gmail:msg-123",
             node_label="Email",
-            node_props={"message_id": "msg-123", "subject": "Test", "date": "2026-03-11"},
+            node_props={
+                "message_id": "msg-123",
+                "subject": "Test",
+                "date": "2026-03-11",
+            },
             graph_hints=[
                 GraphHint(
                     subject_id="person:alice@example.com",
@@ -1200,7 +1239,9 @@ class TestEmailGraphHints:
         assert len(queries) == 10
 
         # Verify SENT, TO, PART_OF edges were created
-        edge_queries = [q for q in queries if "MERGE" in q and ")-[" in q and "]->" in q]
+        edge_queries = [
+            q for q in queries if "MERGE" in q and ")-[" in q and "]->" in q
+        ]
         predicates = set()
         for q in edge_queries:
             for pred in ("SENT", "TO", "PART_OF"):

@@ -7,8 +7,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 EMPTY_CORPUS_MESSAGE = (
-    "Your knowledge graph is empty. "
-    "Run `fieldnotes serve --daemon` to start indexing."
+    "Your knowledge graph is empty. Run `fieldnotes serve --daemon` to start indexing."
 )
 
 

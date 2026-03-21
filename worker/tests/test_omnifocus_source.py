@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -200,11 +199,13 @@ async def test_initial_poll_emits_created_events(tmp_path: Path) -> None:
     ]
 
     s = OmniFocusSource()
-    s.configure({
-        "enabled": True,
-        "state_path": str(tmp_path / "state.json"),
-        "poll_interval_seconds": 3600,
-    })
+    s.configure(
+        {
+            "enabled": True,
+            "state_path": str(tmp_path / "state.json"),
+            "poll_interval_seconds": 3600,
+        }
+    )
 
     with patch("worker.sources.omnifocus._fetch_tasks", return_value=tasks):
         q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
@@ -235,11 +236,13 @@ async def test_modified_task_emits_modified_event(tmp_path: Path) -> None:
     _save_state(state_path, {"t1": _task_hash(task_v1)})
 
     s = OmniFocusSource()
-    s.configure({
-        "enabled": True,
-        "state_path": str(state_path),
-        "poll_interval_seconds": 3600,
-    })
+    s.configure(
+        {
+            "enabled": True,
+            "state_path": str(state_path),
+            "poll_interval_seconds": 3600,
+        }
+    )
 
     with patch("worker.sources.omnifocus._fetch_tasks", return_value=[task_v2]):
         q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
@@ -264,11 +267,13 @@ async def test_deleted_task_emits_deleted_event(tmp_path: Path) -> None:
     _save_state(state_path, {"gone": _task_hash(task)})
 
     s = OmniFocusSource()
-    s.configure({
-        "enabled": True,
-        "state_path": str(state_path),
-        "poll_interval_seconds": 3600,
-    })
+    s.configure(
+        {
+            "enabled": True,
+            "state_path": str(state_path),
+            "poll_interval_seconds": 3600,
+        }
+    )
 
     with patch("worker.sources.omnifocus._fetch_tasks", return_value=[]):
         q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
@@ -293,11 +298,13 @@ async def test_unchanged_tasks_emit_nothing(tmp_path: Path) -> None:
     _save_state(state_path, {"same": _task_hash(task)})
 
     s = OmniFocusSource()
-    s.configure({
-        "enabled": True,
-        "state_path": str(state_path),
-        "poll_interval_seconds": 3600,
-    })
+    s.configure(
+        {
+            "enabled": True,
+            "state_path": str(state_path),
+            "poll_interval_seconds": 3600,
+        }
+    )
 
     with patch("worker.sources.omnifocus._fetch_tasks", return_value=[task]):
         q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
@@ -334,11 +341,13 @@ async def test_disabled_source_emits_nothing(tmp_path: Path) -> None:
 async def test_fetch_failure_does_not_crash(tmp_path: Path) -> None:
     """JXA failure should log error but keep polling."""
     s = OmniFocusSource()
-    s.configure({
-        "enabled": True,
-        "state_path": str(tmp_path / "state.json"),
-        "poll_interval_seconds": 3600,
-    })
+    s.configure(
+        {
+            "enabled": True,
+            "state_path": str(tmp_path / "state.json"),
+            "poll_interval_seconds": 3600,
+        }
+    )
 
     with patch(
         "worker.sources.omnifocus._fetch_tasks",

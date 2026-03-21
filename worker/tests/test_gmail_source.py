@@ -31,6 +31,7 @@ from worker.sources.gmail import (
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _gmail_message(
     msg_id: str = "msg-1",
     thread_id: str = "thread-1",
@@ -52,7 +53,9 @@ def _gmail_message(
         "body": {},
     }
     if body_text:
-        payload["body"]["data"] = base64.urlsafe_b64encode(body_text.encode()).decode().rstrip("=")
+        payload["body"]["data"] = (
+            base64.urlsafe_b64encode(body_text.encode()).decode().rstrip("=")
+        )
     return {
         "id": msg_id,
         "threadId": thread_id,
@@ -90,6 +93,7 @@ def _mock_messages_api(messages: list[dict[str, Any]], page_token: str | None = 
 # ---------------------------------------------------------------------------
 # _load_cursor / _save_cursor
 # ---------------------------------------------------------------------------
+
 
 class TestLoadCursor:
     def test_returns_none_when_file_missing(self, tmp_path: Path) -> None:
@@ -133,6 +137,7 @@ class TestSaveCursor:
 # _extract_recipients
 # ---------------------------------------------------------------------------
 
+
 class TestExtractRecipients:
     def test_extracts_to_and_cc(self) -> None:
         headers = [
@@ -164,12 +169,16 @@ class TestExtractRecipients:
 # _extract_body
 # ---------------------------------------------------------------------------
 
+
 class TestExtractBody:
     def _encode(self, text: str) -> str:
         return base64.urlsafe_b64encode(text.encode()).decode().rstrip("=")
 
     def test_plain_text_payload(self) -> None:
-        payload = {"mimeType": "text/plain", "body": {"data": self._encode("Hello world")}}
+        payload = {
+            "mimeType": "text/plain",
+            "body": {"data": self._encode("Hello world")},
+        }
         text, mime = _extract_body(payload)
         assert text == "Hello world"
         assert mime == "text/plain"
@@ -185,7 +194,10 @@ class TestExtractBody:
             "mimeType": "multipart/alternative",
             "body": {},
             "parts": [
-                {"mimeType": "text/html", "body": {"data": self._encode("<p>HTML</p>")}},
+                {
+                    "mimeType": "text/html",
+                    "body": {"data": self._encode("<p>HTML</p>")},
+                },
                 {"mimeType": "text/plain", "body": {"data": self._encode("Plain")}},
             ],
         }
@@ -198,7 +210,10 @@ class TestExtractBody:
             "mimeType": "multipart/alternative",
             "body": {},
             "parts": [
-                {"mimeType": "text/html", "body": {"data": self._encode("<p>HTML</p>")}},
+                {
+                    "mimeType": "text/html",
+                    "body": {"data": self._encode("<p>HTML</p>")},
+                },
             ],
         }
         text, mime = _extract_body(payload)
@@ -221,7 +236,10 @@ class TestExtractBody:
             "mimeType": "multipart/alternative",
             "body": {},
             "parts": [
-                {"mimeType": "text/plain", "body": {"data": self._encode("Nested plain")}},
+                {
+                    "mimeType": "text/plain",
+                    "body": {"data": self._encode("Nested plain")},
+                },
             ],
         }
         payload = {"mimeType": "multipart/mixed", "body": {}, "parts": [inner]}
@@ -233,6 +251,7 @@ class TestExtractBody:
 # ---------------------------------------------------------------------------
 # GmailSource._backfill
 # ---------------------------------------------------------------------------
+
 
 class TestBackfill:
     @pytest.mark.asyncio
@@ -340,6 +359,7 @@ class TestBackfill:
 # GmailSource._poll_incremental
 # ---------------------------------------------------------------------------
 
+
 class TestPollIncremental:
     @pytest.mark.asyncio
     async def test_fetches_new_messages(self, tmp_path: Path) -> None:
@@ -366,9 +386,7 @@ class TestPollIncremental:
         source._label_filter = "INBOX"
 
         queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
-        new_cursor = await source._poll_incremental(
-            service, messages_api, queue, "100"
-        )
+        new_cursor = await source._poll_incremental(service, messages_api, queue, "100")
 
         assert new_cursor == "200"
         assert queue.qsize() == 1
@@ -376,7 +394,9 @@ class TestPollIncremental:
     @pytest.mark.asyncio
     async def test_incremental_poll_populates_text_field(self, tmp_path: Path) -> None:
         """Events from incremental poll must include the email body in 'text'."""
-        new_msg = _gmail_message("m-new", history_id="200", body_text="Incremental body")
+        new_msg = _gmail_message(
+            "m-new", history_id="200", body_text="Incremental body"
+        )
         messages_api = MagicMock()
         get_req = MagicMock()
         get_req.execute.return_value = new_msg
@@ -439,9 +459,7 @@ class TestPollIncremental:
         source._cursor_path = tmp_path / "cursor.json"
 
         queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
-        result = await source._poll_incremental(
-            MagicMock(), MagicMock(), queue, None
-        )
+        result = await source._poll_incremental(MagicMock(), MagicMock(), queue, None)
 
         assert result is None
         assert queue.qsize() == 0
@@ -494,9 +512,7 @@ class TestPollIncremental:
         source._label_filter = "INBOX"
 
         queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
-        result = await source._poll_incremental(
-            service, MagicMock(), queue, "100"
-        )
+        result = await source._poll_incremental(service, MagicMock(), queue, "100")
 
         assert result == "100"
         assert queue.qsize() == 0
@@ -521,9 +537,7 @@ class TestPollIncremental:
         source._label_filter = "INBOX"
 
         queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
-        result = await source._poll_incremental(
-            service, MagicMock(), queue, "100"
-        )
+        result = await source._poll_incremental(service, MagicMock(), queue, "100")
 
         assert result is None
         assert not cursor_file.exists()
@@ -548,9 +562,7 @@ class TestPollIncremental:
         source._label_filter = "INBOX"
 
         queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
-        result = await source._poll_incremental(
-            service, MagicMock(), queue, "100"
-        )
+        result = await source._poll_incremental(service, MagicMock(), queue, "100")
 
         assert result is None
 
@@ -581,6 +593,7 @@ class TestPollIncremental:
 # ---------------------------------------------------------------------------
 # Rate limiting and retry
 # ---------------------------------------------------------------------------
+
 
 class TestApiCallWithRetry:
     @pytest.mark.asyncio
@@ -664,7 +677,9 @@ class TestBackfillRateLimiting:
     async def test_backfill_pauses_between_pages(self) -> None:
         """Backfill should sleep between page fetches to avoid rate limits."""
         page1_msgs = [_gmail_message(f"m{i}", history_id=str(i)) for i in range(3)]
-        page2_msgs = [_gmail_message(f"n{i}", history_id=str(100 + i)) for i in range(2)]
+        page2_msgs = [
+            _gmail_message(f"n{i}", history_id=str(100 + i)) for i in range(2)
+        ]
 
         call_count = [0]
 

@@ -54,7 +54,9 @@ def _make_querier(
         else:
             rows = neo4j_rows if neo4j_rows is not None else []
             mock_session.execute_read.side_effect = lambda fn: fn(
-                MagicMock(**{"run.return_value": MagicMock(**{"data.return_value": rows})})
+                MagicMock(
+                    **{"run.return_value": MagicMock(**{"data.return_value": rows})}
+                )
             )
 
         mock_qdrant = MagicMock()
@@ -166,9 +168,24 @@ class TestTimelineDefault24h:
     ) -> None:
         now = datetime.now(timezone.utc)
         rows = [
-            _neo4j_row("file-1", "File", "Note A", (now - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")),
-            _neo4j_row("task-1", "Task", "Buy milk", (now - timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ")),
-            _neo4j_row("email-1", "Email", "Hello", (now - timedelta(hours=3)).strftime("%Y-%m-%dT%H:%M:%SZ")),
+            _neo4j_row(
+                "file-1",
+                "File",
+                "Note A",
+                (now - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            ),
+            _neo4j_row(
+                "task-1",
+                "Task",
+                "Buy milk",
+                (now - timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            ),
+            _neo4j_row(
+                "email-1",
+                "Email",
+                "Hello",
+                (now - timedelta(hours=3)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            ),
         ]
 
         mock_driver = MagicMock()
@@ -209,9 +226,24 @@ class TestTimelineDefault24h:
     ) -> None:
         now = datetime.now(timezone.utc)
         rows = [
-            _neo4j_row("f-1", "File", "A", (now - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")),
-            _neo4j_row("t-1", "Task", "B", (now - timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ")),
-            _neo4j_row("e-1", "Email", "C", (now - timedelta(hours=3)).strftime("%Y-%m-%dT%H:%M:%SZ")),
+            _neo4j_row(
+                "f-1",
+                "File",
+                "A",
+                (now - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            ),
+            _neo4j_row(
+                "t-1",
+                "Task",
+                "B",
+                (now - timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            ),
+            _neo4j_row(
+                "e-1",
+                "Email",
+                "C",
+                (now - timedelta(hours=3)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            ),
         ]
 
         mock_driver = MagicMock()
@@ -250,8 +282,18 @@ class TestTimelineSourceFilter:
     ) -> None:
         now = datetime.now(timezone.utc)
         rows = [
-            _neo4j_row("t-1", "Task", "Task One", (now - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")),
-            _neo4j_row("t-2", "Task", "Task Two", (now - timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ")),
+            _neo4j_row(
+                "t-1",
+                "Task",
+                "Task One",
+                (now - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            ),
+            _neo4j_row(
+                "t-2",
+                "Task",
+                "Task Two",
+                (now - timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            ),
         ]
 
         mock_driver = MagicMock()
@@ -344,7 +386,12 @@ class TestTimelineLimit:
         now = datetime.now(timezone.utc)
         # Return 100 rows from Neo4j — the Cypher LIMIT is passed as a param.
         rows = [
-            _neo4j_row(f"f-{i}", "File", f"File {i}", (now - timedelta(minutes=i)).strftime("%Y-%m-%dT%H:%M:%SZ"))
+            _neo4j_row(
+                f"f-{i}",
+                "File",
+                f"File {i}",
+                (now - timedelta(minutes=i)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            )
             for i in range(100)
         ]
 
@@ -355,7 +402,9 @@ class TestTimelineLimit:
 
             def _run(cypher: str, **kwargs: Any) -> MagicMock:
                 captured.append({"cypher": cypher, "params": kwargs})
-                return MagicMock(**{"data.return_value": rows[:kwargs.get("limit", 100)]})
+                return MagicMock(
+                    **{"data.return_value": rows[: kwargs.get("limit", 100)]}
+                )
 
             mock_tx.run.side_effect = _run
             return fn(mock_tx)
@@ -395,8 +444,18 @@ class TestTimelineSnippetFromQdrant:
     ) -> None:
         now = datetime.now(timezone.utc)
         rows = [
-            _neo4j_row("file-a", "File", "Doc A", (now - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")),
-            _neo4j_row("file-b", "File", "Doc B", (now - timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ")),
+            _neo4j_row(
+                "file-a",
+                "File",
+                "Doc A",
+                (now - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            ),
+            _neo4j_row(
+                "file-b",
+                "File",
+                "Doc B",
+                (now - timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            ),
         ]
         long_text_a = "A" * 300
         long_text_b = "B" * 50
@@ -444,7 +503,13 @@ class TestTimelineCompletedTaskEventType:
     ) -> None:
         now = datetime.now(timezone.utc)
         rows = [
-            _neo4j_row("t-1", "Task", "Finished task", (now - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ"), event_type="completed"),
+            _neo4j_row(
+                "t-1",
+                "Task",
+                "Finished task",
+                (now - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                event_type="completed",
+            ),
         ]
 
         mock_driver = MagicMock()
@@ -513,7 +578,12 @@ class TestTimelineQdrantFailureNonFatal:
     ) -> None:
         now = datetime.now(timezone.utc)
         rows = [
-            _neo4j_row("file-1", "File", "Note", (now - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")),
+            _neo4j_row(
+                "file-1",
+                "File",
+                "Note",
+                (now - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            ),
         ]
 
         mock_driver = MagicMock()
@@ -551,7 +621,10 @@ class TestCliTimelineHumanOutput:
     @patch("worker.cli.timeline.TimelineQuerier")
     @patch("worker.cli.timeline.load_config")
     def test_human_output_contains_label_and_title(
-        self, mock_load_config: MagicMock, mock_querier_cls: MagicMock, capsys: pytest.CaptureFixture
+        self,
+        mock_load_config: MagicMock,
+        mock_querier_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
     ) -> None:
         from worker.cli.timeline import run_timeline
 
@@ -597,7 +670,10 @@ class TestCliTimelineHumanOutput:
     @patch("worker.cli.timeline.TimelineQuerier")
     @patch("worker.cli.timeline.load_config")
     def test_human_output_has_date_header_for_multiday(
-        self, mock_load_config: MagicMock, mock_querier_cls: MagicMock, capsys: pytest.CaptureFixture
+        self,
+        mock_load_config: MagicMock,
+        mock_querier_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
     ) -> None:
         from worker.cli.timeline import run_timeline
 
@@ -643,7 +719,10 @@ class TestCliTimelineJsonOutput:
     @patch("worker.cli.timeline.TimelineQuerier")
     @patch("worker.cli.timeline.load_config")
     def test_json_output_is_valid_and_has_required_fields(
-        self, mock_load_config: MagicMock, mock_querier_cls: MagicMock, capsys: pytest.CaptureFixture
+        self,
+        mock_load_config: MagicMock,
+        mock_querier_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
     ) -> None:
         from worker.cli.timeline import run_timeline
 
@@ -687,7 +766,10 @@ class TestCliTimelineJsonOutput:
     @patch("worker.cli.timeline.TimelineQuerier")
     @patch("worker.cli.timeline.load_config")
     def test_error_result_returns_exit_code_1(
-        self, mock_load_config: MagicMock, mock_querier_cls: MagicMock, capsys: pytest.CaptureFixture
+        self,
+        mock_load_config: MagicMock,
+        mock_querier_cls: MagicMock,
+        capsys: pytest.CaptureFixture,
     ) -> None:
         from worker.cli.timeline import run_timeline
 

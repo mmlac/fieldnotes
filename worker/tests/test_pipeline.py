@@ -102,9 +102,7 @@ class TestImageRouting:
         vision_queue = MagicMock()
         vision_queue.submit = _fake_submit
 
-        pipeline = Pipeline(
-            registry=registry, writer=writer, vision_queue=vision_queue
-        )
+        pipeline = Pipeline(registry=registry, writer=writer, vision_queue=vision_queue)
         doc = _doc(text="", image_bytes=b"\x89PNG")
 
         with patch("asyncio.get_running_loop", side_effect=RuntimeError):
@@ -167,14 +165,14 @@ class TestTextPipeline:
         mock_extract.return_value = [
             ExtractionResult(
                 entities=[{"name": "World", "type": "Concept", "confidence": 0.9}],
-                triples=[{"subject": "Hello", "predicate": "greets", "object": "World"}],
+                triples=[
+                    {"subject": "Hello", "predicate": "greets", "object": "World"}
+                ],
             )
         ]
 
         mock_resolve.return_value = ResolutionResult(
-            entities=[
-                ResolvedEntity(name="World", type="Concept", confidence=0.9)
-            ]
+            entities=[ResolvedEntity(name="World", type="Concept", confidence=0.9)]
         )
 
         pipeline.process(doc)
@@ -242,7 +240,9 @@ class TestTextPipeline:
         mock_resolve.return_value = ResolutionResult(
             entities=[
                 ResolvedEntity(
-                    name="Alice", type="Person", confidence=0.95,
+                    name="Alice",
+                    type="Person",
+                    confidence=0.95,
                     merged_into="Alice",
                 )
             ]
@@ -372,7 +372,9 @@ class TestResolvedToEntityDicts:
         result = ResolutionResult(
             entities=[
                 ResolvedEntity(
-                    name="foo", type="Concept", confidence=0.9,
+                    name="foo",
+                    type="Concept",
+                    confidence=0.9,
                     merged_into="Foo",
                 )
             ]
@@ -384,7 +386,9 @@ class TestResolvedToEntityDicts:
         result = ResolutionResult(
             entities=[
                 ResolvedEntity(
-                    name="Bar", type="Person", confidence=0.7,
+                    name="Bar",
+                    type="Person",
+                    confidence=0.7,
                     same_as="BarAlias",
                 )
             ]
@@ -445,13 +449,9 @@ class TestOnVisionResult:
     ):
         pipeline, registry, writer = _make_pipeline()
 
-        mock_embed.return_value = [
-            ("A photo of a cat.\n\nMEOW", [0.1, 0.2, 0.3])
-        ]
+        mock_embed.return_value = [("A photo of a cat.\n\nMEOW", [0.1, 0.2, 0.3])]
         mock_resolve.return_value = ResolutionResult(
-            entities=[
-                ResolvedEntity(name="Cat", type="Concept", confidence=0.80)
-            ]
+            entities=[ResolvedEntity(name="Cat", type="Concept", confidence=0.80)]
         )
 
         result = VisionQueueResult(
@@ -464,9 +464,7 @@ class TestOnVisionResult:
         pipeline.on_vision_result(result)
 
         # Verify embed was called with synthetic chunk text
-        mock_embed.assert_called_once_with(
-            ["A photo of a cat.\n\nMEOW"], registry
-        )
+        mock_embed.assert_called_once_with(["A photo of a cat.\n\nMEOW"], registry)
 
         # Verify resolve was called with vision entities
         mock_resolve.assert_called_once()
@@ -520,18 +518,14 @@ class TestOnVisionResult:
     def test_entities_only_no_text(self, mock_resolve):
         pipeline, _, writer = _make_pipeline()
         mock_resolve.return_value = ResolutionResult(
-            entities=[
-                ResolvedEntity(name="Alice", type="Person", confidence=0.80)
-            ]
+            entities=[ResolvedEntity(name="Alice", type="Person", confidence=0.80)]
         )
 
         result = VisionQueueResult(
             source_id="images/person.png",
             sha256="ghi789" * 10 + "ghij",
             text="",
-            entities=[
-                {"name": "Alice", "type": "Person", "confidence": 0.80}
-            ],
+            entities=[{"name": "Alice", "type": "Person", "confidence": 0.80}],
         )
 
         pipeline.on_vision_result(result)

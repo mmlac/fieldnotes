@@ -100,7 +100,9 @@ def cluster_embeddings(
 
     try:
         ids, matrix = _scroll_vectors(
-            client, qdrant_cfg.collection, max_vectors=max_vectors,
+            client,
+            qdrant_cfg.collection,
+            max_vectors=max_vectors,
         )
     finally:
         client.close()
@@ -169,9 +171,7 @@ def _scroll_vectors(
 
         if points:
             ids.extend(str(p.id) for p in points)
-            batches.append(
-                np.array([p.vector for p in points], dtype=np.float32)
-            )
+            batches.append(np.array([p.vector for p in points], dtype=np.float32))
 
         if next_offset is None:
             break
@@ -190,7 +190,9 @@ def _scroll_vectors(
     if total > max_vectors:
         logger.info(
             "Collection %r has %d vectors, sampling %d",
-            collection, total, max_vectors,
+            collection,
+            total,
+            max_vectors,
         )
         rng = np.random.default_rng(42)
         indices = rng.choice(total, size=max_vectors, replace=False)

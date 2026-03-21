@@ -84,9 +84,7 @@ class FileSource(PythonSource):
         for p in raw_paths:
             path = Path(p).expanduser()
             if path.is_symlink():
-                logger.warning(
-                    "Watch path is a symlink, skipping for safety: %s", path
-                )
+                logger.warning("Watch path is a symlink, skipping for safety: %s", path)
                 continue
             self._watch_paths.append(path.resolve())
 
@@ -149,7 +147,9 @@ class FileSource(PythonSource):
                         sha256=sha256, mtime_ns=mtime_ns, size=len(data)
                     )
                 except OSError:
-                    logger.warning("Failed to read %s during initial scan, skipping", abs_path)
+                    logger.warning(
+                        "Failed to read %s during initial scan, skipping", abs_path
+                    )
         return current
 
     def _build_scan_event(
@@ -231,10 +231,18 @@ class FileSource(PythonSource):
 
         scan_duration = time.monotonic() - scan_start
         INITIAL_SCAN_DURATION_SECONDS.labels(source_type="files").set(scan_duration)
-        INITIAL_SCAN_FILES_TOTAL.labels(source_type="files", result="new").inc(counts["new"])
-        INITIAL_SCAN_FILES_TOTAL.labels(source_type="files", result="modified").inc(counts["modified"])
-        INITIAL_SCAN_FILES_TOTAL.labels(source_type="files", result="deleted").inc(counts["deleted"])
-        INITIAL_SCAN_FILES_TOTAL.labels(source_type="files", result="unchanged").inc(counts["unchanged"])
+        INITIAL_SCAN_FILES_TOTAL.labels(source_type="files", result="new").inc(
+            counts["new"]
+        )
+        INITIAL_SCAN_FILES_TOTAL.labels(source_type="files", result="modified").inc(
+            counts["modified"]
+        )
+        INITIAL_SCAN_FILES_TOTAL.labels(source_type="files", result="deleted").inc(
+            counts["deleted"]
+        )
+        INITIAL_SCAN_FILES_TOTAL.labels(source_type="files", result="unchanged").inc(
+            counts["unchanged"]
+        )
 
         for watch_path in self._watch_paths:
             logger.info(

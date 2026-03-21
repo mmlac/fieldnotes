@@ -110,13 +110,9 @@ class _RegistryLLM(BaseChatModel):
     ) -> ChatResult:
         from worker.models.base import CompletionRequest
 
-        lc_messages = [
-            {"role": _lc_role(m), "content": m.content} for m in messages
-        ]
+        lc_messages = [{"role": _lc_role(m), "content": m.content} for m in messages]
         # Split system messages from the rest.
-        system_parts = [
-            m["content"] for m in lc_messages if m["role"] == "system"
-        ]
+        system_parts = [m["content"] for m in lc_messages if m["role"] == "system"]
         non_system = [m for m in lc_messages if m["role"] != "system"]
 
         req = CompletionRequest(
@@ -157,8 +153,7 @@ def _normalize_cypher_for_validation(cypher: str) -> str:
     """
     # Normalize Unicode whitespace to ASCII space
     normalized = "".join(
-        " " if unicodedata.category(ch) in ("Zs", "Zl", "Zp") else ch
-        for ch in cypher
+        " " if unicodedata.category(ch) in ("Zs", "Zl", "Zp") else ch for ch in cypher
     )
     # Strip block comments (/* ... */), including nested
     normalized = re.sub(r"/\*.*?\*/", " ", normalized, flags=re.DOTALL)
@@ -337,7 +332,9 @@ class GraphQuerier:
     def __enter__(self) -> GraphQuerier:
         return self
 
-    def __exit__(self, exc_type: type | None, exc_val: BaseException | None, exc_tb: Any) -> None:
+    def __exit__(
+        self, exc_type: type | None, exc_val: BaseException | None, exc_tb: Any
+    ) -> None:
         self.close()
 
     def close(self) -> None:

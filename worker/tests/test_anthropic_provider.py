@@ -25,7 +25,9 @@ def _tool_use_block(id: str, name: str, input: dict) -> SimpleNamespace:
     return SimpleNamespace(type="tool_use", id=id, name=name, input=input)
 
 
-def _usage(input_tokens: int = 10, output_tokens: int = 5, cache_read: int = 0) -> SimpleNamespace:
+def _usage(
+    input_tokens: int = 10, output_tokens: int = 5, cache_read: int = 0
+) -> SimpleNamespace:
     ns = SimpleNamespace(input_tokens=input_tokens, output_tokens=output_tokens)
     if cache_read:
         ns.cache_read_input_tokens = cache_read
@@ -64,6 +66,7 @@ class TestAnthropicProviderConfigure:
         with patch.dict("os.environ", {}, clear=True):
             # Remove ANTHROPIC_API_KEY if present
             import os
+
             env = os.environ.copy()
             env.pop("ANTHROPIC_API_KEY", None)
             with patch.dict("os.environ", env, clear=True):
@@ -137,7 +140,13 @@ class TestAnthropicComplete:
         req = CompletionRequest(
             system="sys",
             messages=[{"role": "user", "content": "search for test"}],
-            tools=[{"name": "search", "description": "Search", "input_schema": {"type": "object"}}],
+            tools=[
+                {
+                    "name": "search",
+                    "description": "Search",
+                    "input_schema": {"type": "object"},
+                }
+            ],
         )
         resp = provider.complete("m", req)
 
@@ -152,7 +161,9 @@ class TestAnthropicComplete:
             content=[_text_block("ok")],
         )
 
-        tools = [{"name": "foo", "description": "Foo", "input_schema": {"type": "object"}}]
+        tools = [
+            {"name": "foo", "description": "Foo", "input_schema": {"type": "object"}}
+        ]
         req = CompletionRequest(
             system="sys",
             messages=[{"role": "user", "content": "hi"}],
@@ -169,18 +180,20 @@ class TestAnthropicComplete:
             content=[_text_block("ok")],
         )
 
-        openai_tools = [{
-            "type": "function",
-            "function": {
-                "name": "extract",
-                "description": "Extract entities",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"text": {"type": "string"}},
-                    "required": ["text"],
+        openai_tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "extract",
+                    "description": "Extract entities",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"text": {"type": "string"}},
+                        "required": ["text"],
+                    },
                 },
-            },
-        }]
+            }
+        ]
         req = CompletionRequest(
             system="sys",
             messages=[{"role": "user", "content": "hi"}],
@@ -243,34 +256,48 @@ class TestAnthropicComplete:
 
     def test_embed_raises_not_implemented(self, provider: AnthropicProvider) -> None:
         from worker.models.base import EmbedRequest
-        with pytest.raises(NotImplementedError, match="anthropic does not support embedding"):
+
+        with pytest.raises(
+            NotImplementedError, match="anthropic does not support embedding"
+        ):
             provider.embed("m", EmbedRequest(texts=["test"]))
 
 
 class TestConvertTools:
     def test_converts_openai_format(self) -> None:
-        tools = [{
-            "type": "function",
-            "function": {
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "my_tool",
+                    "description": "Does stuff",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ]
+        result = AnthropicProvider._convert_tools(tools)
+        assert result == [
+            {
                 "name": "my_tool",
                 "description": "Does stuff",
-                "parameters": {"type": "object", "properties": {}},
-            },
-        }]
-        result = AnthropicProvider._convert_tools(tools)
-        assert result == [{
-            "name": "my_tool",
-            "description": "Does stuff",
-            "input_schema": {"type": "object", "properties": {}},
-        }]
+                "input_schema": {"type": "object", "properties": {}},
+            }
+        ]
 
     def test_passes_through_anthropic_format(self) -> None:
-        tools = [{"name": "foo", "description": "Bar", "input_schema": {"type": "object"}}]
+        tools = [
+            {"name": "foo", "description": "Bar", "input_schema": {"type": "object"}}
+        ]
         result = AnthropicProvider._convert_tools(tools)
         assert result == tools
 
     def test_handles_missing_description(self) -> None:
-        tools = [{"type": "function", "function": {"name": "t", "parameters": {"type": "object"}}}]
+        tools = [
+            {
+                "type": "function",
+                "function": {"name": "t", "parameters": {"type": "object"}},
+            }
+        ]
         result = AnthropicProvider._convert_tools(tools)
         assert result[0]["description"] == ""
 

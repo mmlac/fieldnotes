@@ -47,7 +47,7 @@ class TestCypherUnicodeHomoglyphs:
             # Ideographic space (\u3000)
             "MATCH (n)\u3000SET\u3000n.x = 1",
             # Zero-width joiner between D and E of DELETE
-            "MATCH (n) D\u200CELETE n",
+            "MATCH (n) D\u200cELETE n",
             # Mathematical bold capital letters
             "MATCH (n) \U0001d40c\U0001d404\U0001d411\U0001d40e\U0001d404 (m:X {id: 'x'})",
         ],
@@ -184,7 +184,9 @@ class TestUnicodeEntityNames:
     def test_mixed_script_entity_names(self) -> None:
         from worker.pipeline.resolver import resolve_entities
 
-        extracted = [{"name": "Café résumé naïve", "type": "Concept", "confidence": 0.8}]
+        extracted = [
+            {"name": "Café résumé naïve", "type": "Concept", "confidence": 0.8}
+        ]
         existing = [{"name": "café résumé naïve", "type": "Concept", "confidence": 0.7}]
         result = resolve_entities(extracted, existing)
         assert len(result.entities) == 1
@@ -424,11 +426,13 @@ class TestEmptyGitRepo:
         from worker.sources.repositories import RepositorySource
 
         s = RepositorySource()
-        s.configure({
-            "repo_roots": [str(tmp_path)],
-            "cursor_path": str(tmp_path / "cursor.json"),
-            "poll_interval_seconds": 3600,
-        })
+        s.configure(
+            {
+                "repo_roots": [str(tmp_path)],
+                "cursor_path": str(tmp_path / "cursor.json"),
+                "poll_interval_seconds": 3600,
+            }
+        )
 
         q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         task = asyncio.create_task(s.start(q))
@@ -489,16 +493,28 @@ class TestConfigEdgeCases:
             _parse({"sources": {"repositories": {"repo_roots": "not-a-list"}}})
 
         with pytest.raises(TypeError, match=r"include_patterns"):
-            _parse({"sources": {"repositories": {
-                "repo_roots": ["/tmp"],
-                "include_patterns": "*.md",
-            }}})
+            _parse(
+                {
+                    "sources": {
+                        "repositories": {
+                            "repo_roots": ["/tmp"],
+                            "include_patterns": "*.md",
+                        }
+                    }
+                }
+            )
 
         with pytest.raises(TypeError, match=r"poll_interval_seconds"):
-            _parse({"sources": {"repositories": {
-                "repo_roots": ["/tmp"],
-                "poll_interval_seconds": "fast",
-            }}})
+            _parse(
+                {
+                    "sources": {
+                        "repositories": {
+                            "repo_roots": ["/tmp"],
+                            "poll_interval_seconds": "fast",
+                        }
+                    }
+                }
+            )
 
     def test_clustering_max_vectors_bounds(self) -> None:
         from worker.config import _parse
@@ -572,112 +588,134 @@ class TestExtractorValidation:
     def test_entity_missing_name_skipped(self) -> None:
         from worker.pipeline.extractor import _validate_and_build
 
-        result = _validate_and_build({
-            "entities": [
-                {"type": "Person", "confidence": 0.8},  # missing name
-                {"name": "Valid", "type": "Person", "confidence": 0.9},
-            ],
-            "triples": [],
-        })
+        result = _validate_and_build(
+            {
+                "entities": [
+                    {"type": "Person", "confidence": 0.8},  # missing name
+                    {"name": "Valid", "type": "Person", "confidence": 0.9},
+                ],
+                "triples": [],
+            }
+        )
         assert len(result.entities) == 1
         assert result.entities[0]["name"] == "Valid"
 
     def test_entity_non_string_name_skipped(self) -> None:
         from worker.pipeline.extractor import _validate_and_build
 
-        result = _validate_and_build({
-            "entities": [
-                {"name": 42, "type": "Person", "confidence": 0.8},
-                {"name": ["list"], "type": "Person", "confidence": 0.8},
-            ],
-            "triples": [],
-        })
+        result = _validate_and_build(
+            {
+                "entities": [
+                    {"name": 42, "type": "Person", "confidence": 0.8},
+                    {"name": ["list"], "type": "Person", "confidence": 0.8},
+                ],
+                "triples": [],
+            }
+        )
         assert len(result.entities) == 0
 
     def test_entity_overlong_name_skipped(self) -> None:
         from worker.pipeline.extractor import MAX_ENTITY_NAME_LEN, _validate_and_build
 
-        result = _validate_and_build({
-            "entities": [
-                {"name": "x" * (MAX_ENTITY_NAME_LEN + 1), "type": "Person", "confidence": 0.8},
-            ],
-            "triples": [],
-        })
+        result = _validate_and_build(
+            {
+                "entities": [
+                    {
+                        "name": "x" * (MAX_ENTITY_NAME_LEN + 1),
+                        "type": "Person",
+                        "confidence": 0.8,
+                    },
+                ],
+                "triples": [],
+            }
+        )
         assert len(result.entities) == 0
 
     def test_entity_unknown_type_defaults_to_concept(self) -> None:
         from worker.pipeline.extractor import _validate_and_build
 
-        result = _validate_and_build({
-            "entities": [
-                {"name": "X", "type": "Alien", "confidence": 0.8},
-            ],
-            "triples": [],
-        })
+        result = _validate_and_build(
+            {
+                "entities": [
+                    {"name": "X", "type": "Alien", "confidence": 0.8},
+                ],
+                "triples": [],
+            }
+        )
         assert result.entities[0]["type"] == "Concept"
 
     def test_entity_invalid_confidence_defaults(self) -> None:
         from worker.pipeline.extractor import DEFAULT_CONFIDENCE, _validate_and_build
 
-        result = _validate_and_build({
-            "entities": [
-                {"name": "X", "type": "Person", "confidence": "high"},
-            ],
-            "triples": [],
-        })
+        result = _validate_and_build(
+            {
+                "entities": [
+                    {"name": "X", "type": "Person", "confidence": "high"},
+                ],
+                "triples": [],
+            }
+        )
         assert result.entities[0]["confidence"] == DEFAULT_CONFIDENCE
 
     def test_entity_confidence_clamped(self) -> None:
         from worker.pipeline.extractor import _validate_and_build
 
-        result = _validate_and_build({
-            "entities": [
-                {"name": "A", "type": "Person", "confidence": 999},
-                {"name": "B", "type": "Person", "confidence": -5},
-            ],
-            "triples": [],
-        })
+        result = _validate_and_build(
+            {
+                "entities": [
+                    {"name": "A", "type": "Person", "confidence": 999},
+                    {"name": "B", "type": "Person", "confidence": -5},
+                ],
+                "triples": [],
+            }
+        )
         assert result.entities[0]["confidence"] == 1.0
         assert result.entities[1]["confidence"] == 0.0
 
     def test_triple_missing_fields_skipped(self) -> None:
         from worker.pipeline.extractor import _validate_and_build
 
-        result = _validate_and_build({
-            "entities": [],
-            "triples": [
-                {"subject": "A", "predicate": "KNOWS"},  # missing object
-                {"subject": "A", "object": "B"},  # missing predicate
-                {"subject": "A", "predicate": "KNOWS", "object": "B"},  # valid
-            ],
-        })
+        result = _validate_and_build(
+            {
+                "entities": [],
+                "triples": [
+                    {"subject": "A", "predicate": "KNOWS"},  # missing object
+                    {"subject": "A", "object": "B"},  # missing predicate
+                    {"subject": "A", "predicate": "KNOWS", "object": "B"},  # valid
+                ],
+            }
+        )
         assert len(result.triples) == 1
 
     def test_triple_non_string_fields_skipped(self) -> None:
         from worker.pipeline.extractor import _validate_and_build
 
-        result = _validate_and_build({
-            "entities": [],
-            "triples": [
-                {"subject": 123, "predicate": "KNOWS", "object": "B"},
-                {"subject": "A", "predicate": ["KNOWS"], "object": "B"},
-                {"subject": "A", "predicate": "KNOWS", "object": {"name": "B"}},
-            ],
-        })
+        result = _validate_and_build(
+            {
+                "entities": [],
+                "triples": [
+                    {"subject": 123, "predicate": "KNOWS", "object": "B"},
+                    {"subject": "A", "predicate": ["KNOWS"], "object": "B"},
+                    {"subject": "A", "predicate": "KNOWS", "object": {"name": "B"}},
+                ],
+            }
+        )
         assert len(result.triples) == 0
 
     def test_triple_overlong_names_skipped(self) -> None:
         from worker.pipeline.extractor import MAX_ENTITY_NAME_LEN, _validate_and_build
 
         long_name = "x" * (MAX_ENTITY_NAME_LEN + 1)
-        result = _validate_and_build({
-            "entities": [],
-            "triples": [
-                {"subject": long_name, "predicate": "KNOWS", "object": "B"},
-                {"subject": "A", "predicate": "KNOWS", "object": long_name},
-                {"subject": "A", "predicate": long_name, "object": "B"},
-            ],
-        })
+        result = _validate_and_build(
+            {
+                "entities": [],
+                "triples": [
+                    {"subject": long_name, "predicate": "KNOWS", "object": "B"},
+                    {"subject": "A", "predicate": "KNOWS", "object": long_name},
+                    {"subject": "A", "predicate": long_name, "object": "B"},
+                ],
+            }
+        )
         assert len(result.triples) == 0
 
     def test_empty_extraction(self) -> None:
@@ -946,7 +984,9 @@ class TestObsidianEmbedLimits:
 
         parser = ObsidianParser()
         # Create a note with more embeds than the cap
-        embeds = "\n".join(f"![[img_{i}.png]]" for i in range(_MAX_EMBEDS_PER_NOTE + 10))
+        embeds = "\n".join(
+            f"![[img_{i}.png]]" for i in range(_MAX_EMBEDS_PER_NOTE + 10)
+        )
         note = f"---\n---\n{embeds}"
         event = {
             "source_id": "many-embeds.md",

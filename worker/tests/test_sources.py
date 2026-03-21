@@ -125,20 +125,24 @@ def test_file_source_configure_max_file_size(tmp_path: Path):
 
 def test_file_source_configure_extensions(tmp_path: Path):
     fs = FileSource()
-    fs.configure({
-        "watch_paths": [str(tmp_path)],
-        "include_extensions": [".md", "txt"],
-    })
+    fs.configure(
+        {
+            "watch_paths": [str(tmp_path)],
+            "include_extensions": [".md", "txt"],
+        }
+    )
     assert fs._include_extensions == {".md", ".txt"}
 
 
 def test_file_source_configure_excludes(tmp_path: Path):
     fs = FileSource()
-    fs.configure({
-        "watch_paths": [str(tmp_path)],
-        "exclude_patterns": ["*.pyc", ".git/*"],
-        "recursive": False,
-    })
+    fs.configure(
+        {
+            "watch_paths": [str(tmp_path)],
+            "exclude_patterns": ["*.pyc", ".git/*"],
+            "recursive": False,
+        }
+    )
     assert fs._exclude_patterns == ["*.pyc", ".git/*"]
     assert fs._recursive is False
 
@@ -233,10 +237,12 @@ async def test_file_source_no_text_for_binary_files(tmp_path: Path):
 @pytest.mark.asyncio
 async def test_file_source_respects_extension_filter(tmp_path: Path):
     fs = FileSource()
-    fs.configure({
-        "watch_paths": [str(tmp_path)],
-        "include_extensions": [".md"],
-    })
+    fs.configure(
+        {
+            "watch_paths": [str(tmp_path)],
+            "include_extensions": [".md"],
+        }
+    )
     q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
 
     task = asyncio.create_task(fs.start(q))
@@ -267,10 +273,12 @@ async def test_file_source_respects_extension_filter(tmp_path: Path):
 @pytest.mark.asyncio
 async def test_file_source_respects_exclude_pattern(tmp_path: Path):
     fs = FileSource()
-    fs.configure({
-        "watch_paths": [str(tmp_path)],
-        "exclude_patterns": ["*.pyc"],
-    })
+    fs.configure(
+        {
+            "watch_paths": [str(tmp_path)],
+            "exclude_patterns": ["*.pyc"],
+        }
+    )
     q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
 
     task = asyncio.create_task(fs.start(q))
@@ -354,10 +362,12 @@ def test_streaming_sha256_exceeds_max_size(tmp_path: Path):
 @pytest.mark.asyncio
 async def test_file_source_skips_oversized_file(tmp_path: Path):
     fs = FileSource()
-    fs.configure({
-        "watch_paths": [str(tmp_path)],
-        "max_file_size": 50,
-    })
+    fs.configure(
+        {
+            "watch_paths": [str(tmp_path)],
+            "max_file_size": 50,
+        }
+    )
     q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
 
     task = asyncio.create_task(fs.start(q))

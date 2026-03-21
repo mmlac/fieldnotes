@@ -149,8 +149,12 @@ class TestFindMatches:
         cluster_id_to_label = {0: "Containerization"}
 
         matches = _find_matches(
-            apps, app_vectors, centroid_matrix, cluster_id_to_label,
-            top_k=3, similarity_threshold=0.6,
+            apps,
+            app_vectors,
+            centroid_matrix,
+            cluster_id_to_label,
+            top_k=3,
+            similarity_threshold=0.6,
         )
         assert len(matches) == 1
         assert matches[0][0] == "app://com.docker.docker"
@@ -166,8 +170,12 @@ class TestFindMatches:
         cluster_id_to_label = {0: "Unrelated"}
 
         matches = _find_matches(
-            apps, app_vectors, centroid_matrix, cluster_id_to_label,
-            top_k=3, similarity_threshold=0.6,
+            apps,
+            app_vectors,
+            centroid_matrix,
+            cluster_id_to_label,
+            top_k=3,
+            similarity_threshold=0.6,
         )
         assert len(matches) == 0
 
@@ -175,23 +183,34 @@ class TestFindMatches:
         apps = [_app_node()]
         # App vector similar to all 3 centroids
         app_vectors = np.array([[1.0, 1.0, 1.0]], dtype=np.float32)
-        centroid_matrix = np.array([
-            [1.0, 1.0, 0.0],
-            [1.0, 0.0, 1.0],
-            [0.0, 1.0, 1.0],
-        ], dtype=np.float32)
+        centroid_matrix = np.array(
+            [
+                [1.0, 1.0, 0.0],
+                [1.0, 0.0, 1.0],
+                [0.0, 1.0, 1.0],
+            ],
+            dtype=np.float32,
+        )
         cluster_id_to_label = {0: "A", 1: "B", 2: "C"}
 
         matches = _find_matches(
-            apps, app_vectors, centroid_matrix, cluster_id_to_label,
-            top_k=2, similarity_threshold=0.0,
+            apps,
+            app_vectors,
+            centroid_matrix,
+            cluster_id_to_label,
+            top_k=2,
+            similarity_threshold=0.0,
         )
         assert len(matches) == 2
 
     def test_empty_inputs(self):
         matches = _find_matches(
-            [], np.empty((0, 3)), np.empty((0, 3)), {},
-            top_k=3, similarity_threshold=0.6,
+            [],
+            np.empty((0, 3)),
+            np.empty((0, 3)),
+            {},
+            top_k=3,
+            similarity_threshold=0.6,
         )
         assert matches == []
 
@@ -244,7 +263,9 @@ class TestLinkAppsToTopics:
 
     def test_empty_cluster_results(self):
         result = link_apps_to_topics(
-            [_labeled()], [], MagicMock(),
+            [_labeled()],
+            [],
+            MagicMock(),
         )
         assert result == 0
 

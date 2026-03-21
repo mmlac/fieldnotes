@@ -104,9 +104,7 @@ def _label_single_cluster(
     top_k: int,
 ) -> LabeledCluster:
     """Label a single cluster."""
-    texts = _get_central_chunk_texts(
-        cluster, client, collection, top_k
-    )
+    texts = _get_central_chunk_texts(cluster, client, collection, top_k)
 
     if not texts:
         logger.warning(
@@ -218,7 +216,10 @@ def _call_labeling_model(
         return label, description
     except (json.JSONDecodeError, KeyError, TypeError) as exc:
         logger.error("Failed to parse labeling response: %s", exc)
-        return f"Unknown Topic (cluster_{cluster_id})", "LLM response could not be parsed."
+        return (
+            f"Unknown Topic (cluster_{cluster_id})",
+            "LLM response could not be parsed.",
+        )
 
 
 def _deduplicate_labels(results: list[LabeledCluster]) -> None:

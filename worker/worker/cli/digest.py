@@ -32,7 +32,11 @@ def _format_source_line(activity: SourceActivity) -> list[str]:
     # OmniFocus distinguishes completed from modified
     completed = getattr(activity, "_completed", 0)
     created = activity.created
-    modified = activity.modified - completed if activity.source_type == "omnifocus" else activity.modified
+    modified = (
+        activity.modified - completed
+        if activity.source_type == "omnifocus"
+        else activity.modified
+    )
 
     if activity.source_type == "omnifocus":
         if completed:
@@ -47,7 +51,9 @@ def _format_source_line(activity: SourceActivity) -> list[str]:
         if modified:
             parts.append(f"{modified} modified")
 
-    count_str = ", ".join(parts) if parts else f"{activity.created + activity.modified} items"
+    count_str = (
+        ", ".join(parts) if parts else f"{activity.created + activity.modified} items"
+    )
 
     lines = [f"  \033[36m{label_col}\033[0m {count_str}"]
     if activity.highlights:
@@ -76,10 +82,14 @@ def _format_human(result: DigestResult) -> str:
         lines.extend(_format_source_line(activity))
 
     if result.new_connections > 0:
-        lines.append(f"  \033[36m{'Cross-source':<14}\033[0m {result.new_connections} new connections discovered")
+        lines.append(
+            f"  \033[36m{'Cross-source':<14}\033[0m {result.new_connections} new connections discovered"
+        )
 
     if result.new_topics > 0:
-        lines.append(f"  \033[36m{'Topics':<14}\033[0m {result.new_topics} new topic(s) discovered")
+        lines.append(
+            f"  \033[36m{'Topics':<14}\033[0m {result.new_topics} new topic(s) discovered"
+        )
 
     if result.summary:
         lines.append("")
@@ -162,8 +172,10 @@ def _generate_summary(result: DigestResult, cfg: object) -> str | None:
         for a in result.sources:
             completed = getattr(a, "_completed", 0)
             label = a.source_type
-            lines.append(f"  {label}: {a.created} new, {a.modified} modified"
-                         + (f", {completed} completed" if completed else ""))
+            lines.append(
+                f"  {label}: {a.created} new, {a.modified} modified"
+                + (f", {completed} completed" if completed else "")
+            )
             if a.highlights:
                 lines.append(f"    Examples: {', '.join(a.highlights)}")
         if result.new_connections:
@@ -187,5 +199,3 @@ def _generate_summary(result: DigestResult, cfg: object) -> str | None:
     except Exception:
         logger.debug("Digest: summary generation failed", exc_info=True)
         return None
-
-

@@ -33,9 +33,7 @@ _TEST_COLLECTION = "fieldnotes_test"
 
 def _neo4j_available() -> bool:
     try:
-        with GraphDatabase.driver(
-            _NEO4J_URI, auth=(_NEO4J_USER, _NEO4J_PASSWORD)
-        ) as d:
+        with GraphDatabase.driver(_NEO4J_URI, auth=(_NEO4J_USER, _NEO4J_PASSWORD)) as d:
             d.verify_connectivity()
         return True
     except Exception:
@@ -72,7 +70,9 @@ def _unique_id(prefix: str = "test") -> str:
     return f"{prefix}/{uuid.uuid4().hex[:8]}.md"
 
 
-def _doc(source_id: str, operation: str = "created", **overrides: Any) -> ParsedDocument:
+def _doc(
+    source_id: str, operation: str = "created", **overrides: Any
+) -> ParsedDocument:
     defaults = dict(
         source_type="files",
         source_id=source_id,
@@ -115,8 +115,10 @@ def qdrant_client() -> Generator[QdrantClient, None, None]:
 def writer() -> Generator[Writer, None, None]:
     neo4j_cfg = Neo4jConfig(uri=_NEO4J_URI, user=_NEO4J_USER, password=_NEO4J_PASSWORD)
     qdrant_cfg = QdrantConfig(
-        host=_QDRANT_HOST, port=_QDRANT_PORT,
-        collection=_TEST_COLLECTION, vector_size=VECTOR_SIZE,
+        host=_QDRANT_HOST,
+        port=_QDRANT_PORT,
+        collection=_TEST_COLLECTION,
+        vector_size=VECTOR_SIZE,
     )
     w = Writer(neo4j_cfg=neo4j_cfg, qdrant_cfg=qdrant_cfg)
     yield w
@@ -164,7 +166,9 @@ def _query_hint_edges(driver: Driver, source_id: str) -> list[dict[str, str]]:
             "RETURN type(r) AS rel_type, o.source_id AS target_id",
             sid=source_id,
         )
-        return [{"rel_type": r["rel_type"], "target_id": r["target_id"]} for r in result]
+        return [
+            {"rel_type": r["rel_type"], "target_id": r["target_id"]} for r in result
+        ]
 
 
 def _query_chunks(driver: Driver, source_id: str) -> list[str]:
@@ -191,11 +195,14 @@ def _query_entity_exists(driver: Driver, name: str) -> bool:
 def _query_qdrant_points(client: QdrantClient, source_id: str) -> int:
     """Count Qdrant points for a source_id."""
     from qdrant_client.models import FieldCondition, Filter, MatchValue
+
     result = client.scroll(
         collection_name=_TEST_COLLECTION,
-        scroll_filter=Filter(must=[
-            FieldCondition(key="source_id", match=MatchValue(value=source_id)),
-        ]),
+        scroll_filter=Filter(
+            must=[
+                FieldCondition(key="source_id", match=MatchValue(value=source_id)),
+            ]
+        ),
         limit=100,
     )
     return len(result[0])
@@ -211,7 +218,9 @@ class TestContentUpdate:
     """Integration tests for the source modification cleanup flow."""
 
     def test_modified_cleans_stale_mentions(
-        self, writer: Writer, neo4j_driver: Driver,
+        self,
+        writer: Writer,
+        neo4j_driver: Driver,
     ) -> None:
         """v1 mentions A,B,C; v2 mentions A,D. B,C edges gone, A,D present."""
         sid = _unique_id()
@@ -241,7 +250,9 @@ class TestContentUpdate:
         assert mentions_v2 == ["A", "D"]
 
     def test_modified_cleans_stale_hints(
-        self, writer: Writer, neo4j_driver: Driver,
+        self,
+        writer: Writer,
+        neo4j_driver: Driver,
     ) -> None:
         """v1 has wikilinks to X,Y; v2 has wikilink to X only. LINKS_TO Y gone."""
         sid = _unique_id()
@@ -250,14 +261,18 @@ class TestContentUpdate:
         target_y = _unique_id("target_y")
 
         hint_x = GraphHint(
-            subject_id=sid, subject_label="File",
+            subject_id=sid,
+            subject_label="File",
             predicate="LINKS_TO",
-            object_id=target_x, object_label="File",
+            object_id=target_x,
+            object_label="File",
         )
         hint_y = GraphHint(
-            subject_id=sid, subject_label="File",
+            subject_id=sid,
+            subject_label="File",
             predicate="LINKS_TO",
-            object_id=target_y, object_label="File",
+            object_id=target_y,
+            object_label="File",
         )
 
         # v1: create with hints X, Y
@@ -286,7 +301,10 @@ class TestContentUpdate:
         assert hints_v2[0]["target_id"] == target_x
 
     def test_modified_cleans_stale_chunks(
-        self, writer: Writer, neo4j_driver: Driver, qdrant_client: QdrantClient,
+        self,
+        writer: Writer,
+        neo4j_driver: Driver,
+        qdrant_client: QdrantClient,
     ) -> None:
         """v1 has 5 chunks; v2 has 3. Assert exactly 3 Chunk nodes and 3 Qdrant points."""
         sid = _unique_id()
@@ -319,7 +337,9 @@ class TestContentUpdate:
         assert _query_qdrant_points(qdrant_client, sid) == 3
 
     def test_orphan_entity_cleanup(
-        self, writer: Writer, neo4j_driver: Driver,
+        self,
+        writer: Writer,
+        neo4j_driver: Driver,
     ) -> None:
         """Entity B only mentioned by this source. After removing B, entity node deleted."""
         sid = _unique_id()
@@ -349,7 +369,9 @@ class TestContentUpdate:
         assert not _query_entity_exists(neo4j_driver, "OrphanTestB")
 
     def test_shared_entity_preserved(
-        self, writer: Writer, neo4j_driver: Driver,
+        self,
+        writer: Writer,
+        neo4j_driver: Driver,
     ) -> None:
         """Entity A mentioned by source1 and source2. Modifying source1 to remove A
         should preserve A because source2 still references it."""
@@ -394,7 +416,9 @@ class TestContentUpdate:
         assert _query_entity_exists(neo4j_driver, "NewEntity")
 
     def test_created_operation_no_cleanup(
-        self, writer: Writer, neo4j_driver: Driver,
+        self,
+        writer: Writer,
+        neo4j_driver: Driver,
     ) -> None:
         """'created' operation does not trigger any cleanup logic."""
         sid = _unique_id()
@@ -425,7 +449,10 @@ class TestContentUpdate:
         assert "CreateTestC" in mentions
 
     def test_deleted_operation_unchanged(
-        self, writer: Writer, neo4j_driver: Driver, qdrant_client: QdrantClient,
+        self,
+        writer: Writer,
+        neo4j_driver: Driver,
+        qdrant_client: QdrantClient,
     ) -> None:
         """Deletion path removes source node, chunks, and vectors."""
         sid = _unique_id()
