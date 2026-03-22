@@ -177,6 +177,10 @@ def run_daemon(config_path: Path | None = None) -> None:
 
     logger.info("fieldnotes daemon starting")
 
+    from worker.metrics import init_metrics
+
+    init_metrics(cfg)
+
     # Health checks
     max_retries = 5
     for attempt in range(1, max_retries + 1):
