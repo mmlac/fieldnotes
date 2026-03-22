@@ -254,20 +254,24 @@ client_secrets_path = "~/.fieldnotes/credentials.json"
 
 Gmail indexing requires a Google Cloud OAuth2 credential. This is a one-time setup:
 
-1. **Create a Google Cloud project** at [console.cloud.google.com](https://console.cloud.google.com).
+1. **Create a Google Cloud project** at [console.cloud.google.com](https://console.cloud.google.com) (e.g., name it "FieldNotes").
 2. **Enable the Gmail API**: Navigate to *APIs & Services → Library*, search for "Gmail API", and click *Enable*.
-3. **Create OAuth credentials**: Go to *APIs & Services → Credentials → Create Credentials → OAuth client ID*. Select **Desktop application** as the application type.
-4. **Download the credentials**: Click *Download JSON* and save it as `~/.fieldnotes/credentials.json` (or the path you set in `client_secrets_path`).
-5. **First run**: When the daemon starts with Gmail enabled, it will open your browser for a one-time consent screen. Approve read-only access (`gmail.readonly` scope). The resulting token is saved to `~/.fieldnotes/data/gmail_token.json` (mode `0600`) and refreshed automatically from then on.
+3. **Configure the OAuth consent screen**: Go to *APIs & Services → OAuth consent screen*. Choose **External** as user type. Fill in the required app name and email fields. On the *Scopes* page, add `gmail.readonly`. On the *Test users* page, **add your own Gmail address**. Leave the app in **Testing** mode — this is sufficient for personal use and avoids Google's app verification process.
+4. **Create OAuth credentials**: Go to *APIs & Services → Credentials → Create Credentials → OAuth client ID*. Select **Desktop application** as the application type.
+5. **Download the credentials**: Click *Download JSON* and save it as `~/.fieldnotes/credentials.json` (or the path you set in `client_secrets_path`).
+6. **First run**: When the daemon starts with Gmail enabled, it will open your browser for a one-time consent screen. Approve read-only access (`gmail.readonly` scope). The resulting token is saved to `~/.fieldnotes/data/gmail_token.json` (mode `0600`) and refreshed automatically from then on.
 
 > **Note:** If you're running fieldnotes as a system service (headless), complete the first OAuth flow manually with `fieldnotes serve --daemon` in a terminal before installing the service. The saved token will be reused.
 
+> **Troubleshooting:** If the consent screen shows _"Access Blocked: \<AppName\> has not completed the Google verification process"_, the `credentials.json` file belongs to a different Google Cloud project that was published but never verified. Create your own project following the steps above — step 3 (consent screen) is the most commonly missed part.
+
 #### Google Calendar OAuth Setup
 
-Google Calendar uses the same OAuth credentials file as Gmail. If you already configured Gmail, you only need to enable the Calendar API:
+Google Calendar uses the same OAuth credentials file and Google Cloud project as Gmail. If you already configured Gmail, you only need to enable the Calendar API:
 
 1. **Enable the Google Calendar API**: In the same Google Cloud project, go to *APIs & Services → Library*, search for "Google Calendar API", and click *Enable*.
-2. **First run**: When the daemon starts with Google Calendar enabled, it will open your browser for a one-time consent screen. Approve read-only access (`calendar.events.readonly` scope). The token is saved to `~/.fieldnotes/data/calendar_token.json` (mode `0600`) and refreshed automatically.
+2. **Add the Calendar scope**: Go to *APIs & Services → OAuth consent screen → Edit App → Scopes* and add `calendar.events.readonly`. (If you set up Gmail and Calendar at the same time, add both scopes in one go.)
+3. **First run**: When the daemon starts with Google Calendar enabled, it will open your browser for a one-time consent screen. Approve read-only access (`calendar.events.readonly` scope). The token is saved to `~/.fieldnotes/data/calendar_token.json` (mode `0600`) and refreshed automatically.
 3. **Multiple calendars**: Set `calendar_ids` to a list of calendar IDs. Use `"primary"` for your main calendar. Other calendars can be found in Google Calendar settings under *Settings for other calendars → Integrate calendar → Calendar ID*.
 
 > **Tip:** The same `credentials.json` file works for both Gmail and Google Calendar — they share the OAuth client, but each source has its own token file and consent flow.
