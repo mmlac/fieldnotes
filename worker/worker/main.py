@@ -69,10 +69,12 @@ SOURCE_CLASSES: dict[str, type[PythonSource]] = {
 }
 
 
-def _setup_logging(level: str) -> None:
+def _setup_logging(level: str, *, log_file: Path | None = None) -> None:
     """Configure root logger from config.core.log_level.
 
-    Always writes to stderr.  Replaces any handlers already installed by
+    Always writes to stderr.  When *log_file* is given a
+    ``RotatingFileHandler`` is added so output is also persisted to disk
+    (used by daemon mode).  Replaces any handlers already installed by
     ``logging.basicConfig`` so that daemon mode does not end up with
     duplicate log lines when the CLI's ``basicConfig`` call runs first.
     """
@@ -83,12 +85,23 @@ def _setup_logging(level: str) -> None:
         datefmt="%Y-%m-%dT%H:%M:%S",
         production=production,
     )
-    handler = logging.StreamHandler(sys.stderr)
-    handler.setFormatter(formatter)
     root = logging.getLogger()
     root.handlers.clear()
     root.setLevel(numeric)
-    root.addHandler(handler)
+
+    stderr_handler = logging.StreamHandler(sys.stderr)
+    stderr_handler.setFormatter(formatter)
+    root.addHandler(stderr_handler)
+
+    if log_file is not None:
+        from logging.handlers import RotatingFileHandler
+
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        file_handler = RotatingFileHandler(
+            log_file, maxBytes=10 * 1024 * 1024, backupCount=3,
+        )
+        file_handler.setFormatter(formatter)
+        root.addHandler(file_handler)
 
 
 def _check_neo4j(cfg: Config) -> None:

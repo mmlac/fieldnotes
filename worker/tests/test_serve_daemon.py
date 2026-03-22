@@ -341,3 +341,32 @@ class TestRunDaemonSync:
             run_daemon()
 
         assert mock_qdrant.call_count == 5
+
+    @patch("worker.serve_daemon.asyncio.run", side_effect=KeyboardInterrupt)
+    @patch("worker.serve_daemon._check_qdrant")
+    @patch("worker.serve_daemon._check_neo4j")
+    @patch("worker.serve_daemon._setup_logging")
+    @patch("worker.serve_daemon.load_config")
+    def test_keyboard_interrupt_handled(
+        self, mock_load, mock_logging, mock_neo4j, mock_qdrant, mock_arun
+    ) -> None:
+        mock_load.return_value = _cfg()
+        # Should not raise — KeyboardInterrupt is caught gracefully
+        run_daemon()
+        mock_arun.assert_called_once()
+
+    @patch("worker.serve_daemon.asyncio.run")
+    @patch("worker.serve_daemon._check_qdrant")
+    @patch("worker.serve_daemon._check_neo4j")
+    @patch("worker.serve_daemon.load_config")
+    def test_log_file_passed_to_setup_logging(
+        self, mock_load, mock_neo4j, mock_qdrant, mock_arun
+    ) -> None:
+        from worker.serve_daemon import _LOG_FILE
+
+        mock_load.return_value = _cfg()
+        with patch("worker.serve_daemon._setup_logging") as mock_logging:
+            run_daemon()
+        mock_logging.assert_called_once_with(
+            _cfg().core.log_level, log_file=_LOG_FILE,
+        )

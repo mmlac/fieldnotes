@@ -428,6 +428,31 @@ class TestRestore:
         assert rc == 0
         start.assert_called_once()  # type: ignore[attr-defined]
 
+    @patch("worker.backup._stop_containers", return_value=False)
+    def test_backup_excludes_daemon_log(
+        self, _stop: object, tmp_path: Path
+    ) -> None:
+        fn = tmp_path / ".fieldnotes"
+        fn.mkdir()
+        _populate_fieldnotes(fn)
+        # Add a daemon log file inside data/
+        (fn / "data" / "daemon.log").write_text("log line\n")
+        (fn / "data" / "daemon.log.1").write_text("old log\n")
+
+        with (
+            patch("worker.backup._FN_DIR", fn),
+            patch("worker.backup._BACKUPS_DIR", fn / "backups"),
+        ):
+            rc = backup()
+
+        assert rc == 0
+        archives = list((fn / "backups").glob("fieldnotes-*.tar.gz"))
+        with tarfile.open(archives[0], "r:gz") as tar:
+            names = tar.getnames()
+        assert "data/neo4j/dummy.db" in names
+        assert "data/daemon.log" not in names
+        assert "data/daemon.log.1" not in names
+
 
 # ── CLI dispatch tests ──────────────────────────────────────────────
 

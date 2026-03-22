@@ -115,6 +115,28 @@ class TestSetupLogging:
             real_root.handlers.extend(original_handlers)
             real_root.setLevel(original_level)
 
+    def test_log_file_creates_rotating_handler(self, tmp_path):
+        """When log_file is given, a RotatingFileHandler is added."""
+        import logging as _logging
+
+        log_file = tmp_path / "logs" / "daemon.log"
+        real_root = _logging.getLogger()
+        original_handlers = real_root.handlers[:]
+        original_level = real_root.level
+        try:
+            real_root.handlers.clear()
+            _setup_logging("info", log_file=log_file)
+            assert log_file.parent.is_dir()
+            # Should have stderr handler + file handler
+            assert len(real_root.handlers) == 2
+            real_root.info("file-test-line")
+            assert log_file.exists()
+            assert "file-test-line" in log_file.read_text()
+        finally:
+            real_root.handlers.clear()
+            real_root.handlers.extend(original_handlers)
+            real_root.setLevel(original_level)
+
 
 # ------------------------------------------------------------------
 # _check_neo4j

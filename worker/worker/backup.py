@@ -22,6 +22,14 @@ _BACKUP_ITEMS = [
     "state",
 ]
 
+# Filenames inside backed-up directories to exclude (e.g. log files).
+_BACKUP_EXCLUDE = {
+    "daemon.log",
+    "daemon.log.1",
+    "daemon.log.2",
+    "daemon.log.3",
+}
+
 _TEMPLATES = Path(__file__).resolve().parent / "templates"
 
 PLIST_LABEL = "com.fieldnotes.backup"
@@ -110,12 +118,21 @@ def backup(*, keep: int | None = None) -> int:
     if was_running:
         print("Stopped Docker containers for consistent backup.")
 
+    def _exclude_filter(info: tarfile.TarInfo) -> tarfile.TarInfo | None:
+        if info.name.rsplit("/", 1)[-1] in _BACKUP_EXCLUDE:
+            return None
+        return info
+
     try:
         with tarfile.open(archive_path, "w:gz") as tar:
             for item_name in _BACKUP_ITEMS:
                 item_path = _FN_DIR / item_name
                 if item_path.exists():
-                    tar.add(str(item_path), arcname=item_name)
+                    tar.add(
+                        str(item_path),
+                        arcname=item_name,
+                        filter=_exclude_filter,
+                    )
             # Include .env from infrastructure if present.
             env_file = _FN_DIR / "infrastructure" / ".env"
             if env_file.exists():

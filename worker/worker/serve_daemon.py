@@ -167,10 +167,13 @@ async def _run_daemon(cfg: Config) -> None:
         logger.info("Daemon shutdown complete")
 
 
+_LOG_FILE = Path.home() / ".fieldnotes" / "data" / "daemon.log"
+
+
 def run_daemon(config_path: Path | None = None) -> None:
     """Entry point for ``fieldnotes serve --daemon``."""
     cfg = load_config(config_path)
-    _setup_logging(cfg.core.log_level)
+    _setup_logging(cfg.core.log_level, log_file=_LOG_FILE)
 
     logger.info("fieldnotes daemon starting")
 
@@ -200,4 +203,7 @@ def run_daemon(config_path: Path | None = None) -> None:
                 sys.exit(1)
             time.sleep(2**attempt)
 
-    asyncio.run(_run_daemon(cfg))
+    try:
+        asyncio.run(_run_daemon(cfg))
+    except KeyboardInterrupt:
+        logger.info("Interrupted")
