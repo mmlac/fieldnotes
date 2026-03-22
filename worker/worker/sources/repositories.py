@@ -39,6 +39,7 @@ from worker.metrics import (
     SOURCE_WATCHER_EVENTS,
     WATCHER_ACTIVE,
     WATCHER_LAST_EVENT_TIMESTAMP,
+    initial_sync_source_done,
 )
 
 from worker.log_sanitizer import redact_home_path
@@ -322,15 +323,21 @@ class RepositorySource(PythonSource):
             logger.info("No repo cursors found — performing initial scan")
 
         WATCHER_ACTIVE.labels(source_type="repositories").set(1)
+        first_cycle = True
         try:
             while True:
                 repos = _discover_repos(self._repo_roots)
                 for repo_path in repos:
                     await self._scan_repo(repo_path, cursors, queue)
-                _save_cursor(self._cursor_path, cursors)
+                    # Save after each repo so progress survives crashes
+                    _save_cursor(self._cursor_path, cursors)
+                if first_cycle:
+                    initial_sync_source_done()
+                    first_cycle = False
                 await asyncio.sleep(self._poll_interval)
         except asyncio.CancelledError:
             WATCHER_ACTIVE.labels(source_type="repositories").set(0)
+            _save_cursor(self._cursor_path, cursors)
             raise
 
     async def _scan_repo(

@@ -28,6 +28,7 @@ from worker.metrics import (
     SOURCE_WATCHER_EVENTS,
     WATCHER_ACTIVE,
     WATCHER_LAST_EVENT_TIMESTAMP,
+    initial_sync_source_done,
 )
 
 from worker.log_sanitizer import redact_home_path
@@ -277,15 +278,20 @@ class HomebrewSource(PythonSource):
         brew_path = _find_brew()
         if brew_path is None:
             logger.info("Homebrew not found — homebrew source skipped")
+            initial_sync_source_done()
             return
 
         logger.info("Homebrew found at %s", brew_path)
         prev_state = _load_state(self._state_path)
 
         WATCHER_ACTIVE.labels(source_type="homebrew").set(1)
+        first_cycle = True
         try:
             while True:
                 await self._scan(brew_path, prev_state, queue)
+                if first_cycle:
+                    initial_sync_source_done()
+                    first_cycle = False
                 await asyncio.sleep(self._poll_interval)
         except asyncio.CancelledError:
             WATCHER_ACTIVE.labels(source_type="homebrew").set(0)

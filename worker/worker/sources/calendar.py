@@ -32,6 +32,7 @@ from worker.metrics import (
     WATCHER_ACTIVE,
     WATCHER_LAST_EVENT_TIMESTAMP,
     initial_sync_add_items,
+    initial_sync_source_done,
 )
 
 from .base import PythonSource
@@ -233,6 +234,7 @@ class GoogleCalendarSource(PythonSource):
             self._poll_interval,
         )
 
+        first_cycle = True
         try:
             while True:
                 for cal_id in self._calendar_ids:
@@ -263,6 +265,10 @@ class GoogleCalendarSource(PythonSource):
                         logger.exception(
                             "Unexpected error polling calendar %s", cal_id
                         )
+
+                if first_cycle:
+                    initial_sync_source_done()
+                    first_cycle = False
 
                 # Persist sync tokens after each poll cycle
                 save_json_atomic(self._cursor_path, sync_tokens)

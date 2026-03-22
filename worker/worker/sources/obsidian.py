@@ -26,6 +26,7 @@ from worker.metrics import (
     OBSIDIAN_VAULTS_DISCOVERED,
     WATCHER_ACTIVE,
     initial_sync_add_items,
+    initial_sync_source_done,
 )
 
 from ._handler import (
@@ -386,10 +387,33 @@ class ObsidianSource(PythonSource):
             if vault_actionable:
                 initial_sync_add_items(vault_actionable)
 
-            _emit_scan_events(
-                diff, vault_entries, vault, vault_name, queue,
-                categories_key=self._categories_key,
-            )
+            # Emit events and checkpoint cursor after each file
+            now = datetime.now(timezone.utc).isoformat()
+            for file_path in diff.new:
+                _enqueue_scan_event(
+                    file_path, "created", vault_entries[file_path],
+                    vault, vault_name, now, queue,
+                    categories_key=self._categories_key,
+                )
+                save_cursor(self._cursor_path, current_cursor)
+
+            for file_path in diff.modified:
+                _enqueue_scan_event(
+                    file_path, "modified", vault_entries[file_path],
+                    vault, vault_name, now, queue,
+                    categories_key=self._categories_key,
+                )
+                save_cursor(self._cursor_path, current_cursor)
+
+            for file_path in diff.deleted:
+                _enqueue_scan_event(
+                    file_path, "deleted", None,
+                    vault, vault_name, now, queue,
+                    categories_key=self._categories_key,
+                )
+                # Remove from cursor so deleted files aren't re-emitted
+                current_cursor.pop(file_path, None)
+                save_cursor(self._cursor_path, current_cursor)
 
             n_new = len(diff.new)
             n_mod = len(diff.modified)
@@ -471,6 +495,7 @@ class ObsidianSource(PythonSource):
             total_modified,
             total_deleted,
         )
+        initial_sync_source_done()
 
         # Build dedup set from all scanned files
         scan_pairs: set[tuple[str, str]] = {

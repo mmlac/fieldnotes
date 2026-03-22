@@ -43,7 +43,9 @@ async def _run_daemon(cfg: Config) -> None:
     from worker.metrics import (
         INITIAL_SYNC_ETA_SECONDS,
         INITIAL_SYNC_ITEMS_PROCESSED,
+        initial_sync_all_sources_done,
         initial_sync_get_total,
+        initial_sync_register_source,
     )
     from worker.models.resolver import ModelRegistry
     from worker.pipeline import Pipeline
@@ -89,6 +91,7 @@ async def _run_daemon(cfg: Config) -> None:
 
     source_tasks: list[asyncio.Task[None]] = []
     for source in sources:
+        initial_sync_register_source()
         task = asyncio.create_task(source.start(queue), name=f"source:{source.name()}")
         source_tasks.append(task)
 
@@ -179,6 +182,9 @@ async def _run_daemon(cfg: Config) -> None:
                 if remaining > 0 and _sync_times:
                     avg = sum(_sync_times) / len(_sync_times)
                     INITIAL_SYNC_ETA_SECONDS.set(remaining * avg)
+                elif not initial_sync_all_sources_done():
+                    # Sources still scanning — don't report complete yet
+                    INITIAL_SYNC_ETA_SECONDS.set(-1)
                 else:
                     INITIAL_SYNC_ETA_SECONDS.set(0)
     finally:

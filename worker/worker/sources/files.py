@@ -24,6 +24,7 @@ from worker.metrics import (
     INITIAL_SCAN_FILES_TOTAL,
     WATCHER_ACTIVE,
     initial_sync_add_items,
+    initial_sync_source_done,
 )
 
 from ._handler import (
@@ -222,16 +223,22 @@ class FileSource(PythonSource):
         for file_path in diff.new:
             event = self._build_scan_event(file_path, "created", current[file_path])
             await queue.put(event)
+            stored[file_path] = current[file_path]
+            save_cursor(self._cursor_path, stored)
             counts["new"] += 1
 
         for file_path in diff.modified:
             event = self._build_scan_event(file_path, "modified", current[file_path])
             await queue.put(event)
+            stored[file_path] = current[file_path]
+            save_cursor(self._cursor_path, stored)
             counts["modified"] += 1
 
         for file_path in diff.deleted:
             event = self._build_scan_event(file_path, "deleted", None)
             await queue.put(event)
+            del stored[file_path]
+            save_cursor(self._cursor_path, stored)
             counts["deleted"] += 1
 
         counts["unchanged"] = len(current) - counts["new"] - counts["modified"]
@@ -268,6 +275,7 @@ class FileSource(PythonSource):
     async def start(self, queue: asyncio.Queue[dict[str, Any]]) -> None:
         # Initial scan BEFORE watchdog to avoid duplicate events
         scan_pairs = await self._initial_scan(queue)
+        initial_sync_source_done()
 
         loop = asyncio.get_running_loop()
         handler = _Handler(

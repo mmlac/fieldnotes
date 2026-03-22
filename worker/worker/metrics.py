@@ -321,6 +321,7 @@ INITIAL_SYNC_ETA_SECONDS = Gauge(
 # Module-level accumulator so sources can register totals and main loops
 # can read them without reaching into Gauge internals.
 _initial_sync_total: int = 0
+_initial_sync_sources_pending: int = 0
 
 
 def initial_sync_add_items(count: int) -> None:
@@ -333,6 +334,23 @@ def initial_sync_add_items(count: int) -> None:
 def initial_sync_get_total() -> int:
     """Return the current total of registered initial-sync items."""
     return _initial_sync_total
+
+
+def initial_sync_register_source() -> None:
+    """Mark that a source has an initial scan phase still pending."""
+    global _initial_sync_sources_pending
+    _initial_sync_sources_pending += 1
+
+
+def initial_sync_source_done() -> None:
+    """Mark that a source has completed its initial scan phase."""
+    global _initial_sync_sources_pending
+    _initial_sync_sources_pending = max(0, _initial_sync_sources_pending - 1)
+
+
+def initial_sync_all_sources_done() -> bool:
+    """Return True if every source has finished its initial scan."""
+    return _initial_sync_sources_pending <= 0
 
 
 OBSIDIAN_VAULTS_DISCOVERED = Gauge(

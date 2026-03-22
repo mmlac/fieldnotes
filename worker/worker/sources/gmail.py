@@ -33,6 +33,7 @@ from worker.metrics import (
     WATCHER_ACTIVE,
     WATCHER_LAST_EVENT_TIMESTAMP,
     initial_sync_add_items,
+    initial_sync_source_done,
     observe_duration,
 )
 
@@ -242,6 +243,8 @@ class GmailSource(PythonSource):
             cursor = await self._backfill(messages_api, queue, is_initial=True)
             if cursor:
                 _save_cursor(self._cursor_path, cursor)
+
+        initial_sync_source_done()
 
         # Polling loop
         try:

@@ -29,6 +29,7 @@ from worker.metrics import (
     SOURCE_WATCHER_EVENTS,
     WATCHER_ACTIVE,
     WATCHER_LAST_EVENT_TIMESTAMP,
+    initial_sync_source_done,
 )
 
 from .base import PythonSource
@@ -232,15 +233,20 @@ class OmniFocusSource(PythonSource):
     async def start(self, queue: asyncio.Queue[dict[str, Any]]) -> None:
         if not _is_macos():
             logger.info("OmniFocus source skipped (not macOS)")
+            initial_sync_source_done()
             return
 
         state = _load_state(self._state_path)
 
         WATCHER_ACTIVE.labels(source_type=_SOURCE_TYPE).set(1)
+        first_cycle = True
         try:
             while True:
                 await self._poll(state, queue)
                 _save_state(self._state_path, state)
+                if first_cycle:
+                    initial_sync_source_done()
+                    first_cycle = False
                 await asyncio.sleep(self._poll_interval)
         except asyncio.CancelledError:
             WATCHER_ACTIVE.labels(source_type=_SOURCE_TYPE).set(0)
