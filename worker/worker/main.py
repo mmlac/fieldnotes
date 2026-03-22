@@ -150,6 +150,7 @@ async def _index_status_loop(
     writer: Writer,
     collection_name: str,
     start_time: float,
+    data_dir: str = "~/.fieldnotes/data",
     interval: float = DEFAULT_COLLECT_INTERVAL,
 ) -> None:
     """Background task: collect index status gauges periodically."""
@@ -164,6 +165,7 @@ async def _index_status_loop(
                 writer._neo4j_driver,
                 writer._qdrant,
                 collection_name,
+                data_dir,
             )
         except asyncio.CancelledError:
             raise
@@ -203,7 +205,7 @@ async def _run(cfg: Config) -> None:
     # Index status collector — first collection on startup, then every 60s
     collection_name = cfg.qdrant.collection or "fieldnotes"
     status_task = asyncio.create_task(
-        _index_status_loop(writer, collection_name, start_time),
+        _index_status_loop(writer, collection_name, start_time, cfg.core.data_dir),
         name="index-status-collector",
     )
     background_tasks.append(status_task)

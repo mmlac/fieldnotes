@@ -40,7 +40,18 @@ Entities: people, technologies, projects, organizations, and concepts. \
 For each entity provide a name, type, and confidence score (0.0-1.0).
 
 Triples: subject-predicate-object relationships between entities. \
-The subject and object must be entity names from your extraction.
+The subject and object must be entity names from your extraction. \
+Use ONLY these predicate types: WORKS_AT, WORKS_FOR, WORKS_ON, KNOWS, \
+COLLABORATES_WITH, USES, USED_BY, CREATED_BY, CREATED, PART_OF, \
+BELONGS_TO, CONTAINS, DEPENDS_ON, IS_A, HAS_A, LOCATED_IN, MANAGES, \
+REPORTS_TO, CONTRIBUTED_TO, BASED_ON, ASSOCIATED_WITH, FOUNDED, \
+FUNDED_BY, PUBLISHED, AUTHORED, EMPLOYED_BY, AFFILIATED_WITH, MEMBER_OF, \
+MENTIONS, REFERENCES, IMPLEMENTS, EXTENDS, INTEGRATES_WITH, SAME_AS, \
+INFLUENCED_BY, SUPPORTS, ACQUIRED_BY, INVESTED_IN, DEVELOPED_BY, \
+MAINTAINED_BY, OWNED_BY, LED_BY, TAUGHT_BY, ATTENDED, PARTICIPATED_IN, \
+SPOKE_AT, INSTALLED_VIA, CATEGORIZED_AS, PROVIDES, HAS_ROLE, MEETS_WITH, \
+LOCATED_AT, SENT_BY, SENT_TO, HOSTED_BY, SCHEDULED_AT, RELATED_TO. \
+If none of these fit, use RELATED_TO.
 
 Call the extract_entities_and_triples tool with your results."""
 
@@ -79,7 +90,68 @@ EXTRACTION_TOOL = {
                         "type": "object",
                         "properties": {
                             "subject": {"type": "string"},
-                            "predicate": {"type": "string"},
+                            "predicate": {
+                                "type": "string",
+                                "enum": [
+                                    "RELATED_TO",
+                                    "WORKS_AT",
+                                    "WORKS_FOR",
+                                    "WORKS_ON",
+                                    "KNOWS",
+                                    "COLLABORATES_WITH",
+                                    "USES",
+                                    "USED_BY",
+                                    "CREATED_BY",
+                                    "CREATED",
+                                    "PART_OF",
+                                    "BELONGS_TO",
+                                    "CONTAINS",
+                                    "DEPENDS_ON",
+                                    "IS_A",
+                                    "HAS_A",
+                                    "LOCATED_IN",
+                                    "MANAGES",
+                                    "REPORTS_TO",
+                                    "CONTRIBUTED_TO",
+                                    "BASED_ON",
+                                    "ASSOCIATED_WITH",
+                                    "FOUNDED",
+                                    "FUNDED_BY",
+                                    "PUBLISHED",
+                                    "AUTHORED",
+                                    "EMPLOYED_BY",
+                                    "AFFILIATED_WITH",
+                                    "MEMBER_OF",
+                                    "MENTIONS",
+                                    "REFERENCES",
+                                    "IMPLEMENTS",
+                                    "EXTENDS",
+                                    "INTEGRATES_WITH",
+                                    "SAME_AS",
+                                    "INFLUENCED_BY",
+                                    "SUPPORTS",
+                                    "ACQUIRED_BY",
+                                    "INVESTED_IN",
+                                    "DEVELOPED_BY",
+                                    "MAINTAINED_BY",
+                                    "OWNED_BY",
+                                    "LED_BY",
+                                    "TAUGHT_BY",
+                                    "ATTENDED",
+                                    "PARTICIPATED_IN",
+                                    "SPOKE_AT",
+                                    "INSTALLED_VIA",
+                                    "CATEGORIZED_AS",
+                                    "PROVIDES",
+                                    "HAS_ROLE",
+                                    "MEETS_WITH",
+                                    "LOCATED_AT",
+                                    "SENT_BY",
+                                    "SENT_TO",
+                                    "HOSTED_BY",
+                                    "SCHEDULED_AT",
+                                ],
+                            },
                             "object": {"type": "string"},
                         },
                         "required": ["subject", "predicate", "object"],

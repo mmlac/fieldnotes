@@ -179,13 +179,13 @@
         "overrides": []
       },
       "gridPos": { "h": 4, "w": 6, "x": 12, "y": 5 },
-      "id": 7,
+      "id": 20,
       "options": { "colorMode": "value", "graphMode": "none", "justifyMode": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "auto" },
-      "title": "Qdrant Collection Size",
+      "title": "Qdrant Store Size",
       "type": "stat",
       "targets": [
         {
-          "expr": "qdrant_collection_bytes{job=\"fieldnotes_worker\"}",
+          "expr": "qdrant_store_bytes{job=\"fieldnotes_worker\"}",
           "legendFormat": "Qdrant",
           "refId": "A"
         }

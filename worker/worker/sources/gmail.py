@@ -9,7 +9,7 @@ Config section ``[sources.gmail]``::
 
     poll_interval_seconds = 300
     max_initial_threads = 500
-    label_filter = "INBOX"
+    # label_filter = "INBOX"   # optional — omit to fetch all messages
     client_secrets_path = "~/.fieldnotes/credentials.json"
 """
 
@@ -182,7 +182,7 @@ class GmailSource(PythonSource):
     Config keys (from ``[sources.gmail]``):
         poll_interval_seconds: int  — polling interval (default: 300)
         max_initial_threads: int    — backfill limit (default: 500)
-        label_filter: str           — Gmail label to poll (default: "INBOX")
+        label_filter: str           — Gmail label to poll (optional, omit for all)
         client_secrets_path: str    — OAuth2 client secrets file (required)
         cursor_path: str            — cursor persistence file (optional)
     """
@@ -190,7 +190,7 @@ class GmailSource(PythonSource):
     def __init__(self) -> None:
         self._poll_interval: int = DEFAULT_POLL_INTERVAL
         self._max_initial_threads: int = DEFAULT_MAX_INITIAL_THREADS
-        self._label_filter: str = "INBOX"
+        self._label_filter: str | None = None
         self._client_secrets_path: Path | None = None
         self._cursor_path: Path = DEFAULT_CURSOR_PATH
 
@@ -209,7 +209,11 @@ class GmailSource(PythonSource):
         self._max_initial_threads = int(
             cfg.get("max_initial_threads", DEFAULT_MAX_INITIAL_THREADS)
         )
-        self._label_filter = cfg.get("label_filter", "INBOX")
+        lf = cfg.get("label_filter")
+        if isinstance(lf, str) and lf:
+            self._label_filter = lf
+        else:
+            self._label_filter = None
 
         cursor = cfg.get("cursor_path")
         if cursor:
@@ -227,7 +231,8 @@ class GmailSource(PythonSource):
         messages_api = service.users().messages()
 
         # Validate that the configured label exists
-        await self._validate_label(service)
+        if self._label_filter:
+            await self._validate_label(service)
 
         cursor = _load_cursor(self._cursor_path)
 
@@ -321,9 +326,10 @@ class GmailSource(PythonSource):
             batch_size = min(100, self._max_initial_threads - fetched)
             kwargs: dict[str, Any] = {
                 "userId": "me",
-                "labelIds": [self._label_filter],
                 "maxResults": batch_size,
             }
+            if self._label_filter:
+                kwargs["labelIds"] = [self._label_filter]
             if page_token:
                 kwargs["pageToken"] = page_token
 
@@ -463,7 +469,9 @@ class GmailSource(PythonSource):
                     lambda: history_api.list(
                         userId="me",
                         startHistoryId=cursor,
-                        labelId=self._label_filter,
+                        **({
+                            "labelId": self._label_filter,
+                        } if self._label_filter else {}),
                         historyTypes=["messageAdded"],
                     ).execute(),
                 ),

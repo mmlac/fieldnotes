@@ -139,8 +139,41 @@ ALLOWED_PREDICATES: frozenset[str] = frozenset(
         "INSTALLED_VIA",
         "CATEGORIZED_AS",
         "PROVIDES",
+        "HAS_ROLE",
+        "MEETS_WITH",
+        "LOCATED_AT",
+        "SENT_BY",
+        "SENT_TO",
+        "HOSTED_BY",
+        "SCHEDULED_AT",
     }
 )
+
+# Map common LLM-generated synonyms/variants to canonical predicates.
+# Applied before the ALLOWED_PREDICATES check.
+PREDICATE_SYNONYMS: dict[str, str] = {
+    "ATTENDS": "ATTENDED",
+    "ATTENDEE": "ATTENDED",
+    "ATTENDING": "ATTENDED",
+    "PARTICIPATES_IN": "PARTICIPATED_IN",
+    "INVOLVED_IN": "PARTICIPATED_IN",
+    "HAS": "HAS_A",
+    "OWNS": "OWNED_BY",
+    "MEETS": "MEETS_WITH",
+    "MET_WITH": "MEETS_WITH",
+    "ROLE": "HAS_ROLE",
+    "HOLDS_ROLE": "HAS_ROLE",
+    "USED_FOR": "USES",
+    "LOCATED_AT": "LOCATED_IN",
+    "WORKS_IN": "WORKS_AT",
+    "CONTACT": "ASSOCIATED_WITH",
+    "CONTACT_FOR": "ASSOCIATED_WITH",
+    "HAS_EMAIL": "ASSOCIATED_WITH",
+    "EMAIL": "ASSOCIATED_WITH",
+    "SENDS": "SENT_BY",
+    "FROM": "SENT_BY",
+    "DEVELOPS": "DEVELOPED_BY",
+}
 
 _LUCENE_SPECIAL_RE = re.compile(r'([+\-&|!(){}[\]^"~*?:\\/])')
 
@@ -1406,6 +1439,7 @@ def _merge_entity_edge(tx: Any, triple: dict[str, str]) -> None:
             triple["object"],
         )
         predicate = "RELATED_TO"
+    predicate = PREDICATE_SYNONYMS.get(predicate, predicate)
     if predicate not in ALLOWED_PREDICATES:
         logger.warning(
             "Unknown predicate %r mapped to RELATED_TO (subject=%r, object=%r)",

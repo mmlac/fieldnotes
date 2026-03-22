@@ -22,7 +22,8 @@ import logging
 import threading
 import time
 from contextlib import contextmanager
-from typing import TYPE_CHECKING, Any, Iterator
+from pathlib import Path
+from typing import TYPE_CHECKING, Iterator
 
 from prometheus_client import (
     CollectorRegistry,
@@ -115,9 +116,9 @@ NEO4J_STORE_BYTES = Gauge(
     registry=REGISTRY,
 )
 
-QDRANT_COLLECTION_BYTES = Gauge(
-    "qdrant_collection_bytes",
-    "Qdrant collection size in bytes",
+QDRANT_STORE_BYTES = Gauge(
+    "qdrant_store_bytes",
+    "Qdrant store size in bytes",
     registry=REGISTRY,
 )
 
@@ -470,6 +471,7 @@ def collect_index_status(
     neo4j_driver: Driver,
     qdrant_client: QdrantClient,
     collection_name: str,
+    data_dir: str = "~/.fieldnotes/data",
 ) -> None:
     """Query Neo4j and Qdrant for current index statistics and update gauges.
 
@@ -478,6 +480,7 @@ def collect_index_status(
     """
     _collect_neo4j(neo4j_driver)
     _collect_qdrant(qdrant_client, collection_name)
+    _collect_store_sizes(data_dir)
 
 
 def _collect_neo4j(driver: Driver) -> None:
@@ -487,7 +490,8 @@ def _collect_neo4j(driver: Driver) -> None:
             # Source counts by type
             result = session.run(
                 "MATCH (s) "
-                "WHERE s:File OR s:Email OR s:Repository OR s:ObsidianNote "
+                "WHERE s:File OR s:Email OR s:CalendarEvent "
+                "OR s:Application OR s:Tool OR s:Task OR s:Commit "
                 "RETURN labels(s)[0] AS type, count(s) AS count"
             )
             for record in result:
@@ -509,24 +513,6 @@ def _collect_neo4j(driver: Driver) -> None:
             for record in result:
                 EDGES_TOTAL.labels(type=record["type"]).set(record["count"])
 
-            # Store size (not available in all Neo4j editions)
-            try:
-                result = session.run(
-                    "CALL dbms.queryJmx("
-                    "'org.neo4j:instance=kernel#0,name=Store sizes'"
-                    ") YIELD attributes "
-                    "RETURN attributes"
-                )
-                rec = result.single()
-                if rec:
-                    attrs: dict[str, Any] = rec["attributes"]
-                    total = attrs.get("TotalStoreSize", {})
-                    val = total.get("value")
-                    if val is not None:
-                        NEO4J_STORE_BYTES.set(int(val))
-            except Exception:
-                logger.debug("Neo4j store size metric unavailable", exc_info=True)
-
     except Exception:
         logger.warning("Failed to collect Neo4j index status", exc_info=True)
 
@@ -536,10 +522,27 @@ def _collect_qdrant(client: QdrantClient, collection_name: str) -> None:
     try:
         info = client.get_collection(collection_name)
         QDRANT_POINTS_TOTAL.set(info.points_count or 0)
-        if info.disk_data_size:
-            QDRANT_COLLECTION_BYTES.set(info.disk_data_size)
     except Exception:
         logger.warning("Failed to collect Qdrant index status", exc_info=True)
+
+
+def _dir_bytes(path: Path) -> int:
+    """Return total size in bytes of all files under *path*."""
+    return sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
+
+
+def _collect_store_sizes(data_dir: str) -> None:
+    """Measure Neo4j and Qdrant store sizes from their data directories."""
+    try:
+        base = Path(data_dir).expanduser()
+        neo4j_dir = base / "neo4j"
+        if neo4j_dir.is_dir():
+            NEO4J_STORE_BYTES.set(_dir_bytes(neo4j_dir))
+        qdrant_dir = base / "qdrant"
+        if qdrant_dir.is_dir():
+            QDRANT_STORE_BYTES.set(_dir_bytes(qdrant_dir))
+    except Exception:
+        logger.debug("Failed to measure store sizes", exc_info=True)
 
 
 # ---------------------------------------------------------------------------

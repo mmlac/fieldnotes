@@ -15,6 +15,7 @@ from worker.pipeline.chunker import Chunk
 from worker.pipeline.writer import (
     ALLOWED_PREDICATES,
     COLLECTION_NAME,
+    PREDICATE_SYNONYMS,
     WriteUnit,
     Writer,
     _chunk_node_id,
@@ -226,6 +227,22 @@ class TestNeo4jHelpers:
         args, _ = tx.run.call_args
         assert "RELATED_TO" in args[0]
         assert "BAZINGA" not in args[0]
+
+    def test_merge_entity_edge_synonym_mapped(self):
+        """Synonym predicates are mapped to their canonical form."""
+        tx = MagicMock()
+        triple = {"subject": "Alice", "predicate": "ATTENDS", "object": "Conf"}
+        _merge_entity_edge(tx, triple)
+        args, _ = tx.run.call_args
+        assert "ATTENDED" in args[0]
+        assert "ATTENDS" not in args[0]
+
+    def test_predicate_synonyms_map_to_allowed(self):
+        """All synonym targets must be in ALLOWED_PREDICATES."""
+        for synonym, canonical in PREDICATE_SYNONYMS.items():
+            assert canonical in ALLOWED_PREDICATES, (
+                f"Synonym {synonym!r} maps to {canonical!r} which is not allowed"
+            )
 
     def test_allowed_predicates_contains_common_types(self):
         """Sanity check: common relationship types are in the whitelist."""

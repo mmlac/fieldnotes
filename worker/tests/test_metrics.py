@@ -6,8 +6,9 @@ from worker.metrics import (
     CHUNKS_TOTAL,
     EDGES_TOTAL,
     ENTITIES_TOTAL,
-    QDRANT_COLLECTION_BYTES,
+    NEO4J_STORE_BYTES,
     QDRANT_POINTS_TOTAL,
+    QDRANT_STORE_BYTES,
     SOURCES_TOTAL,
     TOPICS_TOTAL,
     collect_index_status,
@@ -72,8 +73,6 @@ class TestCollectNeo4j:
                 {"type": "HAS_CHUNK", "count": 500},
             ]
         )
-        # Store size query — raise to simulate unavailable
-        store_err = MagicMock(side_effect=Exception("JMX not available"))
 
         session.run.side_effect = [
             source_records,  # source counts
@@ -81,16 +80,14 @@ class TestCollectNeo4j:
             chunk_count,  # Chunk count
             topic_count,  # Topic count
             edge_records,  # edge counts
-            store_err,  # store size (will fail)
         ]
 
         qdrant = MagicMock()
         info = MagicMock()
         info.points_count = 999
-        info.disk_data_size = 1024000
         qdrant.get_collection.return_value = info
 
-        collect_index_status(driver, qdrant, "fieldnotes")
+        collect_index_status(driver, qdrant, "fieldnotes", data_dir="/nonexistent")
 
         # Verify source gauges
         assert SOURCES_TOTAL.labels(source_type="File")._value.get() == 42
@@ -112,11 +109,10 @@ class TestCollectNeo4j:
         qdrant = MagicMock()
         info = MagicMock()
         info.points_count = 0
-        info.disk_data_size = None
         qdrant.get_collection.return_value = info
 
         # Should not raise
-        collect_index_status(driver, qdrant, "fieldnotes")
+        collect_index_status(driver, qdrant, "fieldnotes", data_dir="/nonexistent")
 
 
 # ---------------------------------------------------------------------------
@@ -125,34 +121,31 @@ class TestCollectNeo4j:
 
 
 class TestCollectQdrant:
-    def test_qdrant_points_and_bytes(self) -> None:
+    def test_qdrant_points(self) -> None:
         driver = MagicMock()
         driver.session.side_effect = RuntimeError("skip neo4j")
 
         qdrant = MagicMock()
         info = MagicMock()
         info.points_count = 12345
-        info.disk_data_size = 5_000_000
         qdrant.get_collection.return_value = info
 
-        collect_index_status(driver, qdrant, "test_collection")
+        collect_index_status(driver, qdrant, "test_collection", data_dir="/nonexistent")
 
         assert QDRANT_POINTS_TOTAL._value.get() == 12345
-        assert QDRANT_COLLECTION_BYTES._value.get() == 5_000_000
         qdrant.get_collection.assert_called_once_with("test_collection")
 
-    def test_qdrant_handles_none_disk_size(self) -> None:
+    def test_qdrant_failure_does_not_raise(self) -> None:
         driver = MagicMock()
         driver.session.side_effect = RuntimeError("skip neo4j")
 
         qdrant = MagicMock()
         info = MagicMock()
         info.points_count = 100
-        info.disk_data_size = None
         qdrant.get_collection.return_value = info
 
         # Should not raise
-        collect_index_status(driver, qdrant, "fieldnotes")
+        collect_index_status(driver, qdrant, "fieldnotes", data_dir="/nonexistent")
         assert QDRANT_POINTS_TOTAL._value.get() == 100
 
     def test_qdrant_failure_does_not_raise(self) -> None:
@@ -163,7 +156,45 @@ class TestCollectQdrant:
         qdrant.get_collection.side_effect = ConnectionError("qdrant down")
 
         # Should not raise
-        collect_index_status(driver, qdrant, "fieldnotes")
+        collect_index_status(driver, qdrant, "fieldnotes", data_dir="/nonexistent")
+
+
+# ---------------------------------------------------------------------------
+# collect_index_status — Store sizes (filesystem)
+# ---------------------------------------------------------------------------
+
+
+class TestCollectStoreSizes:
+    def test_store_sizes_from_filesystem(self, tmp_path) -> None:
+        # Create fake data dirs with known file sizes
+        neo4j_dir = tmp_path / "neo4j"
+        neo4j_dir.mkdir()
+        (neo4j_dir / "store.db").write_bytes(b"x" * 1024)
+        (neo4j_dir / "sub").mkdir()
+        (neo4j_dir / "sub" / "index.db").write_bytes(b"y" * 512)
+
+        qdrant_dir = tmp_path / "qdrant"
+        qdrant_dir.mkdir()
+        (qdrant_dir / "collection.bin").write_bytes(b"z" * 2048)
+
+        driver = MagicMock()
+        driver.session.side_effect = RuntimeError("skip")
+        qdrant = MagicMock()
+        qdrant.get_collection.side_effect = RuntimeError("skip")
+
+        collect_index_status(driver, qdrant, "fieldnotes", data_dir=str(tmp_path))
+
+        assert NEO4J_STORE_BYTES._value.get() == 1024 + 512
+        assert QDRANT_STORE_BYTES._value.get() == 2048
+
+    def test_missing_data_dir_does_not_raise(self) -> None:
+        driver = MagicMock()
+        driver.session.side_effect = RuntimeError("skip")
+        qdrant = MagicMock()
+        qdrant.get_collection.side_effect = RuntimeError("skip")
+
+        # Should not raise
+        collect_index_status(driver, qdrant, "fieldnotes", data_dir="/nonexistent")
 
 
 # ---------------------------------------------------------------------------
