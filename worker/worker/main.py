@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import collections
 import logging
 import signal
 import sys
@@ -29,10 +30,13 @@ from worker.config import Config, load_config
 from worker.log_sanitizer import SanitizingFormatter, redact_uri
 from worker.metrics import (
     DEFAULT_COLLECT_INTERVAL,
+    INITIAL_SYNC_ETA_SECONDS,
+    INITIAL_SYNC_ITEMS_PROCESSED,
     QUEUE_DEPTH,
     WORKER_UPTIME,
     collect_index_status,
     init_metrics,
+    initial_sync_get_total,
 )
 from worker.models.resolver import ModelRegistry
 from worker.pipeline import Pipeline
@@ -241,6 +245,9 @@ async def _run(cfg: Config) -> None:
 
     # Main event loop: consume from queue, parse, process
     try:
+        _sync_processed = 0
+        _sync_times: collections.deque[float] = collections.deque(maxlen=50)
+
         while not stop_event.is_set():
             QUEUE_DEPTH.set(queue.qsize())
             try:
@@ -252,7 +259,9 @@ async def _run(cfg: Config) -> None:
             source_type = event.get("source_type", "")
             source_id = event.get("source_id", "")
             operation = event.get("operation", "")
+            is_initial = event.get("initial_scan", False)
 
+            t0 = time.monotonic()
             try:
                 parser = get_parser(source_type)
                 parsed_docs = parser.parse(event)
@@ -265,6 +274,18 @@ async def _run(cfg: Config) -> None:
                     source_id,
                     operation,
                 )
+
+            if is_initial:
+                elapsed = time.monotonic() - t0
+                _sync_processed += 1
+                _sync_times.append(elapsed)
+                INITIAL_SYNC_ITEMS_PROCESSED.set(_sync_processed)
+                remaining = initial_sync_get_total() - _sync_processed
+                if remaining > 0 and _sync_times:
+                    avg = sum(_sync_times) / len(_sync_times)
+                    INITIAL_SYNC_ETA_SECONDS.set(remaining * avg)
+                else:
+                    INITIAL_SYNC_ETA_SECONDS.set(0)
     finally:
         _DRAIN_TIMEOUT = 10  # seconds to wait for in-progress work
 

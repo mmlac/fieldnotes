@@ -23,6 +23,7 @@ from worker.metrics import (
     INITIAL_SCAN_DURATION_SECONDS,
     INITIAL_SCAN_FILES_TOTAL,
     WATCHER_ACTIVE,
+    initial_sync_add_items,
 )
 
 from ._handler import (
@@ -193,6 +194,7 @@ class FileSource(PythonSource):
         else:
             ingest["source_modified_at"] = now
 
+        ingest["initial_scan"] = True
         return ingest
 
     async def _initial_scan(
@@ -212,6 +214,10 @@ class FileSource(PythonSource):
         diff: CursorDiff = diff_cursor(current, stored)
 
         counts = {"new": 0, "modified": 0, "deleted": 0, "unchanged": 0}
+
+        actionable = len(diff.new) + len(diff.modified) + len(diff.deleted)
+        if actionable:
+            initial_sync_add_items(actionable)
 
         for file_path in diff.new:
             event = self._build_scan_event(file_path, "created", current[file_path])

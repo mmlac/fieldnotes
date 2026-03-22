@@ -298,6 +298,43 @@ INITIAL_SCAN_DEDUP_DROPPED = Counter(
     registry=REGISTRY,
 )
 
+# -- Initial sync progress (ETA tracking) --
+
+INITIAL_SYNC_ITEMS_TOTAL = Gauge(
+    "fieldnotes_initial_sync_items_total",
+    "Total items to process during initial sync",
+    registry=REGISTRY,
+)
+
+INITIAL_SYNC_ITEMS_PROCESSED = Gauge(
+    "fieldnotes_initial_sync_items_processed",
+    "Items processed so far during initial sync",
+    registry=REGISTRY,
+)
+
+INITIAL_SYNC_ETA_SECONDS = Gauge(
+    "fieldnotes_initial_sync_eta_seconds",
+    "Estimated seconds remaining for initial sync to complete",
+    registry=REGISTRY,
+)
+
+# Module-level accumulator so sources can register totals and main loops
+# can read them without reaching into Gauge internals.
+_initial_sync_total: int = 0
+
+
+def initial_sync_add_items(count: int) -> None:
+    """Register *count* items discovered during an initial scan."""
+    global _initial_sync_total
+    _initial_sync_total += count
+    INITIAL_SYNC_ITEMS_TOTAL.set(_initial_sync_total)
+
+
+def initial_sync_get_total() -> int:
+    """Return the current total of registered initial-sync items."""
+    return _initial_sync_total
+
+
 OBSIDIAN_VAULTS_DISCOVERED = Gauge(
     "fieldnotes_obsidian_vaults_discovered",
     "Number of Obsidian vaults discovered and being watched",

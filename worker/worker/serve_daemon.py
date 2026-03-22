@@ -16,6 +16,7 @@ corrupt that log file and no MCP client can connect via stdin anyway.
 from __future__ import annotations
 
 import asyncio
+import collections
 import logging
 import signal
 import sys
@@ -39,6 +40,11 @@ async def _run_daemon(cfg: Config) -> None:
     from typing import Any
 
     from worker.clustering.scheduler import clustering_loop
+    from worker.metrics import (
+        INITIAL_SYNC_ETA_SECONDS,
+        INITIAL_SYNC_ITEMS_PROCESSED,
+        initial_sync_get_total,
+    )
     from worker.models.resolver import ModelRegistry
     from worker.pipeline import Pipeline
     from worker.pipeline.writer import Writer
@@ -134,6 +140,9 @@ async def _run_daemon(cfg: Config) -> None:
 
     # Main ingest loop
     try:
+        _sync_processed = 0
+        _sync_times: collections.deque[float] = collections.deque(maxlen=50)
+
         while not stop_event.is_set():
             try:
                 event = await asyncio.wait_for(queue.get(), timeout=1.0)
@@ -143,7 +152,9 @@ async def _run_daemon(cfg: Config) -> None:
             source_type = event.get("source_type", "")
             source_id = event.get("source_id", "")
             operation = event.get("operation", "")
+            is_initial = event.get("initial_scan", False)
 
+            t0 = time.monotonic()
             try:
                 parser = get_parser(source_type)
                 parsed_docs = parser.parse(event)
@@ -156,6 +167,18 @@ async def _run_daemon(cfg: Config) -> None:
                     source_id,
                     operation,
                 )
+
+            if is_initial:
+                elapsed = time.monotonic() - t0
+                _sync_processed += 1
+                _sync_times.append(elapsed)
+                INITIAL_SYNC_ITEMS_PROCESSED.set(_sync_processed)
+                remaining = initial_sync_get_total() - _sync_processed
+                if remaining > 0 and _sync_times:
+                    avg = sum(_sync_times) / len(_sync_times)
+                    INITIAL_SYNC_ETA_SECONDS.set(remaining * avg)
+                else:
+                    INITIAL_SYNC_ETA_SECONDS.set(0)
     finally:
         _DRAIN_TIMEOUT = 10  # seconds to wait for in-progress work
 

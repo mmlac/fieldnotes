@@ -25,6 +25,7 @@ from worker.metrics import (
     INITIAL_SCAN_FILES_TOTAL,
     OBSIDIAN_VAULTS_DISCOVERED,
     WATCHER_ACTIVE,
+    initial_sync_add_items,
 )
 
 from ._handler import (
@@ -226,6 +227,7 @@ def _enqueue_scan_event(
     else:
         ingest["source_modified_at"] = now
 
+    ingest["initial_scan"] = True
     queue.put_nowait(ingest)
 
 
@@ -355,6 +357,7 @@ class ObsidianSource(PythonSource):
         scan_start = time.monotonic()
         stored_cursor = load_cursor(self._cursor_path)
         current_cursor: dict[str, FileEntry] = {}
+        _stale_vault_deletes = 0
         handled_stored_paths: set[str] = set()
         total_new = 0
         total_modified = 0
@@ -378,6 +381,11 @@ class ObsidianSource(PythonSource):
             handled_stored_paths.update(vault_stored)
 
             diff = diff_cursor(vault_entries, vault_stored)
+
+            vault_actionable = len(diff.new) + len(diff.modified) + len(diff.deleted)
+            if vault_actionable:
+                initial_sync_add_items(vault_actionable)
+
             _emit_scan_events(
                 diff, vault_entries, vault, vault_name, queue,
                 categories_key=self._categories_key,
@@ -427,9 +435,14 @@ class ObsidianSource(PythonSource):
                 },
                 "enqueued_at": now,
                 "source_modified_at": now,
+                "initial_scan": True,
             }
             queue.put_nowait(ingest)
             total_deleted += 1
+            _stale_vault_deletes += 1
+
+        if _stale_vault_deletes:
+            initial_sync_add_items(_stale_vault_deletes)
 
         # Save updated cursor
         save_cursor(self._cursor_path, current_cursor)

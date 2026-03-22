@@ -392,3 +392,28 @@ async def test_obsidian_graceful_shutdown_checkpoint(tmp_path: Path) -> None:
     assert cursor_path.exists()
     loaded = load_cursor(cursor_path)
     assert len(loaded) >= 1
+
+
+# ── Initial sync tracking ────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_obsidian_scan_sets_sync_total_and_tags_events(tmp_path: Path) -> None:
+    """ObsidianSource scan registers items and tags events with initial_scan."""
+    import worker.metrics as m
+
+    m._initial_sync_total = 0
+    m.INITIAL_SYNC_ITEMS_TOTAL.set(0)
+
+    vaults_dir = tmp_path / "vaults"
+    _make_vault(vaults_dir, "v1", {"a.md": "alpha", "b.md": "beta"})
+
+    src = _make_source(tmp_path)
+    q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    events = await _run_source_briefly(src, q)
+
+    scan_events = [e for e in events if e.get("initial_scan")]
+    assert len(scan_events) >= 2
+
+    assert m.initial_sync_get_total() >= 2
+    assert m.INITIAL_SYNC_ITEMS_TOTAL._value.get() >= 2

@@ -399,6 +399,35 @@ async def test_initial_scan_updates_metrics(tmp_path: Path) -> None:
     assert new_count >= 2
 
 
+@pytest.mark.asyncio
+async def test_initial_scan_sets_sync_total_and_tags_events(tmp_path: Path) -> None:
+    """Initial scan registers items via initial_sync_add_items and tags events."""
+    import worker.metrics as m
+
+    # Reset module-level accumulator so parallel tests don't interfere
+    m._initial_sync_total = 0
+    m.INITIAL_SYNC_ITEMS_TOTAL.set(0)
+
+    watched = tmp_path / "watched"
+    watched.mkdir()
+    (watched / "a.md").write_text("alpha")
+    (watched / "b.md").write_text("beta")
+
+    fs = _make_source(tmp_path)
+    q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    events = await _run_source_briefly(fs, q)
+
+    # All scan events should carry the initial_scan flag
+    scan_events = [e for e in events if e.get("initial_scan")]
+    assert len(scan_events) >= 2
+
+    # Module-level total should have been incremented
+    assert m.initial_sync_get_total() >= 2
+
+    # Gauge should match
+    assert m.INITIAL_SYNC_ITEMS_TOTAL._value.get() >= 2
+
+
 # ── Dedup window ──────────────────────────────────────────────────
 
 

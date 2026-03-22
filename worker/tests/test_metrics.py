@@ -164,3 +164,39 @@ class TestCollectQdrant:
 
         # Should not raise
         collect_index_status(driver, qdrant, "fieldnotes")
+
+
+# ---------------------------------------------------------------------------
+# Initial sync progress helpers
+# ---------------------------------------------------------------------------
+
+
+class TestInitialSyncTracking:
+    """Tests for initial_sync_add_items / initial_sync_get_total helpers."""
+
+    def setup_method(self) -> None:
+        import worker.metrics as m
+
+        m._initial_sync_total = 0
+        m.INITIAL_SYNC_ITEMS_TOTAL.set(0)
+
+    def test_add_items_increments_total(self) -> None:
+        from worker.metrics import (
+            INITIAL_SYNC_ITEMS_TOTAL,
+            initial_sync_add_items,
+            initial_sync_get_total,
+        )
+
+        initial_sync_add_items(10)
+        assert initial_sync_get_total() == 10
+        assert INITIAL_SYNC_ITEMS_TOTAL._value.get() == 10
+
+        initial_sync_add_items(5)
+        assert initial_sync_get_total() == 15
+        assert INITIAL_SYNC_ITEMS_TOTAL._value.get() == 15
+
+    def test_zero_items_is_noop(self) -> None:
+        from worker.metrics import initial_sync_add_items, initial_sync_get_total
+
+        initial_sync_add_items(0)
+        assert initial_sync_get_total() == 0
