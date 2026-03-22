@@ -486,7 +486,9 @@ def collect_index_status(
 def _collect_neo4j(driver: Driver) -> None:
     """Read index stats from Neo4j."""
     try:
-        with driver.session() as session:
+        with driver.session(
+            notifications_disabled_classifications=["UNRECOGNIZED"],
+        ) as session:
             # Source counts by type
             result = session.run(
                 "MATCH (s) "
