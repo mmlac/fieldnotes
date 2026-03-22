@@ -235,7 +235,7 @@ recursive = true
 max_file_size = 104857600               # 100 MB
 
 [sources.obsidian]
-vault_path = "~/obsidian-vault"
+vault_paths = ["~/obsidian-vault"]
 
 [sources.gmail]
 poll_interval_seconds = 300

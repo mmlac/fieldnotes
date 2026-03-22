@@ -63,7 +63,7 @@ completion = "local_chat"         # ask tool synthesis
 watch_paths = ["~/Documents"]
 
 [sources.obsidian]
-vault_path = "~/obsidian-vault"
+vault_paths = ["~/obsidian-vault"]
 # categories_key = "categories"   # frontmatter key for category list (default: "categories")
 
 [sources.repositories]

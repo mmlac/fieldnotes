@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
-from worker.init import init, update_infrastructure
+from worker.init import init, update_infrastructure, _prompt_password
 
 
 @pytest.fixture()
@@ -162,3 +162,28 @@ class TestUpdateInfrastructure:
 
         assert rc == 0
         mock.assert_called_once()
+
+
+class TestPromptPassword:
+    def test_accepts_long_password(self) -> None:
+        with patch("getpass.getpass", return_value="longpassword"):
+            result = _prompt_password("pw", min_length=8)
+        assert result == "longpassword"
+
+    def test_rejects_short_then_accepts(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        with patch("getpass.getpass", side_effect=["short", "validpass"]):
+            result = _prompt_password("pw", min_length=8)
+        assert result == "validpass"
+        assert "at least 8 characters" in capsys.readouterr().err
+
+    def test_empty_password_skips_validation(self) -> None:
+        with patch("getpass.getpass", return_value=""):
+            result = _prompt_password("pw", min_length=8)
+        assert result == ""
+
+    def test_no_min_length_accepts_anything(self) -> None:
+        with patch("getpass.getpass", return_value="hi"):
+            result = _prompt_password("pw")
+        assert result == "hi"

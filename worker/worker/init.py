@@ -153,9 +153,17 @@ def _prompt_multi_select(
     return selected or [items[i - 1][id_key] for i in sorted(default_set) if 0 < i <= len(items)]
 
 
-def _prompt_password(prompt: str) -> str:
-    """Prompt for a password without echoing."""
-    return getpass.getpass(f"{prompt}: ")
+def _prompt_password(prompt: str, *, min_length: int = 0) -> str:
+    """Prompt for a password without echoing.
+
+    When *min_length* > 0 the user is re-prompted until the password meets
+    the requirement (or they enter an empty string to skip).
+    """
+    while True:
+        pw = getpass.getpass(f"{prompt}: ")
+        if not pw or min_length <= 0 or len(pw) >= min_length:
+            return pw
+        print(f"  Password must be at least {min_length} characters.", file=sys.stderr)
 
 
 logger = logging.getLogger(__name__)
@@ -262,7 +270,9 @@ def _interactive_config(config_text: str) -> str:
     if neo4j_pw:
         print("Neo4j password: using NEO4J_PASSWORD from environment")
     else:
-        neo4j_pw = _prompt_password("Neo4j password (will be written to config)")
+        neo4j_pw = _prompt_password(
+            "Neo4j password (will be written to config)", min_length=8,
+        )
     if neo4j_pw:
         config_text = config_text.replace(
             'password = ""',
@@ -322,8 +332,8 @@ def _interactive_config(config_text: str) -> str:
     default_vault = "~/obsidian-vault"
     vault = _prompt_path("Obsidian vault path (leave empty to skip)", default_vault)
     config_text = config_text.replace(
-        f'vault_path = "{default_vault}"',
-        f'vault_path = "{vault}"',
+        f'vault_paths = ["{default_vault}"]',
+        f'vault_paths = ["{vault}"]',
     )
 
     # 5. Gmail

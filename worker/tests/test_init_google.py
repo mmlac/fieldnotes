@@ -433,7 +433,7 @@ class TestInteractiveGmailCalendar:
         base_config = (
             '[neo4j]\npassword = ""\n'
             '[sources.files]\nwatch_paths = ["~/Documents"]\n'
-            '[sources.obsidian]\nvault_path = "~/obsidian-vault"\n'
+            '[sources.obsidian]\nvault_paths = ["~/obsidian-vault"]\n'
         )
 
         orig_exists = Path.exists
@@ -445,7 +445,7 @@ class TestInteractiveGmailCalendar:
 
         patches = [
             patch("builtins.input", side_effect=input_iter),
-            patch("getpass.getpass", return_value="pw"),
+            patch("getpass.getpass", return_value="testpass1234"),
             patch.object(Path, "exists", fake_exists),
         ]
         if gmail_labels is not None:

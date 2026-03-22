@@ -180,7 +180,7 @@ def doctor(config_path: Path | None = None) -> int:
         # Check common path settings
         path_keys = [
             "watch_paths",
-            "vault_path",
+            "vault_paths",
             "repo_roots",
             "scan_dirs",
         ]
