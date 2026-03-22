@@ -508,6 +508,30 @@ def _generate_env_file(neo4j_pw: str, env_dir: Path) -> Path:
     return env_path
 
 
+def _copy_infra_tree(
+    src: resources.abc.Traversable,
+    dst: Path,
+    *,
+    skip: set[str] | None = None,
+) -> list[Path]:
+    """Recursively copy *src* into *dst*, returning written paths.
+
+    Files whose names appear in *skip* are not overwritten.
+    """
+    dst.mkdir(parents=True, exist_ok=True)
+    written: list[Path] = []
+    for item in src.iterdir():
+        if skip and item.name in skip:
+            continue
+        target = dst / item.name
+        if item.is_file():
+            target.write_bytes(item.read_bytes())
+            written.append(target)
+        else:
+            written.extend(_copy_infra_tree(item, target, skip=skip))
+    return written
+
+
 def _extract_infrastructure() -> Path:
     """Copy bundled Docker infrastructure files to ~/.fieldnotes/infrastructure/.
 
@@ -519,19 +543,31 @@ def _extract_infrastructure() -> Path:
         return _INFRA_DIR
 
     infra_pkg = resources.files("worker").joinpath("infrastructure")
-
-    def _copy_tree(src: resources.abc.Traversable, dst: Path) -> None:
-        dst.mkdir(parents=True, exist_ok=True)
-        for item in src.iterdir():
-            target = dst / item.name
-            if item.is_file():
-                target.write_bytes(item.read_bytes())
-            else:
-                _copy_tree(item, target)
-
-    _copy_tree(infra_pkg, _INFRA_DIR)
+    _copy_infra_tree(infra_pkg, _INFRA_DIR)
     print(f"Extracted Docker infrastructure to {_INFRA_DIR}")
     return _INFRA_DIR
+
+
+def update_infrastructure() -> int:
+    """Overwrite infrastructure files from the bundled package.
+
+    The ``.env`` file is preserved so credentials are not lost.
+    Returns an exit code (0 = success).
+    """
+    if not _INFRA_DIR.exists():
+        print(
+            "Infrastructure directory does not exist. "
+            "Run 'fieldnotes init --with-docker' first.",
+            file=sys.stderr,
+        )
+        return 1
+
+    infra_pkg = resources.files("worker").joinpath("infrastructure")
+    written = _copy_infra_tree(infra_pkg, _INFRA_DIR, skip={".env"})
+    for p in sorted(written):
+        print(f"  updated {p.relative_to(_INFRA_DIR)}")
+    print(f"Updated {len(written)} infrastructure file(s) in {_INFRA_DIR}")
+    return 0
 
 
 def _ensure_data_dirs() -> None:

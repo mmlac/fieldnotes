@@ -113,6 +113,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Use a custom docker-compose.yml instead of the bundled one",
     )
 
+    # ── update ─────────────────────────────────────────────────────
+    sub.add_parser(
+        "update",
+        help="Update infrastructure files from the installed package",
+    )
+
     # ── doctor ─────────────────────────────────────────────────────
     sub.add_parser(
         "doctor",
@@ -477,6 +483,11 @@ def main(argv: list[str] | None = None) -> int:
             non_interactive=args.non_interactive,
             compose_file=args.compose_file,
         )
+
+    if args.command == "update":
+        from worker.init import update_infrastructure
+
+        return update_infrastructure()
 
     if args.command == "doctor":
         from worker.doctor import doctor

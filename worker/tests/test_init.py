@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
-from worker.init import init
+from worker.init import init, update_infrastructure
 
 
 @pytest.fixture()
@@ -100,3 +100,65 @@ class TestInit:
             init()
 
         assert "ollama not found" in capsys.readouterr().err
+
+
+class TestUpdateInfrastructure:
+    def test_fails_when_infra_dir_missing(
+        self,
+        fn_home: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        infra_dir = fn_home / "infrastructure"
+
+        with patch("worker.init._INFRA_DIR", infra_dir):
+            rc = update_infrastructure()
+
+        assert rc == 1
+        assert "does not exist" in capsys.readouterr().err
+
+    def test_overwrites_existing_files(
+        self,
+        fn_home: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        infra_dir = fn_home / "infrastructure"
+        infra_dir.mkdir(parents=True)
+        # Write a stale file that should be overwritten
+        (infra_dir / "docker-compose.yml").write_text("old")
+
+        with patch("worker.init._INFRA_DIR", infra_dir):
+            rc = update_infrastructure()
+
+        assert rc == 0
+        # docker-compose.yml should now have the bundled content
+        text = (infra_dir / "docker-compose.yml").read_text()
+        assert text != "old"
+        assert "services:" in text  # real compose content
+
+        out = capsys.readouterr().out
+        assert "docker-compose.yml" in out
+        assert "Updated" in out
+
+    def test_preserves_env_file(
+        self,
+        fn_home: Path,
+    ) -> None:
+        infra_dir = fn_home / "infrastructure"
+        infra_dir.mkdir(parents=True)
+        env_file = infra_dir / ".env"
+        env_file.write_text("NEO4J_PASSWORD=secret\n")
+
+        with patch("worker.init._INFRA_DIR", infra_dir):
+            rc = update_infrastructure()
+
+        assert rc == 0
+        assert env_file.read_text() == "NEO4J_PASSWORD=secret\n"
+
+    def test_cli_dispatches_update(self) -> None:
+        from worker.cli import main
+
+        with patch("worker.init.update_infrastructure", return_value=0) as mock:
+            rc = main(["update"])
+
+        assert rc == 0
+        mock.assert_called_once()
