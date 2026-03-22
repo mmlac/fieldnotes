@@ -27,6 +27,7 @@ from worker.main import (
     _build_sources,
     _check_neo4j,
     _check_qdrant,
+    _index_status_loop,
     _setup_logging,
 )
 
@@ -55,8 +56,20 @@ async def _run_daemon(cfg: Config) -> None:
     if not sources:
         logger.warning("No sources configured — ingest pipeline will be idle")
 
+    # Record startup time for uptime gauge
+    start_time = time.monotonic()
+
     # Background tasks
     background_tasks: list[asyncio.Task[None]] = []
+
+    # Index status collector — first collection on startup, then every 60s
+    collection_name = cfg.qdrant.collection or "fieldnotes"
+    status_task = asyncio.create_task(
+        _index_status_loop(writer, collection_name, start_time),
+        name="index-status-collector",
+    )
+    background_tasks.append(status_task)
+    logger.info("Index status collector enabled")
 
     if cfg.clustering.enabled:
         cluster_task = asyncio.create_task(
@@ -98,7 +111,7 @@ async def _run_daemon(cfg: Config) -> None:
         health_server = HealthServer(
             cfg,
             queue=queue,
-            start_time=time.monotonic(),
+            start_time=start_time,
             neo4j_driver=writer._neo4j_driver,
             qdrant_client=writer._qdrant,
         )
