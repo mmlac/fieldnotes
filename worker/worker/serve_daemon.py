@@ -159,7 +159,9 @@ async def _run_daemon(cfg: Config) -> None:
                 parser = get_parser(source_type)
                 parsed_docs = parser.parse(event)
                 for doc in parsed_docs:
-                    pipeline.process(doc)
+                    if stop_event.is_set():
+                        break
+                    await loop.run_in_executor(None, pipeline.process, doc)
             except Exception:
                 logger.exception(
                     "Failed to process event %s %s (%s)",
