@@ -216,17 +216,11 @@ class OmniFocusSource(PythonSource):
     def __init__(self) -> None:
         self._poll_interval: int = DEFAULT_POLL_INTERVAL
         self._state_path: Path = DEFAULT_STATE_PATH
-        self._enabled: bool = _is_macos()
 
     def name(self) -> str:
         return "omnifocus"
 
     def configure(self, cfg: dict[str, Any]) -> None:
-        if "enabled" in cfg:
-            self._enabled = bool(cfg["enabled"])
-        elif not _is_macos():
-            self._enabled = False
-
         self._poll_interval = int(
             cfg.get("poll_interval_seconds", DEFAULT_POLL_INTERVAL)
         )
@@ -236,13 +230,8 @@ class OmniFocusSource(PythonSource):
             self._state_path = Path(state).expanduser().resolve()
 
     async def start(self, queue: asyncio.Queue[dict[str, Any]]) -> None:
-        if not self._enabled:
-            logger.info("OmniFocus source disabled (not macOS or explicitly disabled)")
-            try:
-                while True:
-                    await asyncio.sleep(3600)
-            except asyncio.CancelledError:
-                raise
+        if not _is_macos():
+            logger.info("OmniFocus source skipped (not macOS)")
             return
 
         state = _load_state(self._state_path)

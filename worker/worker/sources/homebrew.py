@@ -276,12 +276,8 @@ class HomebrewSource(PythonSource):
     async def start(self, queue: asyncio.Queue[dict[str, Any]]) -> None:
         brew_path = _find_brew()
         if brew_path is None:
-            logger.info("Homebrew not found — homebrew source disabled")
-            try:
-                while True:
-                    await asyncio.sleep(3600)
-            except asyncio.CancelledError:
-                raise
+            logger.info("Homebrew not found — homebrew source skipped")
+            return
 
         logger.info("Homebrew found at %s", brew_path)
         prev_state = _load_state(self._state_path)

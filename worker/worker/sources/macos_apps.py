@@ -165,17 +165,11 @@ class MacOSAppsSource(PythonSource):
         self._scan_dirs: list[Path] = []
         self._poll_interval: int = DEFAULT_POLL_INTERVAL
         self._state_path: Path = DEFAULT_STATE_PATH
-        self._enabled: bool = _is_macos()
 
     def name(self) -> str:
         return "macos_apps"
 
     def configure(self, cfg: dict[str, Any]) -> None:
-        if "enabled" in cfg:
-            self._enabled = bool(cfg["enabled"])
-        elif not _is_macos():
-            self._enabled = False
-
         raw_dirs = cfg.get("scan_dirs", DEFAULT_SCAN_DIRS)
         self._scan_dirs = []
         for d in raw_dirs:
@@ -196,13 +190,8 @@ class MacOSAppsSource(PythonSource):
             self._state_path = Path(state).expanduser().resolve()
 
     async def start(self, queue: asyncio.Queue[dict[str, Any]]) -> None:
-        if not self._enabled:
-            logger.info("macOS apps source disabled (not macOS or explicitly disabled)")
-            try:
-                while True:
-                    await asyncio.sleep(3600)
-            except asyncio.CancelledError:
-                raise
+        if not _is_macos():
+            logger.info("macOS apps source skipped (not macOS)")
             return
 
         state = _load_state(self._state_path)

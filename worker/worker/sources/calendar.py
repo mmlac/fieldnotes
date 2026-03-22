@@ -31,6 +31,7 @@ from worker.metrics import (
     SOURCE_WATCHER_EVENTS,
     WATCHER_ACTIVE,
     WATCHER_LAST_EVENT_TIMESTAMP,
+    initial_sync_add_items,
 )
 
 from .base import PythonSource
@@ -242,6 +243,9 @@ class GoogleCalendarSource(PythonSource):
                         )
                         if new_token:
                             sync_tokens[cal_id] = new_token
+                            # Persist immediately so a restart doesn't
+                            # redo the full backfill for this calendar.
+                            save_json_atomic(self._cursor_path, sync_tokens)
                     except HttpError as exc:
                         if exc.resp.status == 410:
                             # Sync token expired — clear and do full resync
@@ -277,6 +281,7 @@ class GoogleCalendarSource(PythonSource):
         sync_token: str | None,
     ) -> str | None:
         """Fetch events for a single calendar.  Returns new sync token."""
+        is_backfill = sync_token is None
         kwargs: dict[str, Any] = {
             "calendarId": calendar_id,
             "singleEvents": True,
@@ -305,38 +310,47 @@ class GoogleCalendarSource(PythonSource):
         total_events = 0
         page_token: str | None = None
 
-        while True:
-            if page_token:
-                kwargs["pageToken"] = page_token
+        try:
+            while True:
+                if page_token:
+                    kwargs["pageToken"] = page_token
 
-            result = await asyncio.to_thread(
-                lambda: service.events().list(**kwargs).execute()
-            )
+                result = await asyncio.to_thread(
+                    lambda: service.events().list(**kwargs).execute()
+                )
 
-            events = result.get("items", [])
-            for event in events:
-                ingest = _build_ingest_event(event, calendar_id)
-                if ingest is not None:
-                    await queue.put(ingest)
-                    total_events += 1
-                    SOURCE_WATCHER_EVENTS.labels(
-                        source_type="google_calendar",
-                        event_type=ingest["operation"],
-                    ).inc()
-                    WATCHER_LAST_EVENT_TIMESTAMP.labels(
-                        source_type="google_calendar"
-                    ).set(datetime.now(timezone.utc).timestamp())
+                events = result.get("items", [])
+                for event in events:
+                    ingest = _build_ingest_event(event, calendar_id)
+                    if ingest is not None:
+                        if is_backfill:
+                            ingest["initial_scan"] = True
+                        await queue.put(ingest)
+                        total_events += 1
+                        SOURCE_WATCHER_EVENTS.labels(
+                            source_type="google_calendar",
+                            event_type=ingest["operation"],
+                        ).inc()
+                        WATCHER_LAST_EVENT_TIMESTAMP.labels(
+                            source_type="google_calendar"
+                        ).set(datetime.now(timezone.utc).timestamp())
 
-            page_token = result.get("nextPageToken")
-            new_sync_token = result.get("nextSyncToken")
+                page_token = result.get("nextPageToken")
+                new_sync_token = result.get("nextSyncToken")
 
-            if not page_token:
-                break
+                if not page_token:
+                    break
 
-            # Brief pause between pages
-            await asyncio.sleep(0.2)
+                # Brief pause between pages
+                await asyncio.sleep(0.2)
+        except asyncio.CancelledError:
+            # Pagination was interrupted — propagate but let the caller
+            # capture whatever sync token we obtained so far.
+            raise
 
         if total_events > 0:
+            if is_backfill:
+                initial_sync_add_items(total_events)
             logger.info(
                 "Calendar %s: processed %d event(s)", calendar_id, total_events
             )

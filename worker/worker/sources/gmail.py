@@ -32,6 +32,7 @@ from worker.metrics import (
     SOURCE_WATCHER_EVENTS,
     WATCHER_ACTIVE,
     WATCHER_LAST_EVENT_TIMESTAMP,
+    initial_sync_add_items,
     observe_duration,
 )
 
@@ -238,7 +239,7 @@ class GmailSource(PythonSource):
                 self._max_initial_threads,
                 self._label_filter,
             )
-            cursor = await self._backfill(messages_api, queue)
+            cursor = await self._backfill(messages_api, queue, is_initial=True)
             if cursor:
                 _save_cursor(self._cursor_path, cursor)
 
@@ -250,7 +251,7 @@ class GmailSource(PythonSource):
                     if cursor is None:
                         # No valid cursor (e.g. history ID expired) — re-backfill.
                         logger.info("No cursor available — re-running backfill")
-                        cursor = await self._backfill(messages_api, queue)
+                        cursor = await self._backfill(messages_api, queue, is_initial=False)
                         if cursor:
                             _save_cursor(self._cursor_path, cursor)
                     else:
@@ -259,6 +260,8 @@ class GmailSource(PythonSource):
                         )
         except asyncio.CancelledError:
             WATCHER_ACTIVE.labels(source_type="gmail").set(0)
+            if cursor:
+                _save_cursor(self._cursor_path, cursor)
             raise
 
     async def _validate_label(self, service: Any) -> None:
@@ -296,6 +299,8 @@ class GmailSource(PythonSource):
         self,
         messages_api: Any,
         queue: asyncio.Queue[dict[str, Any]],
+        *,
+        is_initial: bool = True,
     ) -> str | None:
         """Fetch up to max_initial_threads recent messages and return the
         latest historyId for subsequent incremental polling.
@@ -341,6 +346,8 @@ class GmailSource(PythonSource):
                     ).execute(),
                 )
                 event = _build_ingest_event(msg)
+                if is_initial:
+                    event["initial_scan"] = True
                 await queue.put(event)
                 SOURCE_WATCHER_EVENTS.labels(
                     source_type="gmail",
@@ -370,9 +377,15 @@ class GmailSource(PythonSource):
             if not page_token:
                 break
 
+            # Persist cursor after each page so progress survives restarts
+            if latest_history_id:
+                _save_cursor(self._cursor_path, latest_history_id)
+
             # Rate-limit: pause between page fetches
             await asyncio.sleep(BACKFILL_PAGE_DELAY)
 
+        if fetched > 0 and is_initial:
+            initial_sync_add_items(fetched)
         logger.info("Backfill complete: %d messages fetched", fetched)
         return latest_history_id
 
