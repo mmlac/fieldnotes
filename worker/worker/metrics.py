@@ -524,9 +524,10 @@ def init_metrics(config: Config) -> None:
     """
     global _push_thread  # noqa: PLW0603
 
-    # Try to read from a [metrics] section in the raw config, if wired up.
-    gateway = getattr(config, "_metrics_pushgateway_url", "") or ""
-    interval = getattr(config, "_metrics_push_interval", DEFAULT_PUSH_INTERVAL)
+    # Read from the [metrics] config section.
+    metrics_cfg = getattr(config, "metrics", None)
+    gateway = getattr(metrics_cfg, "pushgateway_url", "") if metrics_cfg else ""
+    interval = getattr(metrics_cfg, "push_interval", DEFAULT_PUSH_INTERVAL) if metrics_cfg else DEFAULT_PUSH_INTERVAL
 
     # Allow env-var override (convenient for containers)
     import os

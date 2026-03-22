@@ -162,6 +162,12 @@ class McpConfig:
 
 
 @dataclass
+class MetricsConfig:
+    pushgateway_url: str = "http://localhost:9091"
+    push_interval: float = 15.0
+
+
+@dataclass
 class RateLimitConfig:
     """Parsed ``[rate_limits]`` section.
 
@@ -186,6 +192,7 @@ class Config:
     clustering: ClusteringConfig = field(default_factory=ClusteringConfig)
     mcp: McpConfig = field(default_factory=McpConfig)
     health: HealthConfig = field(default_factory=HealthConfig)
+    metrics: MetricsConfig = field(default_factory=MetricsConfig)
     rate_limits: RateLimitConfig = field(default_factory=RateLimitConfig)
 
     # Expected embedding dimension used by the clustering pipeline.
@@ -513,6 +520,18 @@ def _parse(raw: dict[str, Any]) -> Config:
             enabled=m.get("enabled", cfg.mcp.enabled),
             port=m.get("port", cfg.mcp.port),
             auth_token=m.get("auth_token", cfg.mcp.auth_token),
+        )
+
+    # [metrics]
+    if "metrics" in raw:
+        mt = raw["metrics"]
+        if "pushgateway_url" in mt:
+            _check_type("metrics", "pushgateway_url", mt["pushgateway_url"], str)
+        if "push_interval" in mt:
+            _check_type("metrics", "push_interval", mt["push_interval"], (int, float))
+        cfg.metrics = MetricsConfig(
+            pushgateway_url=mt.get("pushgateway_url", cfg.metrics.pushgateway_url),
+            push_interval=float(mt.get("push_interval", cfg.metrics.push_interval)),
         )
 
     # [rate_limits]

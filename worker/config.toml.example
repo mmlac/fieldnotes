@@ -98,6 +98,12 @@ max_file_size_mb = 20
 enabled = true
 port = 3456
 
+# --- Metrics ---
+
+[metrics]
+pushgateway_url = "http://localhost:9091"
+push_interval = 15
+
 # --- Health Check (optional) ---
 
 # [health]
