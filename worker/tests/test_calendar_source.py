@@ -255,6 +255,10 @@ class TestGoogleCalendarSource:
         event = queue.get_nowait()
         assert event["source_type"] == "google_calendar"
         assert event["source_id"] == "gcal:primary:evt-1"
+        # orderBy must NOT be set during backfill — it causes the
+        # Google Calendar API to omit nextSyncToken from the response.
+        call_kwargs = mock_events.list.call_args[1]
+        assert "orderBy" not in call_kwargs
 
     @pytest.mark.asyncio
     async def test_poll_calendar_incremental_sync(self) -> None:

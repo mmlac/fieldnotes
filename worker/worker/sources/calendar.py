@@ -300,12 +300,14 @@ class GoogleCalendarSource(PythonSource):
             kwargs["showDeleted"] = True
         else:
             # Initial backfill — last N days
+            # NOTE: do NOT set orderBy here — Google Calendar API omits
+            # nextSyncToken from the response when orderBy is specified,
+            # which would cause every poll cycle to re-backfill.
             time_min = (
                 datetime.now(timezone.utc)
                 - timedelta(days=self._max_initial_days)
             ).isoformat()
             kwargs["timeMin"] = time_min
-            kwargs["orderBy"] = "startTime"
             logger.info(
                 "Calendar %s: initial backfill from %s",
                 calendar_id,
