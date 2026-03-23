@@ -43,6 +43,7 @@ async def _run_daemon(cfg: Config) -> None:
     from worker.metrics import (
         INITIAL_SYNC_ETA_SECONDS,
         INITIAL_SYNC_ITEMS_PROCESSED,
+        QUEUE_DEPTH,
         initial_sync_all_sources_done,
         initial_sync_get_total,
         initial_sync_register_source,
@@ -147,11 +148,13 @@ async def _run_daemon(cfg: Config) -> None:
         _sync_times: collections.deque[float] = collections.deque(maxlen=50)
 
         while not stop_event.is_set():
+            QUEUE_DEPTH.set(queue.qsize())
             try:
                 event = await asyncio.wait_for(queue.get(), timeout=1.0)
             except asyncio.TimeoutError:
                 continue
 
+            QUEUE_DEPTH.set(queue.qsize())
             source_type = event.get("source_type", "")
             source_id = event.get("source_id", "")
             operation = event.get("operation", "")
