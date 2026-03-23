@@ -33,13 +33,14 @@ from worker.metrics import (
 )
 
 from .base import PythonSource
-from .cursor import save_json_atomic
+from .cursor import _ProgressTracker, save_json_atomic
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_POLL_INTERVAL = 21600  # 6 hours
 DEFAULT_SCAN_DIRS = ["/Applications", "~/Applications"]
 DEFAULT_STATE_PATH = Path.home() / ".fieldnotes" / "state" / "apps.json"
+_PROCESSED_SIDECAR = Path.home() / ".fieldnotes" / "state" / "apps_processed.json"
 
 _SOURCE_TYPE = "macos_apps"
 
@@ -166,6 +167,7 @@ class MacOSAppsSource(PythonSource):
         self._scan_dirs: list[Path] = []
         self._poll_interval: int = DEFAULT_POLL_INTERVAL
         self._state_path: Path = DEFAULT_STATE_PATH
+        self._enabled: bool = _is_macos()
 
     def name(self) -> str:
         return "macos_apps"
@@ -186,13 +188,16 @@ class MacOSAppsSource(PythonSource):
             cfg.get("poll_interval_seconds", DEFAULT_POLL_INTERVAL)
         )
 
+        if "enabled" in cfg:
+            self._enabled = bool(cfg["enabled"])
+
         state = cfg.get("state_path")
         if state:
             self._state_path = Path(state).expanduser().resolve()
 
     async def start(self, queue: asyncio.Queue[dict[str, Any]]) -> None:
-        if not _is_macos():
-            logger.info("macOS apps source skipped (not macOS)")
+        if not self._enabled:
+            logger.info("macOS apps source skipped (disabled)")
             initial_sync_source_done()
             return
 
@@ -203,7 +208,6 @@ class MacOSAppsSource(PythonSource):
         try:
             while True:
                 await self._scan(state, queue)
-                _save_state(self._state_path, state)
                 if first_cycle:
                     initial_sync_source_done()
                     first_cycle = False
@@ -222,6 +226,7 @@ class MacOSAppsSource(PythonSource):
         apps = await loop.run_in_executor(None, _discover_apps, self._scan_dirs)
 
         current: dict[str, str] = {}  # bundle_id → hash
+        events: list[dict[str, Any]] = []
         new_count = 0
         updated_count = 0
 
@@ -248,7 +253,7 @@ class MacOSAppsSource(PythonSource):
                 continue  # unchanged
 
             event = _build_event(metadata, operation)
-            await queue.put(event)
+            events.append(event)
             SOURCE_WATCHER_EVENTS.labels(
                 source_type=_SOURCE_TYPE,
                 event_type=operation,
@@ -270,7 +275,7 @@ class MacOSAppsSource(PythonSource):
                 },
                 "deleted",
             )
-            await queue.put(event)
+            events.append(event)
             SOURCE_WATCHER_EVENTS.labels(
                 source_type=_SOURCE_TYPE,
                 event_type="deleted",
@@ -279,7 +284,7 @@ class MacOSAppsSource(PythonSource):
                 source_type=_SOURCE_TYPE,
             ).set_to_current_time()
 
-        # Update state to reflect current scan
+        # Update in-memory state immediately (for next poll cycle)
         state.clear()
         state.update(current)
 
@@ -290,3 +295,23 @@ class MacOSAppsSource(PythonSource):
             updated_count,
             len(current),
         )
+
+        if not events:
+            _save_state(self._state_path, current)
+            return
+
+        # Defer disk save until all events processed through the pipeline
+        state_path = self._state_path
+
+        def _save() -> None:
+            _save_state(state_path, current)
+
+        tracker = _ProgressTracker(
+            total=len(events),
+            sidecar_path=_PROCESSED_SIDECAR,
+            on_all_done=_save,
+        )
+        for ev in events:
+            sid = ev["source_id"]
+            ev["_on_indexed"] = lambda s=sid: tracker.ack(s)
+            await queue.put(ev)

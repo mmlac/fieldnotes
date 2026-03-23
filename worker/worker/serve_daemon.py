@@ -168,6 +168,11 @@ async def _run_daemon(cfg: Config) -> None:
                     if stop_event.is_set():
                         break
                     await loop.run_in_executor(None, pipeline.process, doc)
+                else:
+                    # All docs processed successfully — acknowledge to source
+                    on_indexed = event.get("_on_indexed")
+                    if on_indexed:
+                        on_indexed()
             except Exception:
                 logger.exception(
                     "Failed to process event %s %s (%s)",
@@ -175,6 +180,13 @@ async def _run_daemon(cfg: Config) -> None:
                     source_id,
                     operation,
                 )
+                # Still acknowledge the event so one poisoned item does
+                # not block cursor progress for the entire batch.  The
+                # event has been consumed from the queue and will not be
+                # retried, so we must advance the tracker regardless.
+                on_indexed = event.get("_on_indexed")
+                if on_indexed:
+                    on_indexed()
 
             if is_initial:
                 elapsed = time.monotonic() - t0

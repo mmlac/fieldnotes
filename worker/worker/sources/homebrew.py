@@ -34,12 +34,13 @@ from worker.metrics import (
 from worker.log_sanitizer import redact_home_path
 
 from .base import PythonSource
-from .cursor import save_json_atomic
+from .cursor import _ProgressTracker, save_json_atomic
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_POLL_INTERVAL = 21600  # 6 hours
 DEFAULT_STATE_PATH = Path.home() / ".fieldnotes" / "state" / "brew.json"
+_PROCESSED_SIDECAR = Path.home() / ".fieldnotes" / "state" / "brew_processed.json"
 BREW_TIMEOUT = 120  # seconds — some systems are very slow
 
 
@@ -337,12 +338,13 @@ class HomebrewSource(PythonSource):
             # Initial scan — emit all as created
             changes = [(sid, snap, "created") for sid, snap in curr_state.items()]
 
+        events: list[dict[str, Any]] = []
         new_count = 0
         removed_count = 0
         updated_count = 0
         for source_id, snapshot, operation in changes:
             event = _build_event(source_id, snapshot, operation)
-            await queue.put(event)
+            events.append(event)
             SOURCE_WATCHER_EVENTS.labels(
                 source_type="homebrew",
                 event_type=operation,
@@ -365,7 +367,26 @@ class HomebrewSource(PythonSource):
             len(curr_state),
         )
 
-        # Update state for next cycle
+        # Update in-memory state immediately (for next poll cycle)
         prev_state.clear()
         prev_state.update(curr_state)
-        _save_state(self._state_path, curr_state)
+
+        if not events:
+            _save_state(self._state_path, curr_state)
+            return
+
+        # Defer disk save until all events are processed through the pipeline
+        state_path = self._state_path
+
+        def _save() -> None:
+            _save_state(state_path, curr_state)
+
+        tracker = _ProgressTracker(
+            total=len(events),
+            sidecar_path=_PROCESSED_SIDECAR,
+            on_all_done=_save,
+        )
+        for ev in events:
+            sid = ev["source_id"]
+            ev["_on_indexed"] = lambda s=sid: tracker.ack(s)
+            await queue.put(ev)

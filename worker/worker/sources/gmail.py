@@ -40,12 +40,13 @@ from worker.metrics import (
 from worker.log_sanitizer import redact_home_path
 
 from .base import PythonSource
-from .cursor import save_json_atomic
+from .cursor import save_json_atomic, load_processed_ids, _ProgressTracker
 from .gmail_auth import get_credentials
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_CURSOR_PATH = Path.home() / ".fieldnotes" / "data" / "gmail_cursor.json"
+_PROCESSED_SIDECAR = Path.home() / ".fieldnotes" / "data" / "gmail_processed.json"
 DEFAULT_POLL_INTERVAL = 300  # seconds
 DEFAULT_MAX_INITIAL_THREADS = 500
 BACKFILL_PAGE_DELAY = 0.5  # seconds between backfill page fetches
@@ -246,8 +247,9 @@ class GmailSource(PythonSource):
                 self._label_filter,
             )
             cursor = await self._backfill(messages_api, queue, is_initial=True)
-            if cursor:
-                _save_cursor(self._cursor_path, cursor)
+            # cursor (history_id) is saved to disk only AFTER all
+            # backfilled events have been processed, via the
+            # _ProgressTracker callbacks.
 
         initial_sync_source_done()
 
@@ -260,8 +262,7 @@ class GmailSource(PythonSource):
                         # No valid cursor (e.g. history ID expired) — re-backfill.
                         logger.info("No cursor available — re-running backfill")
                         cursor = await self._backfill(messages_api, queue, is_initial=False)
-                        if cursor:
-                            _save_cursor(self._cursor_path, cursor)
+                        # history_id saved via _ProgressTracker callbacks
                     else:
                         cursor = await self._poll_incremental(
                             service, messages_api, queue, cursor
@@ -321,6 +322,9 @@ class GmailSource(PythonSource):
         page_token: str | None = None
         latest_history_id: str | None = None
         seen_ids: set[str] = set()  # Dedup across interruption/restart
+        # Load any previously-processed IDs from an interrupted backfill
+        already_processed = load_processed_ids(_PROCESSED_SIDECAR)
+        pending_events: list[dict[str, Any]] = []
 
         while fetched < self._max_initial_threads:
             batch_size = min(100, self._max_initial_threads - fetched)
@@ -357,7 +361,22 @@ class GmailSource(PythonSource):
                 event = _build_ingest_event(msg)
                 if is_initial:
                     event["initial_scan"] = True
-                await queue.put(event)
+                # Skip events already processed in a previous
+                # interrupted backfill.
+                if event["source_id"] in already_processed:
+                    fetched += 1
+                    # Still track historyId for cursor
+                    hid = msg.get("historyId")
+                    if hid:
+                        try:
+                            if latest_history_id is None or int(hid) > int(
+                                latest_history_id
+                            ):
+                                latest_history_id = hid
+                        except (ValueError, TypeError):
+                            pass
+                    continue
+                pending_events.append(event)
                 SOURCE_WATCHER_EVENTS.labels(
                     source_type="gmail",
                     event_type="created",
@@ -386,12 +405,45 @@ class GmailSource(PythonSource):
             if not page_token:
                 break
 
-            # Persist cursor after each page so progress survives restarts
-            if latest_history_id:
-                _save_cursor(self._cursor_path, latest_history_id)
-
             # Rate-limit: pause between page fetches
             await asyncio.sleep(BACKFILL_PAGE_DELAY)
+
+        # Enqueue collected events with _on_indexed callbacks.
+        if pending_events:
+            cursor_path = self._cursor_path
+
+            def _save_history_id() -> None:
+                if latest_history_id:
+                    _save_cursor(cursor_path, latest_history_id)
+                    logger.info(
+                        "Gmail backfill cursor saved (history_id=%s)",
+                        latest_history_id,
+                    )
+
+            tracker = _ProgressTracker(
+                total=len(pending_events),
+                sidecar_path=_PROCESSED_SIDECAR,
+                on_all_done=_save_history_id,
+            )
+            for ev in pending_events:
+                sid = ev["source_id"]
+                ev["_on_indexed"] = lambda s=sid: tracker.ack(s)
+                await queue.put(ev)
+        elif not pending_events and already_processed:
+            # Crash recovery: all events were already processed (sidecar
+            # survived) but the cursor was never saved.  Save it now and
+            # clean up the sidecar to break out of the re-backfill loop.
+            if latest_history_id:
+                _save_cursor(self._cursor_path, latest_history_id)
+                logger.info(
+                    "Gmail backfill cursor saved (crash-recovery, "
+                    "all %d events already processed, history_id=%s)",
+                    len(already_processed),
+                    latest_history_id,
+                )
+            import contextlib as _ctx
+            with _ctx.suppress(OSError):
+                _PROCESSED_SIDECAR.unlink()
 
         if fetched > 0 and is_initial:
             initial_sync_add_items(fetched)
@@ -507,7 +559,7 @@ class GmailSource(PythonSource):
         records = result.get("history", [])
 
         seen: set[str] = set()
-        count = 0
+        pending_events: list[dict[str, Any]] = []
         for record in records:
             for added in record.get("messagesAdded", []):
                 mid = added["message"]["id"]
@@ -527,7 +579,7 @@ class GmailSource(PythonSource):
                         timeout=API_CALL_TIMEOUT,
                     )
                     event = _build_ingest_event(msg)
-                    await queue.put(event)
+                    pending_events.append(event)
                     SOURCE_WATCHER_EVENTS.labels(
                         source_type="gmail",
                         event_type="created",
@@ -535,7 +587,6 @@ class GmailSource(PythonSource):
                     WATCHER_LAST_EVENT_TIMESTAMP.labels(
                         source_type="gmail",
                     ).set_to_current_time()
-                    count += 1
                 except asyncio.TimeoutError:
                     logger.error(
                         "Timed out fetching message %s after %ds",
@@ -545,8 +596,25 @@ class GmailSource(PythonSource):
                 except HttpError:
                     logger.error("Failed to fetch message %s", mid, exc_info=True)
 
-        if count:
-            logger.info("Incremental poll: %d new message(s)", count)
+        if pending_events:
+            logger.info("Incremental poll: %d new message(s)", len(pending_events))
+            cursor_path = self._cursor_path
 
-        _save_cursor(self._cursor_path, new_history_id)
+            def _save_inc_cursor() -> None:
+                _save_cursor(cursor_path, new_history_id)
+
+            tracker = _ProgressTracker(
+                total=len(pending_events),
+                sidecar_path=_PROCESSED_SIDECAR,
+                on_all_done=_save_inc_cursor,
+            )
+            for ev in pending_events:
+                sid = ev["source_id"]
+                ev["_on_indexed"] = lambda s=sid: tracker.ack(s)
+                await queue.put(ev)
+        else:
+            # No new messages but historyId may have advanced — safe to
+            # save immediately since there's nothing in the pipeline.
+            _save_cursor(self._cursor_path, new_history_id)
+
         return new_history_id

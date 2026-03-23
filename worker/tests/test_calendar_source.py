@@ -247,7 +247,7 @@ class TestGoogleCalendarSource:
         mock_service.events.return_value = mock_events
 
         token = await source._poll_calendar(
-            mock_service, queue, "primary", None
+            mock_service, queue, "primary", None, {}
         )
 
         assert token == "sync-abc"
@@ -279,7 +279,7 @@ class TestGoogleCalendarSource:
         mock_service.events.return_value = mock_events
 
         token = await source._poll_calendar(
-            mock_service, queue, "primary", "sync-old"
+            mock_service, queue, "primary", "sync-old", {}
         )
 
         assert token == "sync-def"
@@ -312,7 +312,7 @@ class TestGoogleCalendarSource:
         mock_service.events.return_value = mock_events
 
         token = await source._poll_calendar(
-            mock_service, queue, "primary", None
+            mock_service, queue, "primary", None, {}
         )
 
         assert token == "sync-final"
@@ -345,7 +345,7 @@ class TestGoogleCalendarSource:
         mock_service = MagicMock()
         mock_service.events.return_value = mock_events
 
-        await source._poll_calendar(mock_service, queue, "primary", None)
+        await source._poll_calendar(mock_service, queue, "primary", None, {})
 
         assert queue.qsize() == 4
         events = [queue.get_nowait() for _ in range(4)]
@@ -387,7 +387,7 @@ class TestGoogleCalendarSource:
         mock_service.events.return_value = mock_events
 
         # Pass a sync token → incremental mode
-        await source._poll_calendar(mock_service, queue, "primary", "old-token")
+        await source._poll_calendar(mock_service, queue, "primary", "old-token", {})
 
         assert queue.qsize() == 2
         # Both should retain text in incremental mode

@@ -341,15 +341,19 @@ async def test_initial_scan_detects_modifications(tmp_path: Path):
     q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
     task = asyncio.create_task(s.start(q))
     await asyncio.sleep(1.0)
+
+    # Ack events so cursor is persisted
+    while not q.empty():
+        ev = q.get_nowait()
+        cb = ev.get("_on_indexed")
+        if cb:
+            cb()
+
     task.cancel()
     try:
         await task
     except asyncio.CancelledError:
         pass
-
-    # Drain first scan events
-    while not q.empty():
-        q.get_nowait()
 
     # Modify the file
     note.write_text("modified content")
@@ -403,6 +407,14 @@ async def test_initial_scan_detects_deletions(tmp_path: Path):
     q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
     task = asyncio.create_task(s.start(q))
     await asyncio.sleep(1.0)
+
+    # Ack events so cursor is persisted
+    while not q.empty():
+        ev = q.get_nowait()
+        cb = ev.get("_on_indexed")
+        if cb:
+            cb()
+
     task.cancel()
     try:
         await task
@@ -459,15 +471,19 @@ async def test_initial_scan_no_events_when_unchanged(tmp_path: Path):
     q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
     task = asyncio.create_task(s.start(q))
     await asyncio.sleep(1.0)
+
+    # Ack events so cursor is persisted
+    while not q.empty():
+        ev = q.get_nowait()
+        cb = ev.get("_on_indexed")
+        if cb:
+            cb()
+
     task.cancel()
     try:
         await task
     except asyncio.CancelledError:
         pass
-
-    # Drain
-    while not q.empty():
-        q.get_nowait()
 
     # Second scan — nothing changed
     s2 = ObsidianSource()

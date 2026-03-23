@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import logging
 import os
@@ -46,6 +47,7 @@ from worker.log_sanitizer import redact_home_path
 
 from ._handler import guess_mime, streaming_sha256
 from .base import PythonSource
+from .cursor import save_json_atomic, _ProgressTracker
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +57,7 @@ DEFAULT_MAX_COMMITS = 200
 DEFAULT_MAX_TREE_ITEMS = 50_000  # cap tree traversal to prevent OOM on huge repos
 GIT_OPERATION_TIMEOUT = 120  # seconds — max wait for a single git operation
 DEFAULT_CURSOR_PATH = Path.home() / ".fieldnotes" / "data" / "repo_cursor.json"
+_SIDECAR_DIR = Path.home() / ".fieldnotes" / "data"
 
 DEFAULT_INCLUDE_PATTERNS: list[str] = [
     "README*",
@@ -329,8 +332,6 @@ class RepositorySource(PythonSource):
                 repos = _discover_repos(self._repo_roots)
                 for repo_path in repos:
                     await self._scan_repo(repo_path, cursors, queue)
-                    # Save after each repo so progress survives crashes
-                    _save_cursor(self._cursor_path, cursors)
                 if first_cycle:
                     initial_sync_source_done()
                     first_cycle = False
@@ -380,30 +381,56 @@ class RepositorySource(PythonSource):
 
         if prev_sha is None:
             # Initial scan: index all matching tracked files
-            await self._scan_all_files(repo, repo_path, repo_name, remote_url, queue)
+            events = await self._collect_all_files(
+                repo, repo_path, repo_name, remote_url
+            )
         else:
             # Incremental: find files changed between prev_sha and HEAD
-            await self._scan_diff(
-                repo, repo_path, repo_name, remote_url, prev_sha, head_sha, queue
+            events = await self._collect_diff(
+                repo, repo_path, repo_name, remote_url, prev_sha, head_sha
             )
 
         # Scan commits (initial: last N; incremental: since prev cursor)
-        await self._scan_commits(
-            repo, repo_path, repo_name, remote_url, prev_sha, queue
+        commit_events = await self._collect_commits(
+            repo, repo_path, repo_name, remote_url, prev_sha
         )
+        events.extend(commit_events)
 
-        cursors[repo_key] = head_sha
+        if not events:
+            cursors[repo_key] = head_sha
+            _save_cursor(self._cursor_path, cursors)
+            return
 
-    async def _scan_all_files(
+        # Defer HEAD cursor save until all events are processed.
+        cursor_path = self._cursor_path
+        # Use a per-repo sidecar to avoid collisions when multiple
+        # repos are scanned in the same poll cycle.
+        repo_hash = hashlib.sha256(repo_key.encode()).hexdigest()[:12]
+        sidecar_path = _SIDECAR_DIR / f"repo_{repo_hash}_processed.json"
+
+        def _save_repo_cursor() -> None:
+            cursors[repo_key] = head_sha
+            _save_cursor(cursor_path, cursors)
+
+        tracker = _ProgressTracker(
+            total=len(events),
+            sidecar_path=sidecar_path,
+            on_all_done=_save_repo_cursor,
+        )
+        for ev in events:
+            sid = ev["source_id"]
+            ev["_on_indexed"] = lambda s=sid: tracker.ack(s)
+            await queue.put(ev)
+
+    async def _collect_all_files(
         self,
         repo: git.Repo,
         repo_path: Path,
         repo_name: str,
         remote_url: str | None,
-        queue: asyncio.Queue[dict[str, Any]],
-    ) -> None:
-        """Index all tracked files matching include/exclude patterns."""
-        count = 0
+    ) -> list[dict[str, Any]]:
+        """Collect events for all tracked files matching include/exclude patterns."""
+        events: list[dict[str, Any]] = []
         loop = asyncio.get_running_loop()
 
         def _bounded_traverse() -> list[str]:
@@ -430,7 +457,7 @@ class RepositorySource(PythonSource):
                 redact_home_path(str(repo_path)),
                 GIT_OPERATION_TIMEOUT,
             )
-            return
+            return events
 
         for rel_path in tracked:
             if not self._matches_include(rel_path):
@@ -451,7 +478,7 @@ class RepositorySource(PythonSource):
                 self._max_file_size,
             )
             if event is not None:
-                await queue.put(event)
+                events.append(event)
                 SOURCE_WATCHER_EVENTS.labels(
                     source_type="repositories",
                     event_type="created",
@@ -459,11 +486,11 @@ class RepositorySource(PythonSource):
                 WATCHER_LAST_EVENT_TIMESTAMP.labels(
                     source_type="repositories",
                 ).set_to_current_time()
-                count += 1
 
-        logger.info("Initial scan of %s: %d matching files indexed", repo_name, count)
+        logger.info("Initial scan of %s: %d matching files collected", repo_name, len(events))
+        return events
 
-    async def _scan_diff(
+    async def _collect_diff(
         self,
         repo: git.Repo,
         repo_path: Path,
@@ -471,10 +498,9 @@ class RepositorySource(PythonSource):
         remote_url: str | None,
         prev_sha: str,
         head_sha: str,
-        queue: asyncio.Queue[dict[str, Any]],
-    ) -> None:
-        """Emit events for files changed between two commits."""
-        count = 0
+    ) -> list[dict[str, Any]]:
+        """Collect events for files changed between two commits."""
+        events: list[dict[str, Any]] = []
         loop = asyncio.get_running_loop()
 
         try:
@@ -491,7 +517,7 @@ class RepositorySource(PythonSource):
                 repo_name,
                 GIT_OPERATION_TIMEOUT,
             )
-            return
+            return events
         except (git.BadName, ValueError):
             # Previous cursor commit no longer exists (force-push, etc.)
             # Fall back to full scan
@@ -500,8 +526,7 @@ class RepositorySource(PythonSource):
                 prev_sha,
                 repo_name,
             )
-            await self._scan_all_files(repo, repo_path, repo_name, remote_url, queue)
-            return
+            return await self._collect_all_files(repo, repo_path, repo_name, remote_url)
 
         for diff in diffs:
             # Determine the relevant path and operation
@@ -530,7 +555,7 @@ class RepositorySource(PythonSource):
                 self._max_file_size,
             )
             if event is not None:
-                await queue.put(event)
+                events.append(event)
                 SOURCE_WATCHER_EVENTS.labels(
                     source_type="repositories",
                     event_type=operation,
@@ -538,27 +563,27 @@ class RepositorySource(PythonSource):
                 WATCHER_LAST_EVENT_TIMESTAMP.labels(
                     source_type="repositories",
                 ).set_to_current_time()
-                count += 1
 
-        if count:
+        if events:
             logger.info(
                 "Incremental scan of %s (%s..%s): %d file(s) changed",
                 repo_name,
                 prev_sha[:8],
                 head_sha[:8],
-                count,
+                len(events),
             )
+        return events
 
-    async def _scan_commits(
+    async def _collect_commits(
         self,
         repo: git.Repo,
         repo_path: Path,
         repo_name: str,
         remote_url: str | None,
         prev_sha: str | None,
-        queue: asyncio.Queue[dict[str, Any]],
-    ) -> None:
-        """Emit events for recent git commits."""
+    ) -> list[dict[str, Any]]:
+        """Collect events for recent git commits."""
+        events: list[dict[str, Any]] = []
         loop = asyncio.get_running_loop()
 
         try:
@@ -582,12 +607,11 @@ class RepositorySource(PythonSource):
                 repo_name,
                 GIT_OPERATION_TIMEOUT,
             )
-            return
+            return events
         except (git.GitCommandError, ValueError) as exc:
             logger.warning("Failed to enumerate commits in %s: %s", repo_name, exc)
-            return
+            return events
 
-        count = 0
         for commit_obj in commits:
             # Get changed file paths from the commit's diff against its parent
             try:
@@ -606,7 +630,7 @@ class RepositorySource(PythonSource):
             event = _build_commit_event(
                 commit_obj, repo_path, repo_name, remote_url, changed
             )
-            await queue.put(event)
+            events.append(event)
             SOURCE_WATCHER_EVENTS.labels(
                 source_type="repositories",
                 event_type="created",
@@ -614,15 +638,15 @@ class RepositorySource(PythonSource):
             WATCHER_LAST_EVENT_TIMESTAMP.labels(
                 source_type="repositories",
             ).set_to_current_time()
-            count += 1
 
-        if count:
+        if events:
             logger.info(
                 "Indexed %d commit(s) from %s%s",
-                count,
+                len(events),
                 repo_name,
                 f" ({prev_sha[:8]}..HEAD)" if prev_sha else " (initial)",
             )
+        return events
 
     def _matches_include(self, rel_path: str) -> bool:
         """Check if rel_path matches any include pattern."""

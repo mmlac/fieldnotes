@@ -16,6 +16,7 @@ Config section ``[sources.google_calendar]``::
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import uuid
@@ -37,12 +38,15 @@ from worker.metrics import (
 
 from .base import PythonSource
 from .calendar_auth import get_credentials
-from .cursor import save_json_atomic
+from .cursor import save_json_atomic, load_processed_ids, _ProgressTracker
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_CURSOR_PATH = (
     Path.home() / ".fieldnotes" / "data" / "calendar_cursor.json"
+)
+_PROCESSED_SIDECAR = (
+    Path.home() / ".fieldnotes" / "data" / "calendar_processed.json"
 )
 DEFAULT_POLL_INTERVAL = 300  # 5 minutes
 DEFAULT_MAX_INITIAL_DAYS = 90  # backfill ~3 months
@@ -241,13 +245,11 @@ class GoogleCalendarSource(PythonSource):
                     try:
                         sync_token = sync_tokens.get(cal_id)
                         new_token = await self._poll_calendar(
-                            service, queue, cal_id, sync_token
+                            service, queue, cal_id, sync_token,
+                            sync_tokens,
                         )
                         if new_token:
                             sync_tokens[cal_id] = new_token
-                            # Persist immediately so a restart doesn't
-                            # redo the full backfill for this calendar.
-                            save_json_atomic(self._cursor_path, sync_tokens)
                     except HttpError as exc:
                         if exc.resp.status == 410:
                             # Sync token expired — clear and do full resync
@@ -270,9 +272,6 @@ class GoogleCalendarSource(PythonSource):
                     initial_sync_source_done()
                     first_cycle = False
 
-                # Persist sync tokens after each poll cycle
-                save_json_atomic(self._cursor_path, sync_tokens)
-
                 await asyncio.sleep(self._poll_interval)
         except asyncio.CancelledError:
             WATCHER_ACTIVE.labels(source_type="google_calendar").set(0)
@@ -285,6 +284,7 @@ class GoogleCalendarSource(PythonSource):
         queue: asyncio.Queue[dict[str, Any]],
         calendar_id: str,
         sync_token: str | None,
+        sync_tokens: dict[str, str],
     ) -> str | None:
         """Fetch events for a single calendar.  Returns new sync token."""
         is_backfill = sync_token is None
@@ -317,12 +317,19 @@ class GoogleCalendarSource(PythonSource):
         new_sync_token: str | None = None
         total_events = 0
         total_recurring_skipped = 0
+        total_skipped_processed = 0
         page_token: str | None = None
         # During backfill, track recurring series we've already emitted a
         # full (text-bearing) event for.  Subsequent instances of the same
         # series get their CalendarEvent node + GraphHints written but
         # skip the expensive chunk → embed → extract pipeline.
         seen_recurring: set[str] = set()
+        # Load any previously-processed IDs from an interrupted backfill
+        # so we can skip them.
+        already_processed = load_processed_ids(_PROCESSED_SIDECAR)
+        # Collect events in memory first so we know the total count
+        # before building the _ProgressTracker.
+        pending_events: list[dict[str, Any]] = []
 
         try:
             while True:
@@ -337,6 +344,11 @@ class GoogleCalendarSource(PythonSource):
                 for event in events:
                     ingest = _build_ingest_event(event, calendar_id)
                     if ingest is not None:
+                        # Skip events already processed in a previous
+                        # interrupted backfill.
+                        if is_backfill and ingest["source_id"] in already_processed:
+                            total_skipped_processed += 1
+                            continue
                         if is_backfill:
                             ingest["initial_scan"] = True
                             # Dedup recurring instances: keep full text
@@ -352,7 +364,7 @@ class GoogleCalendarSource(PythonSource):
                                     total_recurring_skipped += 1
                                 else:
                                     seen_recurring.add(rid)
-                        await queue.put(ingest)
+                        pending_events.append(ingest)
                         total_events += 1
                         SOURCE_WATCHER_EVENTS.labels(
                             source_type="google_calendar",
@@ -375,22 +387,87 @@ class GoogleCalendarSource(PythonSource):
             # capture whatever sync token we obtained so far.
             raise
 
+        # Enqueue the collected events with _on_indexed callbacks.
+        if is_backfill and pending_events:
+            # Capture the sync token to save once ALL events are indexed.
+            def _save_sync_token() -> None:
+                if new_sync_token:
+                    sync_tokens[calendar_id] = new_sync_token
+                    save_json_atomic(self._cursor_path, sync_tokens)
+                    logger.info(
+                        "Calendar %s: sync token saved after backfill",
+                        calendar_id,
+                    )
+
+            tracker = _ProgressTracker(
+                total=len(pending_events),
+                sidecar_path=_PROCESSED_SIDECAR,
+                on_all_done=_save_sync_token,
+            )
+            for ingest in pending_events:
+                sid = ingest["source_id"]
+                ingest["_on_indexed"] = lambda s=sid: tracker.ack(s)
+                await queue.put(ingest)
+        elif is_backfill and not pending_events and already_processed:
+            # Crash recovery: all events were already processed (sidecar
+            # survived) but the cursor was never saved.  Save it now and
+            # clean up the sidecar to break out of the re-backfill loop.
+            if new_sync_token:
+                sync_tokens[calendar_id] = new_sync_token
+                save_json_atomic(self._cursor_path, sync_tokens)
+                logger.info(
+                    "Calendar %s: sync token saved (crash-recovery, "
+                    "all %d events already processed)",
+                    calendar_id,
+                    len(already_processed),
+                )
+            with contextlib.suppress(OSError):
+                _PROCESSED_SIDECAR.unlink()
+        else:
+            # Incremental poll — attach _on_indexed to defer cursor save.
+            if pending_events:
+                def _save_inc_token() -> None:
+                    if new_sync_token:
+                        sync_tokens[calendar_id] = new_sync_token
+                        save_json_atomic(self._cursor_path, sync_tokens)
+
+                tracker = _ProgressTracker(
+                    total=len(pending_events),
+                    sidecar_path=_PROCESSED_SIDECAR,
+                    on_all_done=_save_inc_token,
+                )
+                for ingest in pending_events:
+                    sid = ingest["source_id"]
+                    ingest["_on_indexed"] = lambda s=sid: tracker.ack(s)
+                    await queue.put(ingest)
+            elif new_sync_token:
+                # No events but token refreshed — save immediately.
+                sync_tokens[calendar_id] = new_sync_token
+                save_json_atomic(self._cursor_path, sync_tokens)
+
         if total_events > 0:
             if is_backfill:
                 initial_sync_add_items(total_events)
+            skipped_msg = ""
+            if total_skipped_processed:
+                skipped_msg = (
+                    f", {total_skipped_processed} already processed"
+                )
             if total_recurring_skipped:
                 logger.info(
                     "Calendar %s: queued %d event(s) "
-                    "(%d recurring instances will skip embed/extract)",
+                    "(%d recurring instances will skip embed/extract%s)",
                     calendar_id,
                     total_events,
                     total_recurring_skipped,
+                    skipped_msg,
                 )
             else:
                 logger.info(
-                    "Calendar %s: queued %d event(s)",
+                    "Calendar %s: queued %d event(s)%s",
                     calendar_id,
                     total_events,
+                    skipped_msg,
                 )
 
         return new_sync_token

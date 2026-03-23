@@ -308,6 +308,8 @@ def _validate_repositories_config(settings: dict[str, Any]) -> None:
 def _validate_macos_apps_config(settings: dict[str, Any]) -> None:
     """Validate [sources.macos_apps] settings."""
     section = "sources.macos_apps"
+    if "enabled" in settings:
+        _check_type(section, "enabled", settings["enabled"], bool)
     if "scan_dirs" in settings:
         _check_list_of(section, "scan_dirs", settings["scan_dirs"], str)
     if "poll_interval_seconds" in settings:

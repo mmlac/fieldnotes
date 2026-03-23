@@ -342,12 +342,27 @@ async def test_obsidian_checkpoint_merges_vault_cursors(tmp_path: Path) -> None:
     # Wait for initial scan to complete
     await asyncio.sleep(1.0)
 
+    # Ack initial scan events so cursor is populated
+    while not q.empty():
+        ev = q.get_nowait()
+        cb = ev.get("_on_indexed")
+        if cb:
+            cb()
+
     # Create files in both vaults so watchdog events update handler cursors
     (vault_a / "new_a.md").write_text("new in A")
     (vault_b / "new_b.md").write_text("new in B")
 
-    # Wait for watchdog to fire + checkpoint interval
-    await asyncio.sleep(2.5)
+    # Wait for watchdog to fire, then ack the new events
+    await asyncio.sleep(1.5)
+    while not q.empty():
+        ev = q.get_nowait()
+        cb = ev.get("_on_indexed")
+        if cb:
+            cb()
+
+    # Wait for checkpoint interval
+    await asyncio.sleep(1.5)
 
     task.cancel()
     try:
@@ -378,9 +393,23 @@ async def test_obsidian_graceful_shutdown_checkpoint(tmp_path: Path) -> None:
     task = asyncio.create_task(s.start(q))
     await asyncio.sleep(1.0)
 
+    # Ack initial scan events
+    while not q.empty():
+        ev = q.get_nowait()
+        cb = ev.get("_on_indexed")
+        if cb:
+            cb()
+
     # Create a file so watchdog updates handler cursor
     (vault / "new.md").write_text("new content")
     await asyncio.sleep(1.0)
+
+    # Ack watchdog events
+    while not q.empty():
+        ev = q.get_nowait()
+        cb = ev.get("_on_indexed")
+        if cb:
+            cb()
 
     task.cancel()
     try:

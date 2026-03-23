@@ -52,13 +52,17 @@ def _make_task(
 
 
 async def _collect_events(
-    queue: asyncio.Queue[dict[str, Any]], timeout: float = 2.0
+    queue: asyncio.Queue[dict[str, Any]], timeout: float = 2.0, ack: bool = True
 ) -> list[dict[str, Any]]:
     """Drain all events from *queue* until *timeout* elapses."""
     events: list[dict[str, Any]] = []
     try:
         while True:
             ev = await asyncio.wait_for(queue.get(), timeout=timeout)
+            if ack:
+                cb = ev.get("_on_indexed")
+                if cb:
+                    cb()
             events.append(ev)
     except (asyncio.TimeoutError, TimeoutError):
         pass

@@ -33,12 +33,13 @@ from worker.metrics import (
 )
 
 from .base import PythonSource
-from .cursor import save_json_atomic
+from .cursor import _ProgressTracker, save_json_atomic
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_POLL_INTERVAL = 300  # 5 minutes
 DEFAULT_STATE_PATH = Path.home() / ".fieldnotes" / "state" / "omnifocus.json"
+_PROCESSED_SIDECAR = Path.home() / ".fieldnotes" / "state" / "omnifocus_processed.json"
 
 _SOURCE_TYPE = "omnifocus"
 
@@ -217,6 +218,7 @@ class OmniFocusSource(PythonSource):
     def __init__(self) -> None:
         self._poll_interval: int = DEFAULT_POLL_INTERVAL
         self._state_path: Path = DEFAULT_STATE_PATH
+        self._enabled: bool = _is_macos()
 
     def name(self) -> str:
         return "omnifocus"
@@ -225,14 +227,16 @@ class OmniFocusSource(PythonSource):
         self._poll_interval = int(
             cfg.get("poll_interval_seconds", DEFAULT_POLL_INTERVAL)
         )
+        if "enabled" in cfg:
+            self._enabled = bool(cfg["enabled"])
 
         state = cfg.get("state_path")
         if state:
             self._state_path = Path(state).expanduser().resolve()
 
     async def start(self, queue: asyncio.Queue[dict[str, Any]]) -> None:
-        if not _is_macos():
-            logger.info("OmniFocus source skipped (not macOS)")
+        if not self._enabled:
+            logger.info("OmniFocus source skipped (disabled)")
             initial_sync_source_done()
             return
 
@@ -243,7 +247,6 @@ class OmniFocusSource(PythonSource):
         try:
             while True:
                 await self._poll(state, queue)
-                _save_state(self._state_path, state)
                 if first_cycle:
                     initial_sync_source_done()
                     first_cycle = False
@@ -266,7 +269,7 @@ class OmniFocusSource(PythonSource):
             return
 
         current: dict[str, str] = {}  # task_id → hash
-        count = 0
+        events: list[dict[str, Any]] = []
 
         for task in tasks:
             task_id = task.get("id")
@@ -285,7 +288,7 @@ class OmniFocusSource(PythonSource):
                 continue  # unchanged
 
             event = _build_event(task, operation)
-            await queue.put(event)
+            events.append(event)
             SOURCE_WATCHER_EVENTS.labels(
                 source_type=_SOURCE_TYPE,
                 event_type=operation,
@@ -293,7 +296,6 @@ class OmniFocusSource(PythonSource):
             WATCHER_LAST_EVENT_TIMESTAMP.labels(
                 source_type=_SOURCE_TYPE,
             ).set_to_current_time()
-            count += 1
 
         # Detect deleted tasks (present in old state, absent now)
         for task_id in set(state) - set(current):
@@ -307,7 +309,7 @@ class OmniFocusSource(PythonSource):
                 },
                 "deleted",
             )
-            await queue.put(event)
+            events.append(event)
             SOURCE_WATCHER_EVENTS.labels(
                 source_type=_SOURCE_TYPE,
                 event_type="deleted",
@@ -315,16 +317,15 @@ class OmniFocusSource(PythonSource):
             WATCHER_LAST_EVENT_TIMESTAMP.labels(
                 source_type=_SOURCE_TYPE,
             ).set_to_current_time()
-            count += 1
 
-        # Update state to reflect current poll
+        # Update in-memory state immediately (for next poll cycle)
         state.clear()
         state.update(current)
 
-        if count:
+        if events:
             logger.info(
                 "OmniFocus poll complete: %d event(s) emitted (%d tasks)",
-                count,
+                len(events),
                 len(current),
             )
         else:
@@ -332,3 +333,23 @@ class OmniFocusSource(PythonSource):
                 "OmniFocus poll complete: no changes (%d tasks)",
                 len(current),
             )
+
+        if not events:
+            _save_state(self._state_path, current)
+            return
+
+        # Defer disk save until all events processed through the pipeline
+        state_path = self._state_path
+
+        def _save() -> None:
+            _save_state(state_path, current)
+
+        tracker = _ProgressTracker(
+            total=len(events),
+            sidecar_path=_PROCESSED_SIDECAR,
+            on_all_done=_save,
+        )
+        for ev in events:
+            sid = ev["source_id"]
+            ev["_on_indexed"] = lambda s=sid: tracker.ack(s)
+            await queue.put(ev)

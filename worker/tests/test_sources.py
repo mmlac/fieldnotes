@@ -26,6 +26,7 @@ async def _collect_events(
     min_events: int = 1,
     timeout: float = 5.0,
     path_prefix: str | None = None,
+    ack: bool = True,
 ) -> list[dict[str, Any]]:
     """Collect at least *min_events* from the queue, with a hard timeout.
 
@@ -38,6 +39,10 @@ async def _collect_events(
     try:
         while len(events) < min_events:
             ev = await asyncio.wait_for(q.get(), timeout=timeout)
+            if ack:
+                cb = ev.get("_on_indexed")
+                if cb:
+                    cb()
             if path_prefix and not ev.get("source_id", "").startswith(path_prefix):
                 continue
             events.append(ev)
@@ -52,6 +57,7 @@ async def _collect_until(
     *,
     timeout: float = 5.0,
     path_prefix: str | None = None,
+    ack: bool = True,
 ) -> list[dict[str, Any]]:
     """Collect events until *predicate(events)* is true or timeout.
 
@@ -66,6 +72,10 @@ async def _collect_until(
             if remaining <= 0:
                 break
             ev = await asyncio.wait_for(q.get(), timeout=remaining)
+            if ack:
+                cb = ev.get("_on_indexed")
+                if cb:
+                    cb()
             if path_prefix and not ev.get("source_id", "").startswith(path_prefix):
                 continue
             events.append(ev)

@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import threading
 import time
 import uuid
 from datetime import datetime, timezone
@@ -181,6 +182,7 @@ def _enqueue_scan_event(
     queue: asyncio.Queue[dict[str, Any]],
     *,
     categories_key: str = "categories",
+    on_indexed: Any | None = None,
 ) -> None:
     """Build and enqueue a single scan event.
 
@@ -229,6 +231,8 @@ def _enqueue_scan_event(
         ingest["source_modified_at"] = now
 
     ingest["initial_scan"] = True
+    if on_indexed is not None:
+        ingest["_on_indexed"] = on_indexed
     queue.put_nowait(ingest)
 
 
@@ -301,6 +305,12 @@ class ObsidianSource(PythonSource):
         self._cursor_path: Path = DEFAULT_CURSOR_PATH
         self._checkpoint_interval: int = DEFAULT_CHECKPOINT_INTERVAL
         self._categories_key: str = "categories"
+        # Indexed cursor: only entries whose pipeline processing has
+        # been confirmed.  Thread-safe because _on_indexed callbacks
+        # are invoked on the event-loop thread while the watchdog
+        # handler may also use the factory from its observer thread.
+        self._indexed_cursor: dict[str, FileEntry] = {}
+        self._indexed_lock = threading.Lock()
 
     def name(self) -> str:
         return "obsidian"
@@ -357,6 +367,11 @@ class ObsidianSource(PythonSource):
         # -- Initial scan: walk all vaults before starting watchdog --
         scan_start = time.monotonic()
         stored_cursor = load_cursor(self._cursor_path)
+        # Seed the indexed cursor from the on-disk state.  Only entries
+        # whose processing is confirmed via _on_indexed callbacks will
+        # be added going forward.
+        with self._indexed_lock:
+            self._indexed_cursor = dict(stored_cursor)
         current_cursor: dict[str, FileEntry] = {}
         _stale_vault_deletes = 0
         handled_stored_paths: set[str] = set()
@@ -394,26 +409,31 @@ class ObsidianSource(PythonSource):
                     file_path, "created", vault_entries[file_path],
                     vault, vault_name, now, queue,
                     categories_key=self._categories_key,
+                    on_indexed=self._make_indexed_cb(
+                        file_path, vault_entries[file_path],
+                    ),
                 )
-                save_cursor(self._cursor_path, current_cursor)
 
             for file_path in diff.modified:
                 _enqueue_scan_event(
                     file_path, "modified", vault_entries[file_path],
                     vault, vault_name, now, queue,
                     categories_key=self._categories_key,
+                    on_indexed=self._make_indexed_cb(
+                        file_path, vault_entries[file_path],
+                    ),
                 )
-                save_cursor(self._cursor_path, current_cursor)
 
             for file_path in diff.deleted:
                 _enqueue_scan_event(
                     file_path, "deleted", None,
                     vault, vault_name, now, queue,
                     categories_key=self._categories_key,
+                    on_indexed=self._make_indexed_cb(file_path, None),
                 )
-                # Remove from cursor so deleted files aren't re-emitted
+                # Remove from current_cursor so deleted files aren't
+                # re-emitted on the next scan.
                 current_cursor.pop(file_path, None)
-                save_cursor(self._cursor_path, current_cursor)
 
             n_new = len(diff.new)
             n_mod = len(diff.modified)
@@ -460,6 +480,7 @@ class ObsidianSource(PythonSource):
                 "enqueued_at": now,
                 "source_modified_at": now,
                 "initial_scan": True,
+                "_on_indexed": self._make_indexed_cb(stored_path, None),
             }
             queue.put_nowait(ingest)
             total_deleted += 1
@@ -468,8 +489,10 @@ class ObsidianSource(PythonSource):
         if _stale_vault_deletes:
             initial_sync_add_items(_stale_vault_deletes)
 
-        # Save updated cursor
-        save_cursor(self._cursor_path, current_cursor)
+        # Save the indexed cursor (what has been processed so far).
+        # Do NOT save current_cursor — it may contain items not yet
+        # processed through the pipeline.
+        self._flush_indexed_cursor()
 
         scan_duration = time.monotonic() - scan_start
         total_files = len(current_cursor)
@@ -526,6 +549,7 @@ class ObsidianSource(PythonSource):
                 k: v for k, v in current_cursor.items() if k.startswith(vault_prefix)
             }
             handler.set_cursor(vault_current)
+            handler.set_indexed_factory(self._indexed_factory)
             # Filter dedup set to entries belonging to this vault
             vault_dedup = {(p, s) for p, s in scan_pairs if p.startswith(vault_prefix)}
             handler.set_dedup_window(vault_dedup)
@@ -543,20 +567,72 @@ class ObsidianSource(PythonSource):
         try:
             while True:
                 await asyncio.sleep(self._checkpoint_interval)
-                self._save_checkpoint(handlers)
+                self._save_checkpoint()
         except asyncio.CancelledError:
-            self._save_checkpoint(handlers)
+            self._save_checkpoint()
             raise
         finally:
             WATCHER_ACTIVE.labels(source_type="obsidian").set(0)
             observer.stop()
             observer.join()
 
-    def _save_checkpoint(self, handlers: list[_VaultHandler]) -> None:
-        """Merge all vault handler cursors and persist to disk."""
-        merged: dict[str, Any] = {}
-        for h in handlers:
-            merged.update(h.get_cursor_snapshot())
-        save_cursor(self._cursor_path, merged)
+    # -- Indexed-cursor helpers ----------------------------------------
+
+    def _make_indexed_cb(
+        self, path: str, entry: FileEntry | None
+    ) -> Any:
+        """Return an _on_indexed callback for a single file event.
+
+        Each callback updates the in-memory indexed cursor AND flushes
+        to disk immediately so progress survives crashes.
+        """
+        if entry is None:
+            # Deletion
+            def _cb() -> None:
+                with self._indexed_lock:
+                    self._indexed_cursor.pop(path, None)
+                self._flush_indexed_cursor()
+            return _cb
+
+        def _cb() -> None:
+            with self._indexed_lock:
+                self._indexed_cursor[path] = entry
+            self._flush_indexed_cursor()
+        return _cb
+
+    def _indexed_factory(self, ingest: dict[str, Any]) -> Any:
+        """Callback factory for watchdog handler events."""
+        source_id = ingest["source_id"]
+        op = ingest["operation"]
+        if op == "deleted":
+            return self._make_indexed_cb(source_id, None)
+        meta = ingest.get("meta", {})
+        sha = meta.get("sha256", "")
+        if not sha:
+            return None
+        size = meta.get("size_bytes", 0)
+        modified_at = ingest.get("source_modified_at", "")
+        mtime_ns = 0
+        if modified_at:
+            try:
+                dt = datetime.fromisoformat(modified_at)
+                mtime_ns = int(dt.timestamp() * 1e9)
+            except (ValueError, OSError):
+                pass
+        return self._make_indexed_cb(
+            source_id, FileEntry(sha256=sha, mtime_ns=mtime_ns, size=size)
+        )
+
+    def _flush_indexed_cursor(self) -> None:
+        """Persist the indexed cursor to disk."""
+        with self._indexed_lock:
+            snapshot = dict(self._indexed_cursor)
+        save_cursor(self._cursor_path, snapshot)
+
+    def _save_checkpoint(self) -> None:
+        """Persist indexed cursor to disk."""
+        self._flush_indexed_cursor()
         CURSOR_CHECKPOINT_WRITES.labels(source_type="obsidian").inc()
-        logger.info("Cursor checkpoint saved: %d files tracked", len(merged))
+        with self._indexed_lock:
+            n = len(self._indexed_cursor)
+        logger.info("Cursor checkpoint saved: %d files tracked", n)

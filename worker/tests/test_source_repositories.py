@@ -44,13 +44,17 @@ def _init_repo(path: Path, files: dict[str, str] | None = None) -> git.Repo:
 
 
 async def _collect_events(
-    queue: asyncio.Queue[dict[str, Any]], timeout: float = 2.0
+    queue: asyncio.Queue[dict[str, Any]], timeout: float = 2.0, ack: bool = True
 ) -> list[dict[str, Any]]:
     """Drain all events from *queue* until *timeout* elapses with no new events."""
     events: list[dict[str, Any]] = []
     try:
         while True:
             ev = await asyncio.wait_for(queue.get(), timeout=timeout)
+            if ack:
+                cb = ev.get("_on_indexed")
+                if cb:
+                    cb()
             events.append(ev)
     except (asyncio.TimeoutError, TimeoutError):
         pass

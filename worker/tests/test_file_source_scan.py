@@ -47,14 +47,29 @@ async def _run_source_briefly(
     source: FileSource,
     q: asyncio.Queue[dict[str, Any]],
     duration: float = 1.5,
+    *,
+    ack: bool = True,
 ) -> list[dict[str, Any]]:
-    """Start a source, let it run for duration seconds, cancel and drain."""
+    """Start a source, let it run for duration seconds, cancel and drain.
+
+    When *ack* is True (default), fire the ``_on_indexed`` callback on
+    each event so that the indexed-cursor is committed to disk — just
+    like the real daemon consumer would do.
+    """
     task = asyncio.create_task(source.start(q))
     await asyncio.sleep(duration)
 
     events: list[dict[str, Any]] = []
     while not q.empty():
         events.append(q.get_nowait())
+
+    # Simulate consumer acknowledgements BEFORE cancel so the indexed
+    # cursor is up-to-date when _save_checkpoint runs on CancelledError.
+    if ack:
+        for ev in events:
+            cb = ev.get("_on_indexed")
+            if cb:
+                cb()
 
     task.cancel()
     try:
@@ -64,7 +79,12 @@ async def _run_source_briefly(
 
     # Drain any events that arrived during cancellation
     while not q.empty():
-        events.append(q.get_nowait())
+        ev = q.get_nowait()
+        events.append(ev)
+        if ack:
+            cb = ev.get("_on_indexed")
+            if cb:
+                cb()
 
     return events
 
@@ -590,8 +610,15 @@ async def test_checkpoint_fires_at_interval(tmp_path: Path) -> None:
     q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
 
     task = asyncio.create_task(fs.start(q))
-    # Wait for initial scan + at least one checkpoint cycle
-    await asyncio.sleep(2.5)
+    # Wait for initial scan, then ack events so indexed cursor updates
+    await asyncio.sleep(0.5)
+    while not q.empty():
+        ev = q.get_nowait()
+        cb = ev.get("_on_indexed")
+        if cb:
+            cb()
+    # Wait for at least one checkpoint cycle
+    await asyncio.sleep(2.0)
 
     task.cancel()
     try:
@@ -616,14 +643,28 @@ async def test_watchdog_events_update_handler_cursor(tmp_path: Path) -> None:
     q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
 
     task = asyncio.create_task(fs.start(q))
-    await asyncio.sleep(1.0)
+    # Wait for initial scan, ack events so indexed cursor is populated
+    await asyncio.sleep(0.5)
+    while not q.empty():
+        ev = q.get_nowait()
+        cb = ev.get("_on_indexed")
+        if cb:
+            cb()
 
     # Create a file while watching
     new_file = watched / "new_note.md"
     new_file.write_text("added during watch")
 
-    # Wait for watchdog to detect + checkpoint to fire
-    await asyncio.sleep(2.5)
+    # Wait for watchdog to detect the new file, then ack it
+    await asyncio.sleep(1.5)
+    while not q.empty():
+        ev = q.get_nowait()
+        cb = ev.get("_on_indexed")
+        if cb:
+            cb()
+
+    # Wait for checkpoint to fire
+    await asyncio.sleep(1.5)
 
     task.cancel()
     try:
@@ -650,7 +691,13 @@ async def test_graceful_shutdown_saves_cursor(tmp_path: Path) -> None:
     q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
 
     task = asyncio.create_task(fs.start(q))
-    await asyncio.sleep(1.5)
+    # Wait for scan, then ack events so indexed cursor is populated
+    await asyncio.sleep(0.5)
+    while not q.empty():
+        ev = q.get_nowait()
+        cb = ev.get("_on_indexed")
+        if cb:
+            cb()
 
     task.cancel()
     try:

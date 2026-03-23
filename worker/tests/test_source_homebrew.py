@@ -51,12 +51,16 @@ SAMPLE_BREW_JSON = {
 
 
 async def _collect_events(
-    queue: asyncio.Queue[dict[str, Any]], timeout: float = 2.0
+    queue: asyncio.Queue[dict[str, Any]], timeout: float = 2.0, ack: bool = True
 ) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
     try:
         while True:
             ev = await asyncio.wait_for(queue.get(), timeout=timeout)
+            if ack:
+                cb = ev.get("_on_indexed")
+                if cb:
+                    cb()
             events.append(ev)
     except (asyncio.TimeoutError, TimeoutError):
         pass

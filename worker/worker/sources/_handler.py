@@ -168,8 +168,26 @@ class BaseHandler(FileSystemEventHandler):
         self._dedup_set: set[tuple[str, str]] = set()
         self._dedup_lock = threading.Lock()
         self._dedup_deadline: float = 0.0
+        # Indexed-cursor callback factory set by the owning source.
+        # Called from _dispatch to create _on_indexed callbacks for
+        # watchdog events so cursor persistence defers until the
+        # pipeline has actually processed the item.
+        self._indexed_factory: Any | None = None
 
     # -- Dedup window -------------------------------------------------------
+
+    def set_indexed_factory(
+        self,
+        factory: Any,
+    ) -> None:
+        """Register a callback factory for _on_indexed.
+
+        *factory* receives an IngestEvent dict and returns a no-arg
+        callable (or ``None``).  The returned callable is stored as
+        ``event["_on_indexed"]`` and invoked by the consumer after the
+        pipeline successfully processes the event.
+        """
+        self._indexed_factory = factory
 
     def set_dedup_window(
         self,
@@ -393,6 +411,13 @@ class BaseHandler(FileSystemEventHandler):
                         return
 
             self._update_cursor(ingest)
+
+            # Attach _on_indexed callback so cursor is persisted
+            # only after the pipeline has actually processed the item.
+            if self._indexed_factory is not None:
+                cb = self._indexed_factory(ingest)
+                if cb is not None:
+                    ingest["_on_indexed"] = cb
 
             SOURCE_WATCHER_EVENTS.labels(
                 source_type=self._source_type,
