@@ -316,7 +316,13 @@ class GoogleCalendarSource(PythonSource):
 
         new_sync_token: str | None = None
         total_events = 0
+        total_recurring_skipped = 0
         page_token: str | None = None
+        # During backfill, track recurring series we've already emitted a
+        # full (text-bearing) event for.  Subsequent instances of the same
+        # series get their CalendarEvent node + GraphHints written but
+        # skip the expensive chunk → embed → extract pipeline.
+        seen_recurring: set[str] = set()
 
         try:
             while True:
@@ -333,6 +339,19 @@ class GoogleCalendarSource(PythonSource):
                     if ingest is not None:
                         if is_backfill:
                             ingest["initial_scan"] = True
+                            # Dedup recurring instances: keep full text
+                            # only for the first occurrence of each series.
+                            rid = event.get("recurringEventId", "")
+                            if rid:
+                                if rid in seen_recurring:
+                                    # Strip text so pipeline writes the
+                                    # CalendarEvent node (with its own
+                                    # start/end times) and GraphHints
+                                    # but skips embed + extract.
+                                    ingest["text"] = ""
+                                    total_recurring_skipped += 1
+                                else:
+                                    seen_recurring.add(rid)
                         await queue.put(ingest)
                         total_events += 1
                         SOURCE_WATCHER_EVENTS.labels(
@@ -359,8 +378,19 @@ class GoogleCalendarSource(PythonSource):
         if total_events > 0:
             if is_backfill:
                 initial_sync_add_items(total_events)
-            logger.info(
-                "Calendar %s: processed %d event(s)", calendar_id, total_events
-            )
+            if total_recurring_skipped:
+                logger.info(
+                    "Calendar %s: queued %d event(s) "
+                    "(%d recurring instances will skip embed/extract)",
+                    calendar_id,
+                    total_events,
+                    total_recurring_skipped,
+                )
+            else:
+                logger.info(
+                    "Calendar %s: queued %d event(s)",
+                    calendar_id,
+                    total_events,
+                )
 
         return new_sync_token

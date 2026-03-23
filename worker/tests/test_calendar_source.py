@@ -317,3 +317,80 @@ class TestGoogleCalendarSource:
 
         assert token == "sync-final"
         assert queue.qsize() == 2
+
+    @pytest.mark.asyncio
+    async def test_recurring_events_deduped_during_backfill(self) -> None:
+        """Recurring instances should have text stripped after the first."""
+        source = GoogleCalendarSource()
+        source.configure({})
+        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+
+        # Three instances of the same recurring series
+        items = []
+        for i in range(3):
+            evt = _calendar_event(
+                event_id=f"base_20260{i+1}01T090000Z",
+                summary="Daily Standup",
+            )
+            evt["recurringEventId"] = "recurring-base-id"
+            items.append(evt)
+        # One non-recurring event
+        items.append(_calendar_event(event_id="one-off", summary="Lunch"))
+
+        result_page = {"items": items, "nextSyncToken": "sync-x"}
+        mock_events = MagicMock()
+        mock_list = MagicMock()
+        mock_list.execute.return_value = result_page
+        mock_events.list.return_value = mock_list
+        mock_service = MagicMock()
+        mock_service.events.return_value = mock_events
+
+        await source._poll_calendar(mock_service, queue, "primary", None)
+
+        assert queue.qsize() == 4
+        events = [queue.get_nowait() for _ in range(4)]
+
+        # First recurring instance keeps its text
+        assert events[0]["text"] != ""
+        assert "Daily Standup" in events[0]["text"]
+
+        # Subsequent recurring instances have text stripped
+        assert events[1]["text"] == ""
+        assert events[2]["text"] == ""
+
+        # Non-recurring event keeps its text
+        assert events[3]["text"] != ""
+        assert "Lunch" in events[3]["text"]
+
+    @pytest.mark.asyncio
+    async def test_recurring_dedup_not_applied_during_incremental(self) -> None:
+        """Incremental sync should NOT dedup recurring events."""
+        source = GoogleCalendarSource()
+        source.configure({})
+        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+
+        items = []
+        for i in range(2):
+            evt = _calendar_event(
+                event_id=f"base_20260{i+1}01T090000Z",
+                summary="Daily Standup",
+            )
+            evt["recurringEventId"] = "recurring-base-id"
+            items.append(evt)
+
+        result_page = {"items": items, "nextSyncToken": "sync-inc"}
+        mock_events = MagicMock()
+        mock_list = MagicMock()
+        mock_list.execute.return_value = result_page
+        mock_events.list.return_value = mock_list
+        mock_service = MagicMock()
+        mock_service.events.return_value = mock_events
+
+        # Pass a sync token → incremental mode
+        await source._poll_calendar(mock_service, queue, "primary", "old-token")
+
+        assert queue.qsize() == 2
+        # Both should retain text in incremental mode
+        for _ in range(2):
+            event = queue.get_nowait()
+            assert event["text"] != ""
