@@ -164,17 +164,26 @@ def _find_nearby_location(
     lon: float,
     neo4j_session_factory: Callable[[], Any],
 ) -> GeocodedLocation | None:
-    """Query Neo4j for a Location node within ~1km of the given coordinates."""
+    """Query Neo4j for a Location node matching rounded coordinates.
+
+    First tries an exact match on rounded coords (matches MERGE key),
+    then falls back to proximity search within the cache radius.
+    """
+    rounded_lat = _round_coord(lat)
+    rounded_lon = _round_coord(lon)
     with neo4j_session_factory() as session:
         result = session.run(
             """
             MATCH (loc:Location)
-            WHERE abs(loc.latitude - $lat) < $radius
-              AND abs(loc.longitude - $lon) < $radius
+            WHERE (loc.latitude = $rounded_lat AND loc.longitude = $rounded_lon)
+               OR (abs(loc.latitude - $lat) < $radius
+                   AND abs(loc.longitude - $lon) < $radius)
             RETURN loc.city AS city, loc.state AS state,
                    loc.country AS country, loc.display_name AS display_name
             LIMIT 1
             """,
+            rounded_lat=rounded_lat,
+            rounded_lon=rounded_lon,
             lat=lat,
             lon=lon,
             radius=_CACHE_RADIUS_DEG,
@@ -191,27 +200,39 @@ def _find_nearby_location(
         )
 
 
+def _round_coord(val: float, precision: int = 3) -> float:
+    """Round a coordinate to *precision* decimal places (~111m at 3dp)."""
+    return round(val, precision)
+
+
 def _create_location_node(
     lat: float,
     lon: float,
     location: GeocodedLocation,
     neo4j_session_factory: Callable[[], Any],
 ) -> None:
-    """Create a Location node in Neo4j for cache."""
+    """Create or merge a Location node in Neo4j for cache.
+
+    Uses MERGE on rounded coordinates to prevent duplicate Location
+    nodes from GPS noise or concurrent threads geocoding nearby points.
+    """
+    rounded_lat = _round_coord(lat)
+    rounded_lon = _round_coord(lon)
     with neo4j_session_factory() as session:
         session.run(
             """
-            CREATE (loc:Location {
-                latitude: $lat,
-                longitude: $lon,
-                city: $city,
-                state: $state,
-                country: $country,
-                display_name: $display_name
+            MERGE (loc:Location {
+                latitude: $rounded_lat,
+                longitude: $rounded_lon
             })
+            ON CREATE SET
+                loc.city = $city,
+                loc.state = $state,
+                loc.country = $country,
+                loc.display_name = $display_name
             """,
-            lat=lat,
-            lon=lon,
+            rounded_lat=rounded_lat,
+            rounded_lon=rounded_lon,
             city=location.city,
             state=location.state,
             country=location.country,
@@ -225,23 +246,23 @@ def link_image_to_location(
     lon: float,
     neo4j_session_factory: Callable[[], Any],
 ) -> None:
-    """Link an Image node to the nearest Location node via TAKEN_AT.
+    """Link an Image/File node to the nearest Location node via TAKEN_AT.
 
-    Finds the nearest Location node within ~1km and creates the relationship.
+    Uses rounded coordinates to match the MERGE'd Location node, then
+    falls back to proximity search if no exact match.
     """
+    rounded_lat = _round_coord(lat)
+    rounded_lon = _round_coord(lon)
     with neo4j_session_factory() as session:
         session.run(
             """
-            MATCH (img:Image {source_id: $source_id})
+            MATCH (img {source_id: $source_id})
+            WHERE img:Image OR img:File
             MATCH (loc:Location)
-            WHERE abs(loc.latitude - $lat) < $radius
-              AND abs(loc.longitude - $lon) < $radius
-            WITH img, loc
-            LIMIT 1
+            WHERE loc.latitude = $rounded_lat AND loc.longitude = $rounded_lon
             MERGE (img)-[:TAKEN_AT]->(loc)
             """,
             source_id=source_id,
-            lat=lat,
-            lon=lon,
-            radius=_CACHE_RADIUS_DEG,
+            rounded_lat=rounded_lat,
+            rounded_lon=rounded_lon,
         )

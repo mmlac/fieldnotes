@@ -393,15 +393,27 @@ class GoogleCalendarSource(PythonSource):
                         calendar_id,
                     )
 
-            for ingest in pending_events:
-                queue.enqueue(ingest)
-            # Save sync token after enqueuing.
+            cursor_val = json.dumps(sync_tokens) if new_sync_token else None
+            for i, ingest in enumerate(pending_events):
+                is_last = i == len(pending_events) - 1
+                queue.enqueue(
+                    ingest,
+                    cursor_key="calendar" if is_last and cursor_val else None,
+                    cursor_value=cursor_val if is_last else None,
+                )
+            # Also persist to legacy file.
             _save_sync_token()
         else:
             # Incremental poll.
             if pending_events:
-                for ingest in pending_events:
-                    queue.enqueue(ingest)
+                cursor_val = json.dumps(sync_tokens) if new_sync_token else None
+                for i, ingest in enumerate(pending_events):
+                    is_last = i == len(pending_events) - 1
+                    queue.enqueue(
+                        ingest,
+                        cursor_key="calendar" if is_last and cursor_val else None,
+                        cursor_value=cursor_val if is_last else None,
+                    )
             # Save sync token (whether or not there were events).
             if new_sync_token:
                 sync_tokens[calendar_id] = new_sync_token

@@ -76,7 +76,7 @@ def extract_exif_gps(image_bytes: bytes) -> ExifGpsResult:
     if not date_original:
         date_original = exif_data.get(306)  # DateTime (root IFD fallback)
     if date_original and isinstance(date_original, str):
-        result.exif_date = date_original
+        result.exif_date = _normalize_exif_date(date_original)
 
     # Extract GPS info
     gps_ifd = exif_data.get_ifd(0x8825)  # GPSInfo IFD
@@ -91,6 +91,37 @@ def extract_exif_gps(image_bytes: bytes) -> ExifGpsResult:
         )
 
     return result
+
+
+def _normalize_exif_date(raw: str) -> str | None:
+    """Normalize EXIF date strings to ISO 8601 format.
+
+    Cameras use varying formats: ``"2024:06:15 14:30:00"`` (standard),
+    ``"2024-06-15 14:30:00"`` (some Sony), ``"0000:00:00 00:00:00"``
+    (corrupted). Returns ``"2024-06-15T14:30:00"`` or None if invalid.
+    """
+    import re
+
+    raw = raw.strip()
+    if not raw or raw.startswith("0000"):
+        return None
+
+    # Standard EXIF: "YYYY:MM:DD HH:MM:SS"
+    m = re.match(r"(\d{4})[:\-/](\d{2})[:\-/](\d{2})\s+(\d{2}:\d{2}:\d{2})", raw)
+    if m:
+        return f"{m.group(1)}-{m.group(2)}-{m.group(3)}T{m.group(4)}"
+
+    # Date only: "YYYY:MM:DD" or "YYYY-MM-DD"
+    m = re.match(r"(\d{4})[:\-/](\d{2})[:\-/](\d{2})$", raw)
+    if m:
+        return f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
+
+    # Already ISO-ish — pass through if it looks valid.
+    if re.match(r"\d{4}-\d{2}-\d{2}T", raw):
+        return raw
+
+    logger.debug("Unrecognized EXIF date format: %r", raw)
+    return None
 
 
 def _parse_gps_coordinate(
