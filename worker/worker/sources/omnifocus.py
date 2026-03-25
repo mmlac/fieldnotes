@@ -23,7 +23,10 @@ import subprocess
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from worker.queue import PersistentQueue
 
 from worker.metrics import (
     SOURCE_WATCHER_EVENTS,
@@ -33,13 +36,12 @@ from worker.metrics import (
 )
 
 from .base import PythonSource
-from .cursor import _ProgressTracker, save_json_atomic
+from .cursor import save_json_atomic
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_POLL_INTERVAL = 300  # 5 minutes
 DEFAULT_STATE_PATH = Path.home() / ".fieldnotes" / "state" / "omnifocus.json"
-_PROCESSED_SIDECAR = Path.home() / ".fieldnotes" / "state" / "omnifocus_processed.json"
 
 _SOURCE_TYPE = "omnifocus"
 
@@ -234,7 +236,7 @@ class OmniFocusSource(PythonSource):
         if state:
             self._state_path = Path(state).expanduser().resolve()
 
-    async def start(self, queue: asyncio.Queue[dict[str, Any]]) -> None:
+    async def start(self, queue: PersistentQueue) -> None:
         if not self._enabled:
             logger.info("OmniFocus source skipped (disabled)")
             initial_sync_source_done()
@@ -338,18 +340,7 @@ class OmniFocusSource(PythonSource):
             _save_state(self._state_path, current)
             return
 
-        # Defer disk save until all events processed through the pipeline
-        state_path = self._state_path
-
-        def _save() -> None:
-            _save_state(state_path, current)
-
-        tracker = _ProgressTracker(
-            total=len(events),
-            sidecar_path=_PROCESSED_SIDECAR,
-            on_all_done=_save,
-        )
         for ev in events:
-            sid = ev["source_id"]
-            ev["_on_indexed"] = lambda s=sid: tracker.ack(s)
-            await queue.put(ev)
+            queue.enqueue(ev)
+        # Save state after all events enqueued.
+        _save_state(self._state_path, current)

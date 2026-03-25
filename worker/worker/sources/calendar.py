@@ -22,7 +22,10 @@ import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from worker.queue import PersistentQueue
 
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
@@ -38,15 +41,12 @@ from worker.metrics import (
 
 from .base import PythonSource
 from .calendar_auth import get_credentials
-from .cursor import save_json_atomic, load_processed_ids, _ProgressTracker
+from .cursor import save_json_atomic
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_CURSOR_PATH = (
     Path.home() / ".fieldnotes" / "data" / "calendar_cursor.json"
-)
-_PROCESSED_SIDECAR = (
-    Path.home() / ".fieldnotes" / "data" / "calendar_processed.json"
 )
 DEFAULT_POLL_INTERVAL = 300  # 5 minutes
 DEFAULT_MAX_INITIAL_DAYS = 90  # backfill ~3 months
@@ -212,7 +212,7 @@ class GoogleCalendarSource(PythonSource):
         if "token_path" in cfg:
             self._token_path = Path(cfg["token_path"]).expanduser().resolve()
 
-    async def start(self, queue: asyncio.Queue[dict[str, Any]]) -> None:
+    async def start(self, queue: PersistentQueue) -> None:
         secrets_path = Path(self._client_secrets_path).expanduser().resolve()
         if not secrets_path.exists():
             logger.error(
@@ -324,11 +324,6 @@ class GoogleCalendarSource(PythonSource):
         # series get their CalendarEvent node + GraphHints written but
         # skip the expensive chunk → embed → extract pipeline.
         seen_recurring: set[str] = set()
-        # Load any previously-processed IDs from an interrupted backfill
-        # so we can skip them.
-        already_processed = load_processed_ids(_PROCESSED_SIDECAR)
-        # Collect events in memory first so we know the total count
-        # before building the _ProgressTracker.
         pending_events: list[dict[str, Any]] = []
 
         try:
@@ -344,9 +339,8 @@ class GoogleCalendarSource(PythonSource):
                 for event in events:
                     ingest = _build_ingest_event(event, calendar_id)
                     if ingest is not None:
-                        # Skip events already processed in a previous
-                        # interrupted backfill.
-                        if is_backfill and ingest["source_id"] in already_processed:
+                        # Skip events already in the queue.
+                        if is_backfill and queue.is_enqueued(ingest["source_id"]):
                             total_skipped_processed += 1
                             continue
                         if is_backfill:
@@ -399,49 +393,17 @@ class GoogleCalendarSource(PythonSource):
                         calendar_id,
                     )
 
-            tracker = _ProgressTracker(
-                total=len(pending_events),
-                sidecar_path=_PROCESSED_SIDECAR,
-                on_all_done=_save_sync_token,
-            )
             for ingest in pending_events:
-                sid = ingest["source_id"]
-                ingest["_on_indexed"] = lambda s=sid: tracker.ack(s)
-                await queue.put(ingest)
-        elif is_backfill and not pending_events and already_processed:
-            # Crash recovery: all events were already processed (sidecar
-            # survived) but the cursor was never saved.  Save it now and
-            # clean up the sidecar to break out of the re-backfill loop.
-            if new_sync_token:
-                sync_tokens[calendar_id] = new_sync_token
-                save_json_atomic(self._cursor_path, sync_tokens)
-                logger.info(
-                    "Calendar %s: sync token saved (crash-recovery, "
-                    "all %d events already processed)",
-                    calendar_id,
-                    len(already_processed),
-                )
-            with contextlib.suppress(OSError):
-                _PROCESSED_SIDECAR.unlink()
+                queue.enqueue(ingest)
+            # Save sync token after enqueuing.
+            _save_sync_token()
         else:
-            # Incremental poll — attach _on_indexed to defer cursor save.
+            # Incremental poll.
             if pending_events:
-                def _save_inc_token() -> None:
-                    if new_sync_token:
-                        sync_tokens[calendar_id] = new_sync_token
-                        save_json_atomic(self._cursor_path, sync_tokens)
-
-                tracker = _ProgressTracker(
-                    total=len(pending_events),
-                    sidecar_path=_PROCESSED_SIDECAR,
-                    on_all_done=_save_inc_token,
-                )
                 for ingest in pending_events:
-                    sid = ingest["source_id"]
-                    ingest["_on_indexed"] = lambda s=sid: tracker.ack(s)
-                    await queue.put(ingest)
-            elif new_sync_token:
-                # No events but token refreshed — save immediately.
+                    queue.enqueue(ingest)
+            # Save sync token (whether or not there were events).
+            if new_sync_token:
                 sync_tokens[calendar_id] = new_sync_token
                 save_json_atomic(self._cursor_path, sync_tokens)
 

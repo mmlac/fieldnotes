@@ -28,60 +28,6 @@ class FileEntry(NamedTuple):
     size: int
 
 
-class _ProgressTracker:
-    """Track per-item pipeline acknowledgements with progressive saves.
-
-    Maintains a sidecar JSON file listing source IDs that have been
-    successfully processed.  Each :meth:`ack` writes the updated set to
-    disk so progress survives crashes.  When all expected items have
-    been acknowledged, *on_all_done* fires (e.g. to save a sync token)
-    and the sidecar file is removed.
-
-    **Resume support:** callers use :func:`load_processed_ids` at
-    startup to discover which source IDs were already processed in a
-    previous (interrupted) run, and skip re-queueing them.
-
-    Thread-safe.
-    """
-
-    def __init__(
-        self, total: int, sidecar_path: Path, on_all_done: Any
-    ) -> None:
-        import threading
-
-        self._total = total
-        self._sidecar = sidecar_path
-        self._ids: list[str] = []
-        self._lock = threading.Lock()
-        self._on_all_done = on_all_done
-
-    def ack(self, source_id: str) -> None:
-        with self._lock:
-            self._ids.append(source_id)
-            save_json_atomic(self._sidecar, self._ids)
-            if len(self._ids) >= self._total:
-                self._on_all_done()
-                # Clean up sidecar — cursor is now authoritative
-                import contextlib as _ctx
-                with _ctx.suppress(OSError):
-                    self._sidecar.unlink()
-
-
-def load_processed_ids(path: Path) -> set[str]:
-    """Load the set of already-processed source IDs from a sidecar file.
-
-    Returns an empty set if the file is missing or corrupt.
-    """
-    if not path.exists():
-        return set()
-    try:
-        data = json.loads(path.read_text())
-        if isinstance(data, list):
-            return set(data)
-    except (json.JSONDecodeError, OSError):
-        pass
-    return set()
-
 
 def serialize_file_cursor(cursor: dict[str, FileEntry]) -> str:
     """Serialize a file cursor to a JSON string for PersistentQueue storage."""

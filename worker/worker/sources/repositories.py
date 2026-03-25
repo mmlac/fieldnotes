@@ -32,7 +32,10 @@ import uuid
 from datetime import datetime, timezone
 from fnmatch import fnmatch
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from worker.queue import PersistentQueue
 
 import git
 
@@ -47,7 +50,7 @@ from worker.log_sanitizer import redact_home_path
 
 from ._handler import guess_mime, streaming_sha256
 from .base import PythonSource
-from .cursor import save_json_atomic, _ProgressTracker
+from .cursor import save_json_atomic
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +60,6 @@ DEFAULT_MAX_COMMITS = 200
 DEFAULT_MAX_TREE_ITEMS = 50_000  # cap tree traversal to prevent OOM on huge repos
 GIT_OPERATION_TIMEOUT = 120  # seconds — max wait for a single git operation
 DEFAULT_CURSOR_PATH = Path.home() / ".fieldnotes" / "data" / "repo_cursor.json"
-_SIDECAR_DIR = Path.home() / ".fieldnotes" / "data"
 
 DEFAULT_INCLUDE_PATTERNS: list[str] = [
     "README*",
@@ -318,7 +320,7 @@ class RepositorySource(PythonSource):
         self._max_file_size = int(cfg.get("max_file_size", DEFAULT_MAX_FILE_SIZE))
         self._max_commits = int(cfg.get("max_commits", DEFAULT_MAX_COMMITS))
 
-    async def start(self, queue: asyncio.Queue[dict[str, Any]]) -> None:
+    async def start(self, queue: PersistentQueue) -> None:
         cursors = _load_cursor(self._cursor_path)
 
         # Initial scan if we have no cursors at all
@@ -403,28 +405,13 @@ class RepositorySource(PythonSource):
 
         # Update in-memory cursor immediately so the next poll cycle sees
         # head_sha and skips this repo while events are still draining
-        # through the pipeline (same pattern as OmniFocus source).
+        # through the pipeline.
         cursors[repo_key] = head_sha
 
-        # Defer the disk write until all events have been acknowledged.
-        cursor_path = self._cursor_path
-        # Use a per-repo sidecar to avoid collisions when multiple
-        # repos are scanned in the same poll cycle.
-        repo_hash = hashlib.sha256(repo_key.encode()).hexdigest()[:12]
-        sidecar_path = _SIDECAR_DIR / f"repo_{repo_hash}_processed.json"
-
-        def _save_repo_cursor() -> None:
-            _save_cursor(cursor_path, cursors)
-
-        tracker = _ProgressTracker(
-            total=len(events),
-            sidecar_path=sidecar_path,
-            on_all_done=_save_repo_cursor,
-        )
         for ev in events:
-            sid = ev["source_id"]
-            ev["_on_indexed"] = lambda s=sid: tracker.ack(s)
-            await queue.put(ev)
+            queue.enqueue(ev)
+        # Save cursor after all events enqueued.
+        _save_cursor(self._cursor_path, cursors)
 
     async def _collect_all_files(
         self,
