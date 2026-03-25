@@ -36,7 +36,7 @@ SYSTEM_PROMPT = """\
 You are an entity and relationship extraction system. Given a text chunk, \
 extract all named entities and relationship triples.
 
-Entities: people, technologies, projects, organizations, and concepts. \
+Entities: people, technologies, projects, organizations, concepts, and locations. \
 For each entity provide a name, type, and confidence score (0.0-1.0).
 
 Triples: subject-predicate-object relationships between entities. \
