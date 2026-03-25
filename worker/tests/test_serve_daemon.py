@@ -95,7 +95,7 @@ class TestRunDaemon:
         fake_source.name.return_value = "files"
 
         async def fake_start(queue):
-            await queue.put(
+            queue.enqueue(
                 {
                     "source_type": "file",
                     "source_id": "test.md",
@@ -114,7 +114,7 @@ class TestRunDaemon:
         pipeline_inst = mock_pipeline.return_value
 
         task = asyncio.create_task(_run_daemon(_cfg()))
-        await asyncio.sleep(0.15)
+        await asyncio.sleep(1.0)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
@@ -207,14 +207,14 @@ class TestRunDaemon:
         fake_source.name.return_value = "files"
 
         async def fake_start(queue):
-            await queue.put(
+            queue.enqueue(
                 {
                     "source_type": "file",
                     "source_id": "bad.md",
                     "operation": "created",
                 }
             )
-            await queue.put(
+            queue.enqueue(
                 {
                     "source_type": "file",
                     "source_id": "good.md",
@@ -226,20 +226,28 @@ class TestRunDaemon:
         fake_source.start = fake_start
         mock_build.return_value = [fake_source]
 
+        good_doc = MagicMock()
         parser = MagicMock()
-        parser.parse.side_effect = [ValueError("bad"), [MagicMock()]]
+
+        def _parse(event):
+            if event.get("source_id") == "bad.md":
+                raise ValueError("bad")
+            return [good_doc]
+
+        parser.parse.side_effect = _parse
         mock_parser.return_value = parser
 
         pipeline_inst = mock_pipeline.return_value
 
         task = asyncio.create_task(_run_daemon(_cfg()))
-        await asyncio.sleep(0.3)
+        await asyncio.sleep(1.0)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
 
-        assert parser.parse.call_count == 2
-        pipeline_inst.process.assert_called_once()
+        # "bad.md" may be retried by the queue, but "good.md" must succeed
+        assert parser.parse.call_count >= 2
+        pipeline_inst.process.assert_called_once_with(good_doc)
 
     @pytest.mark.asyncio
     @patch(_P_PARSER)

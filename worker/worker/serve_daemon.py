@@ -173,9 +173,26 @@ async def _run_daemon(cfg: Config) -> None:
                 for doc in parsed_docs:
                     if stop_event.is_set():
                         break
-                    await loop.run_in_executor(None, pipeline.process, doc)
+                    process_task = loop.run_in_executor(
+                        None, pipeline.process, doc
+                    )
+                    stop_task = asyncio.ensure_future(stop_event.wait())
+                    done, _pending = await asyncio.wait(
+                        [process_task, stop_task],
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    if stop_task in done:
+                        process_task.cancel()
+                        break
+                    stop_task.cancel()
+                    process_task.result()  # re-raise if failed
                     QUEUE_DEPTH.set(queue.depth())
-                queue.complete(queue_id)
+                else:
+                    queue.complete(queue_id)
+                if stop_event.is_set():
+                    # Interrupted mid-document — item stays 'processing',
+                    # recover() will reclaim it on next startup.
+                    break
             except Exception:
                 logger.exception(
                     "Failed to process event %s %s (%s)",
