@@ -115,7 +115,7 @@ class OllamaProvider(ModelProvider):
     """Model provider that talks to a local Ollama instance."""
 
     _base_url: str = "http://localhost:11434"
-    _completion_timeout: float = 120.0
+    _completion_timeout: float = 300.0
     _embed_timeout: float = 30.0
 
     @property
