@@ -27,7 +27,7 @@ FALLBACK_ROLE = "extract_fallback"
 LLM_TIMEOUT = 120.0  # seconds
 
 ALLOWED_ENTITY_TYPES = frozenset(
-    {"Person", "Technology", "Project", "Organization", "Concept"}
+    {"Person", "Technology", "Project", "Organization", "Concept", "Location"}
 )
 DEFAULT_CONFIDENCE = 0.75
 MAX_ENTITY_NAME_LEN = 512

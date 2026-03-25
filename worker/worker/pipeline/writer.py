@@ -453,6 +453,10 @@ class Writer:
                 "CREATE FULLTEXT INDEX entity_name_fulltext IF NOT EXISTS "
                 "FOR (e:Entity) ON EACH [e.name]"
             ),
+            # Location indexes for geo queries
+            "CREATE INDEX location_city IF NOT EXISTS FOR (n:Location) ON (n.city)",
+            "CREATE INDEX location_country IF NOT EXISTS FOR (n:Location) ON (n.country)",
+            "CREATE INDEX location_coords IF NOT EXISTS FOR (n:Location) ON (n.latitude, n.longitude)",
         ]
         with self._neo4j_driver.session() as session:
             for stmt in ddl_statements:
