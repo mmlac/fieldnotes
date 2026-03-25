@@ -401,7 +401,12 @@ class RepositorySource(PythonSource):
             _save_cursor(self._cursor_path, cursors)
             return
 
-        # Defer HEAD cursor save until all events are processed.
+        # Update in-memory cursor immediately so the next poll cycle sees
+        # head_sha and skips this repo while events are still draining
+        # through the pipeline (same pattern as OmniFocus source).
+        cursors[repo_key] = head_sha
+
+        # Defer the disk write until all events have been acknowledged.
         cursor_path = self._cursor_path
         # Use a per-repo sidecar to avoid collisions when multiple
         # repos are scanned in the same poll cycle.
@@ -409,7 +414,6 @@ class RepositorySource(PythonSource):
         sidecar_path = _SIDECAR_DIR / f"repo_{repo_hash}_processed.json"
 
         def _save_repo_cursor() -> None:
-            cursors[repo_key] = head_sha
             _save_cursor(cursor_path, cursors)
 
         tracker = _ProgressTracker(

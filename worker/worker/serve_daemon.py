@@ -146,6 +146,7 @@ async def _run_daemon(cfg: Config) -> None:
     try:
         _sync_processed = 0
         _sync_times: collections.deque[float] = collections.deque(maxlen=50)
+        _last_depth_log = 0.0
 
         while not stop_event.is_set():
             QUEUE_DEPTH.set(queue.qsize())
@@ -168,6 +169,7 @@ async def _run_daemon(cfg: Config) -> None:
                     if stop_event.is_set():
                         break
                     await loop.run_in_executor(None, pipeline.process, doc)
+                    QUEUE_DEPTH.set(queue.qsize())
                 else:
                     # All docs processed successfully — acknowledge to source
                     on_indexed = event.get("_on_indexed")
@@ -202,6 +204,12 @@ async def _run_daemon(cfg: Config) -> None:
                     INITIAL_SYNC_ETA_SECONDS.set(-1)
                 else:
                     INITIAL_SYNC_ETA_SECONDS.set(0)
+
+            # Periodic queue depth log (every 60s)
+            now = time.monotonic()
+            if now - _last_depth_log >= 60.0:
+                _last_depth_log = now
+                logger.info("Queue depth: %d", queue.qsize())
     finally:
         _DRAIN_TIMEOUT = 10  # seconds to wait for in-progress work
 
