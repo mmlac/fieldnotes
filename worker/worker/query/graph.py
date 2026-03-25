@@ -17,11 +17,11 @@ import unicodedata
 from dataclasses import dataclass, field
 from typing import Any
 
-from langchain_community.chains.graph_qa.cypher import (
+from langchain_neo4j import Neo4jGraph
+from langchain_neo4j.chains.graph_qa.cypher import (
     GraphCypherQAChain,
     extract_cypher,
 )
-from langchain_community.graphs import Neo4jGraph
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.callbacks import CallbackManagerForLLMRun
 from langchain_core.messages import BaseMessage, AIMessage
