@@ -616,7 +616,12 @@ def run_ask(
     # One-shot mode.
     cfg = load_config(config_path)
     registry = ModelRegistry(cfg)
-    graph_querier = GraphQuerier(registry, cfg.neo4j)
+    try:
+        graph_querier = GraphQuerier(registry, cfg.neo4j)
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        raise
     vector_querier = VectorQuerier(registry, cfg.qdrant)
 
     # One-shot conversations are also persisted.
