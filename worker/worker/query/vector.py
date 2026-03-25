@@ -175,13 +175,14 @@ class VectorQuerier:
         query_filter: Filter | None,
     ) -> list[Any]:
         """Run Qdrant similarity search with retry on transient errors."""
-        return self._qdrant.search(
+        response = self._qdrant.query_points(
             collection_name=self._collection,
-            query_vector=query_vector,
+            query=query_vector,
             limit=top_k,
             query_filter=query_filter,
             with_payload=True,
         )
+        return response.points
 
     def __enter__(self) -> VectorQuerier:
         return self
