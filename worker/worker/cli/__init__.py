@@ -335,7 +335,9 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Only keep the N most recent backups, delete older ones",
     )
     backup_sub = backup_p.add_subparsers(dest="backup_command")
-    create_p = backup_sub.add_parser("create", help="Create a backup (default when no subcommand)")
+    create_p = backup_sub.add_parser(
+        "create", help="Create a backup (default when no subcommand)"
+    )
     create_p.add_argument(
         "--keep",
         type=int,
@@ -369,6 +371,49 @@ def _build_parser() -> argparse.ArgumentParser:
         "backup_name",
         help="Backup filename (from 'fieldnotes backup list') or full path",
     )
+
+    # ── queue ──────────────────────────────────────────────────────
+    queue_p = sub.add_parser("queue", help="Inspect and manage the ingestion queue")
+    queue_p.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="Machine-readable JSON output",
+    )
+    queue_sub = queue_p.add_subparsers(dest="queue_command")
+
+    top_p = queue_sub.add_parser("top", help="Show oldest N items (first in queue)")
+    top_p.add_argument(
+        "n", nargs="?", type=int, default=20, help="Number of items (default: 20)"
+    )
+    top_p.add_argument(
+        "--status", default=None, help="Filter by status: pending, processing, failed"
+    )
+    top_p.add_argument(
+        "--source", default=None, dest="source_type", help="Filter by source type"
+    )
+
+    tail_p = queue_sub.add_parser("tail", help="Show newest N items (last in queue)")
+    tail_p.add_argument(
+        "n", nargs="?", type=int, default=20, help="Number of items (default: 20)"
+    )
+    tail_p.add_argument(
+        "--status", default=None, help="Filter by status: pending, processing, failed"
+    )
+    tail_p.add_argument(
+        "--source", default=None, dest="source_type", help="Filter by source type"
+    )
+
+    queue_sub.add_parser("retry", help="Reset all failed items to pending")
+
+    purge_p = queue_sub.add_parser("purge", help="Delete items by status")
+    purge_p.add_argument(
+        "--status",
+        default="failed",
+        help="Status to purge (default: failed)",
+    )
+
+    queue_sub.add_parser("migrate", help="Import old cursor JSON files into queue DB")
 
     # ── topics ──────────────────────────────────────────────────────
     topics_p = sub.add_parser("topics", help="Browse and inspect topics")
@@ -672,6 +717,54 @@ def main(argv: list[str] | None = None) -> int:
                 json_output=args.json_output,
                 config_path=args.config,
             )
+        except Exception as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+
+    if args.command == "queue":
+        from worker.cli.queue import (
+            run_queue_list,
+            run_queue_migrate,
+            run_queue_purge,
+            run_queue_retry,
+            run_queue_summary,
+        )
+
+        try:
+            if args.queue_command == "top":
+                return run_queue_list(
+                    n=args.n,
+                    order="asc",
+                    status=args.status,
+                    source_type=args.source_type,
+                    config_path=args.config,
+                    json_output=args.json_output,
+                )
+            if args.queue_command == "tail":
+                return run_queue_list(
+                    n=args.n,
+                    order="desc",
+                    status=args.status,
+                    source_type=args.source_type,
+                    config_path=args.config,
+                    json_output=args.json_output,
+                )
+            if args.queue_command == "retry":
+                return run_queue_retry(config_path=args.config)
+            if args.queue_command == "purge":
+                return run_queue_purge(
+                    status=args.status,
+                    config_path=args.config,
+                )
+            if args.queue_command == "migrate":
+                return run_queue_migrate(config_path=args.config)
+            # No subcommand — show summary
+            return run_queue_summary(
+                config_path=args.config,
+                json_output=args.json_output,
+            )
+        except SystemExit:
+            return 1
         except Exception as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
