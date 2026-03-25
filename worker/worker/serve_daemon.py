@@ -37,8 +37,6 @@ logger = logging.getLogger(__name__)
 
 async def _run_daemon(cfg: Config) -> None:
     """Run the ingest pipeline as a background service."""
-    from typing import Any
-
     from worker.clustering.scheduler import clustering_loop
     from worker.metrics import (
         INITIAL_SYNC_ETA_SECONDS,
@@ -87,8 +85,14 @@ async def _run_daemon(cfg: Config) -> None:
         )
         background_tasks.append(cluster_task)
 
-    # Source event queue
-    queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=4096)
+    # Persistent event queue (SQLite-backed)
+    from worker.queue import PersistentQueue
+
+    data_dir = Path.home() / ".fieldnotes" / "data"
+    queue = PersistentQueue(db_path=data_dir / "queue.db")
+    recovered = queue.recover()
+    if recovered:
+        logger.info("Recovered %d interrupted queue item(s) from previous run", recovered)
 
     source_tasks: list[asyncio.Task[None]] = []
     for source in sources:
@@ -142,20 +146,21 @@ async def _run_daemon(cfg: Config) -> None:
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, _signal_handler)
 
-    # Main ingest loop
+    # Main ingest loop — claim/complete/fail against PersistentQueue
     try:
         _sync_processed = 0
         _sync_times: collections.deque[float] = collections.deque(maxlen=50)
         _last_depth_log = 0.0
 
         while not stop_event.is_set():
-            QUEUE_DEPTH.set(queue.qsize())
-            try:
-                event = await asyncio.wait_for(queue.get(), timeout=1.0)
-            except asyncio.TimeoutError:
+            QUEUE_DEPTH.set(queue.depth())
+            event = await loop.run_in_executor(None, queue.claim)
+            if event is None:
+                await asyncio.sleep(0.5)
                 continue
 
-            QUEUE_DEPTH.set(queue.qsize())
+            QUEUE_DEPTH.set(queue.depth())
+            queue_id = event.pop("_queue_id")
             source_type = event.get("source_type", "")
             source_id = event.get("source_id", "")
             operation = event.get("operation", "")
@@ -169,12 +174,8 @@ async def _run_daemon(cfg: Config) -> None:
                     if stop_event.is_set():
                         break
                     await loop.run_in_executor(None, pipeline.process, doc)
-                    QUEUE_DEPTH.set(queue.qsize())
-                else:
-                    # All docs processed successfully — acknowledge to source
-                    on_indexed = event.get("_on_indexed")
-                    if on_indexed:
-                        on_indexed()
+                    QUEUE_DEPTH.set(queue.depth())
+                queue.complete(queue_id)
             except Exception:
                 logger.exception(
                     "Failed to process event %s %s (%s)",
@@ -182,13 +183,7 @@ async def _run_daemon(cfg: Config) -> None:
                     source_id,
                     operation,
                 )
-                # Still acknowledge the event so one poisoned item does
-                # not block cursor progress for the entire batch.  The
-                # event has been consumed from the queue and will not be
-                # retried, so we must advance the tracker regardless.
-                on_indexed = event.get("_on_indexed")
-                if on_indexed:
-                    on_indexed()
+                queue.fail(queue_id, str(sys.exc_info()[1]))
 
             if is_initial:
                 elapsed = time.monotonic() - t0
@@ -209,7 +204,7 @@ async def _run_daemon(cfg: Config) -> None:
             now = time.monotonic()
             if now - _last_depth_log >= 60.0:
                 _last_depth_log = now
-                logger.info("Queue depth: %d", queue.qsize())
+                logger.info("Queue depth: %d", queue.depth())
     finally:
         _DRAIN_TIMEOUT = 10  # seconds to wait for in-progress work
 
@@ -231,6 +226,7 @@ async def _run_daemon(cfg: Config) -> None:
                 "Tasks did not finish within %ds — forcing shutdown", _DRAIN_TIMEOUT
             )
         pipeline.close()
+        queue.close()
         logger.info("Daemon shutdown complete")
 
 

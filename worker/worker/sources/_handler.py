@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import fnmatch
 import hashlib
+import json
 import logging
 import os
 import threading
@@ -17,7 +18,10 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from worker.queue import PersistentQueue
 
 from watchdog.events import (
     FileCreatedEvent,
@@ -149,17 +153,19 @@ class BaseHandler(FileSystemEventHandler):
 
     def __init__(
         self,
-        queue: asyncio.Queue[dict[str, Any]],
+        queue: PersistentQueue,
         loop: asyncio.AbstractEventLoop,
         include_extensions: set[str] | None,
         exclude_patterns: list[str],
         max_file_size: int = DEFAULT_MAX_FILE_SIZE,
+        cursor_key: str | None = None,
     ) -> None:
         self._queue = queue
         self._loop = loop
         self._include_extensions = include_extensions
         self._exclude_patterns = exclude_patterns
         self._max_file_size = max_file_size
+        self._cursor_key = cursor_key
         self._cursor: dict[str, FileEntry] = {}
         self._cursor_lock = threading.Lock()
         # Dedup window state — guarded by _dedup_lock since watchdog
@@ -168,26 +174,6 @@ class BaseHandler(FileSystemEventHandler):
         self._dedup_set: set[tuple[str, str]] = set()
         self._dedup_lock = threading.Lock()
         self._dedup_deadline: float = 0.0
-        # Indexed-cursor callback factory set by the owning source.
-        # Called from _dispatch to create _on_indexed callbacks for
-        # watchdog events so cursor persistence defers until the
-        # pipeline has actually processed the item.
-        self._indexed_factory: Any | None = None
-
-    # -- Dedup window -------------------------------------------------------
-
-    def set_indexed_factory(
-        self,
-        factory: Any,
-    ) -> None:
-        """Register a callback factory for _on_indexed.
-
-        *factory* receives an IngestEvent dict and returns a no-arg
-        callable (or ``None``).  The returned callable is stored as
-        ``event["_on_indexed"]`` and invoked by the consumer after the
-        pipeline successfully processes the event.
-        """
-        self._indexed_factory = factory
 
     def set_dedup_window(
         self,
@@ -417,12 +403,15 @@ class BaseHandler(FileSystemEventHandler):
 
             self._update_cursor(ingest)
 
-            # Attach _on_indexed callback so cursor is persisted
-            # only after the pipeline has actually processed the item.
-            if self._indexed_factory is not None:
-                cb = self._indexed_factory(ingest)
-                if cb is not None:
-                    ingest["_on_indexed"] = cb
+            # Build cursor value to persist atomically with the enqueue.
+            cursor_key: str | None = None
+            cursor_value: str | None = None
+            if self._cursor_key is not None:
+                cursor_key = self._cursor_key
+                cursor_value = json.dumps(
+                    {k: v.__dict__ if hasattr(v, "__dict__") else v
+                     for k, v in self.get_cursor_snapshot().items()}
+                )
 
             SOURCE_WATCHER_EVENTS.labels(
                 source_type=self._source_type,
@@ -431,4 +420,8 @@ class BaseHandler(FileSystemEventHandler):
             WATCHER_LAST_EVENT_TIMESTAMP.labels(
                 source_type=self._source_type,
             ).set_to_current_time()
-            asyncio.run_coroutine_threadsafe(self._queue.put(ingest), self._loop)
+            self._queue.enqueue(
+                ingest,
+                cursor_key=cursor_key,
+                cursor_value=cursor_value,
+            )

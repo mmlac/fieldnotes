@@ -204,8 +204,10 @@ class TestBuildHealthPayload:
     @pytest.mark.asyncio
     @patch("worker.health._check_qdrant_health", return_value={"status": "ok"})
     @patch("worker.health._check_neo4j_health", return_value={"status": "ok"})
-    async def test_all_ok(self, mock_neo4j, mock_qdrant) -> None:
-        queue: asyncio.Queue = asyncio.Queue(maxsize=100)
+    async def test_all_ok(self, mock_neo4j, mock_qdrant, tmp_path) -> None:
+        from worker.queue import PersistentQueue
+
+        queue = PersistentQueue(db_path=tmp_path / "queue.db")
         start = time.monotonic() - 60.0
 
         payload = await _build_health_payload(_cfg(), queue, start)
@@ -214,8 +216,8 @@ class TestBuildHealthPayload:
         assert payload["components"]["neo4j"]["status"] == "ok"
         assert payload["components"]["qdrant"]["status"] == "ok"
         assert payload["components"]["pipeline_queue"]["depth"] == 0
-        assert payload["components"]["pipeline_queue"]["max"] == 100
         assert payload["components"]["uptime_seconds"] >= 60.0
+        queue.close()
 
     @pytest.mark.asyncio
     @patch("worker.health._check_qdrant_health", return_value={"status": "ok"})

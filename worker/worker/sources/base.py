@@ -7,16 +7,18 @@ internal queue without going through the Go daemon.
 
 from __future__ import annotations
 
-import asyncio
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from worker.queue import PersistentQueue
 
 
 class PythonSource(ABC):
     """Base class for all Python-side source adapters.
 
     Subclasses implement name(), configure(), and start() to mirror the
-    Go Source interface. Events are pushed to an asyncio.Queue as plain
+    Go Source interface. Events are enqueued via PersistentQueue as plain
     dicts matching the IngestEvent JSON schema.
     """
 
@@ -38,8 +40,8 @@ class PythonSource(ABC):
         ...
 
     @abstractmethod
-    async def start(self, queue: asyncio.Queue[dict[str, Any]]) -> None:
-        """Begin watching and emit IngestEvent dicts to *queue*.
+    async def start(self, queue: PersistentQueue) -> None:
+        """Begin watching and enqueue IngestEvent dicts via *queue*.
 
         Must run until cancelled (via ``asyncio.CancelledError``).
         """

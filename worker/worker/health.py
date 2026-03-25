@@ -12,9 +12,12 @@ import asyncio
 import json
 import logging
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from worker.config import Config
+
+if TYPE_CHECKING:
+    from worker.queue import PersistentQueue
 
 logger = logging.getLogger(__name__)
 
@@ -106,7 +109,7 @@ async def _check_qdrant_health(cfg: Config, client: Any = None) -> dict[str, Any
 
 async def _build_health_payload(
     cfg: Config,
-    queue: asyncio.Queue[Any] | None,
+    queue: PersistentQueue | None,
     start_time: float,
     neo4j_driver: Any = None,
     qdrant_client: Any = None,
@@ -124,8 +127,7 @@ async def _build_health_payload(
 
     if queue is not None:
         components["pipeline_queue"] = {
-            "depth": queue.qsize(),
-            "max": queue.maxsize if queue.maxsize > 0 else None,
+            "depth": queue.depth(),
         }
 
     components["uptime_seconds"] = round(time.monotonic() - start_time, 1)
@@ -149,7 +151,7 @@ class HealthServer:
     def __init__(
         self,
         cfg: Config,
-        queue: asyncio.Queue[Any] | None = None,
+        queue: PersistentQueue | None = None,
         start_time: float | None = None,
         neo4j_driver: Any = None,
         qdrant_client: Any = None,

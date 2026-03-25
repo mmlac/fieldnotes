@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import tempfile
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -17,6 +18,7 @@ from watchdog.events import (
     FileMovedEvent,
 )
 
+from worker.queue import PersistentQueue
 from worker.sources._handler import (
     BaseHandler,
     DEFAULT_MAX_FILE_SIZE,
@@ -32,9 +34,11 @@ def _make_handler(
     include_extensions: set[str] | None = None,
     exclude_patterns: list[str] | None = None,
     max_file_size: int = DEFAULT_MAX_FILE_SIZE,
+    tmp_path: Path | None = None,
 ) -> BaseHandler:
     loop = asyncio.new_event_loop()
-    queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    db_dir = tmp_path or Path(tempfile.mkdtemp())
+    queue = PersistentQueue(db_path=db_dir / "queue.db")
     h = BaseHandler(
         queue=queue,
         loop=loop,
@@ -396,9 +400,9 @@ class TestBuildEvent:
 
 
 class TestDispatch:
-    def test_dispatch_enqueues_event(self):
+    def test_dispatch_enqueues_event(self, tmp_path: Path):
         loop = asyncio.new_event_loop()
-        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        queue = PersistentQueue(db_path=tmp_path / "queue.db")
         h = BaseHandler(
             queue=queue,
             loop=loop,
@@ -408,44 +412,27 @@ class TestDispatch:
         h._source_type = "test"
 
         # Create a real file for the event
-        import tempfile
-
         with tempfile.NamedTemporaryFile(suffix=".md", delete=False) as f:
             f.write(b"dispatch test")
             tmp_name = f.name
 
         try:
             ev = FileCreatedEvent(tmp_name)
-            # Run dispatch in a thread while the loop is running
-            import threading
-
-            def run_loop():
-                loop.run_forever()
-
-            t = threading.Thread(target=run_loop, daemon=True)
-            t.start()
-
             h._dispatch(ev)
 
-            # Give the coroutine time to execute
-            import time
-
-            time.sleep(0.1)
-
-            loop.call_soon_threadsafe(loop.stop)
-            t.join(timeout=2)
-
-            assert not queue.empty()
-            item = queue.get_nowait()
-            assert item["source_type"] == "test"
-            assert item["source_id"] == tmp_name
+            # PersistentQueue.enqueue is synchronous — item is immediately available
+            claimed = queue.claim()
+            assert claimed is not None
+            assert claimed["source_type"] == "test"
+            assert claimed["source_id"] == tmp_name
         finally:
             Path(tmp_name).unlink(missing_ok=True)
+            queue.close()
             loop.close()
 
-    def test_dispatch_skips_none_event(self):
+    def test_dispatch_skips_none_event(self, tmp_path: Path):
         loop = asyncio.new_event_loop()
-        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        queue = PersistentQueue(db_path=tmp_path / "queue.db")
         h = BaseHandler(
             queue=queue,
             loop=loop,
@@ -456,25 +443,10 @@ class TestDispatch:
 
         # .py file should be skipped by include filter
         ev = FileCreatedEvent("/some/file.py")
-
-        import threading
-
-        def run_loop():
-            loop.run_forever()
-
-        t = threading.Thread(target=run_loop, daemon=True)
-        t.start()
-
         h._dispatch(ev)
 
-        import time
-
-        time.sleep(0.1)
-
-        loop.call_soon_threadsafe(loop.stop)
-        t.join(timeout=2)
-
-        assert queue.empty()
+        assert queue.depth() == 0
+        queue.close()
         loop.close()
 
     def test_on_created_delegates_to_dispatch(self, tmp_path: Path):

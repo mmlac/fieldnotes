@@ -20,8 +20,6 @@ import signal
 import sys
 import time
 from pathlib import Path
-from typing import Any
-
 from neo4j import GraphDatabase
 from qdrant_client import QdrantClient
 
@@ -222,10 +220,14 @@ async def _run(cfg: Config) -> None:
     else:
         logger.info("Clustering scheduler disabled")
 
-    # Shared event queue for all sources — bounded to apply backpressure
-    # when the consumer falls behind (prevents unbounded memory growth on
-    # burst file-change events like git checkout).
-    queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=4096)
+    # Persistent event queue (SQLite-backed) — replaces in-memory asyncio.Queue
+    from worker.queue import PersistentQueue
+
+    data_dir_path = Path(cfg.core.data_dir).expanduser()
+    queue = PersistentQueue(db_path=data_dir_path / "queue.db")
+    recovered = queue.recover()
+    if recovered:
+        logger.info("Recovered %d interrupted queue item(s) from previous run", recovered)
 
     # Start source tasks
     source_tasks: list[asyncio.Task[None]] = []
@@ -245,19 +247,20 @@ async def _run(cfg: Config) -> None:
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, _signal_handler)
 
-    # Main event loop: consume from queue, parse, process
+    # Main event loop: claim/complete/fail against PersistentQueue
     try:
         _sync_processed = 0
         _sync_times: collections.deque[float] = collections.deque(maxlen=50)
 
         while not stop_event.is_set():
-            QUEUE_DEPTH.set(queue.qsize())
-            try:
-                event = await asyncio.wait_for(queue.get(), timeout=1.0)
-            except asyncio.TimeoutError:
+            QUEUE_DEPTH.set(queue.depth())
+            event = await loop.run_in_executor(None, queue.claim)
+            if event is None:
+                await asyncio.sleep(0.5)
                 continue
 
-            QUEUE_DEPTH.set(queue.qsize())
+            QUEUE_DEPTH.set(queue.depth())
+            queue_id = event.pop("_queue_id")
             source_type = event.get("source_type", "")
             source_id = event.get("source_id", "")
             operation = event.get("operation", "")
@@ -269,6 +272,7 @@ async def _run(cfg: Config) -> None:
                 parsed_docs = parser.parse(event)
                 for doc in parsed_docs:
                     await loop.run_in_executor(None, pipeline.process, doc)
+                queue.complete(queue_id)
             except Exception:
                 logger.exception(
                     "Failed to process event %s %s (%s)",
@@ -276,6 +280,7 @@ async def _run(cfg: Config) -> None:
                     source_id,
                     operation,
                 )
+                queue.fail(queue_id, str(sys.exc_info()[1]))
 
             if is_initial:
                 elapsed = time.monotonic() - t0
@@ -314,8 +319,9 @@ async def _run(cfg: Config) -> None:
         except asyncio.TimeoutError:
             logger.warning("Source tasks did not finish within %ds", _DRAIN_TIMEOUT)
 
-        # Close pipeline (releases Neo4j + Qdrant connections)
+        # Close pipeline and queue
         pipeline.close()
+        queue.close()
         logger.info("Shutdown complete")
 
 

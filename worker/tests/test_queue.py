@@ -106,17 +106,13 @@ class TestFail:
         queue = PersistentQueue(db_path=tmp_path / "queue.db", max_retries=2)
         queue.enqueue(event)
 
-        # Fail twice (attempts incremented on each claim).
-        for _ in range(2):
-            claimed = queue.claim()
-            assert claimed is not None
-            queue.fail(claimed["_queue_id"], "error")
-
-        # Third claim + fail should mark as 'failed'.
+        # First claim+fail: attempts becomes 1 (< max_retries=2), resets to pending.
         claimed = queue.claim()
-        # After 2 retries with max_retries=2, attempts=2, so fail should mark failed
-        # Actually: claim increments attempts. After 2 claims, attempts=2.
-        # fail checks attempts >= max_retries (2 >= 2) → failed.
+        assert claimed is not None
+        queue.fail(claimed["_queue_id"], "error")
+
+        # Second claim+fail: attempts becomes 2 (>= max_retries=2), marks failed.
+        claimed = queue.claim()
         assert claimed is not None
         queue.fail(claimed["_queue_id"], "final error")
 
