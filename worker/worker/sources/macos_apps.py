@@ -23,7 +23,10 @@ import plistlib
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from worker.queue import PersistentQueue
 
 from worker.metrics import (
     SOURCE_WATCHER_EVENTS,
@@ -33,14 +36,13 @@ from worker.metrics import (
 )
 
 from .base import PythonSource
-from .cursor import _ProgressTracker, save_json_atomic
+from .cursor import save_json_atomic
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_POLL_INTERVAL = 21600  # 6 hours
 DEFAULT_SCAN_DIRS = ["/Applications", "~/Applications"]
 DEFAULT_STATE_PATH = Path.home() / ".fieldnotes" / "state" / "apps.json"
-_PROCESSED_SIDECAR = Path.home() / ".fieldnotes" / "state" / "apps_processed.json"
 
 _SOURCE_TYPE = "macos_apps"
 
@@ -195,7 +197,7 @@ class MacOSAppsSource(PythonSource):
         if state:
             self._state_path = Path(state).expanduser().resolve()
 
-    async def start(self, queue: asyncio.Queue[dict[str, Any]]) -> None:
+    async def start(self, queue: PersistentQueue) -> None:
         if not self._enabled:
             logger.info("macOS apps source skipped (disabled)")
             initial_sync_source_done()
@@ -219,7 +221,7 @@ class MacOSAppsSource(PythonSource):
     async def _scan(
         self,
         state: dict[str, str],
-        queue: asyncio.Queue[dict[str, Any]],
+        queue: PersistentQueue,
     ) -> None:
         """Perform one scan cycle, emitting events for changes."""
         loop = asyncio.get_running_loop()
@@ -300,18 +302,13 @@ class MacOSAppsSource(PythonSource):
             _save_state(self._state_path, current)
             return
 
-        # Defer disk save until all events processed through the pipeline
-        state_path = self._state_path
-
-        def _save() -> None:
-            _save_state(state_path, current)
-
-        tracker = _ProgressTracker(
-            total=len(events),
-            sidecar_path=_PROCESSED_SIDECAR,
-            on_all_done=_save,
-        )
-        for ev in events:
-            sid = ev["source_id"]
-            ev["_on_indexed"] = lambda s=sid: tracker.ack(s)
-            await queue.put(ev)
+        cursor_json = json.dumps(current)
+        for i, ev in enumerate(events):
+            is_last = i == len(events) - 1
+            queue.enqueue(
+                ev,
+                cursor_key="macos_apps" if is_last else None,
+                cursor_value=cursor_json if is_last else None,
+            )
+        # Also persist to legacy state file
+        _save_state(self._state_path, current)

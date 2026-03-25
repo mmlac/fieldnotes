@@ -75,6 +75,34 @@ Topic discovery runs on a schedule (default: weekly) or on demand via `fieldnote
 | **Docker & Docker Compose** | — | Infrastructure services | Runs Neo4j, Qdrant, Prometheus, Grafana, Pushgateway |
 | **Git** | — | Repository source scanning | Needed if `[sources.repositories]` is enabled (default) |
 | **Ollama** | — | Default local LLM provider | Not required if using OpenAI or Anthropic API keys instead. Install from [ollama.ai](https://ollama.ai) |
+| **libheif** | 1.17+ | HEIF/HEIC image support | Required by `pillow-heif` for processing Apple photos. See install instructions below |
+
+### Installing libheif
+
+`pillow-heif` builds a native C extension against `libheif`. You must install the library **before** `pip install`:
+
+**macOS (Homebrew):**
+```bash
+brew install libheif
+```
+
+> **Note:** If you see compilation errors about `heif_camera_intrinsic_matrix` or
+> `heif_camera_extrinsic_matrix` after installing libheif, your `pillow-heif`
+> version may be newer than your libheif. Pin a compatible version:
+> ```bash
+> brew upgrade libheif          # get latest libheif first
+> pip install pillow-heif==0.21 # or match your libheif version
+> ```
+
+**Linux (Debian/Ubuntu):**
+```bash
+sudo apt-get install libheif-dev
+```
+
+**Linux (Fedora/RHEL):**
+```bash
+sudo dnf install libheif-devel
+```
 
 ### Services managed by Docker Compose
 

@@ -22,7 +22,10 @@ import subprocess
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from worker.queue import PersistentQueue
 
 from worker.metrics import (
     SOURCE_WATCHER_EVENTS,
@@ -34,13 +37,12 @@ from worker.metrics import (
 from worker.log_sanitizer import redact_home_path
 
 from .base import PythonSource
-from .cursor import _ProgressTracker, save_json_atomic
+from .cursor import save_json_atomic
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_POLL_INTERVAL = 21600  # 6 hours
 DEFAULT_STATE_PATH = Path.home() / ".fieldnotes" / "state" / "brew.json"
-_PROCESSED_SIDECAR = Path.home() / ".fieldnotes" / "state" / "brew_processed.json"
 BREW_TIMEOUT = 120  # seconds — some systems are very slow
 
 
@@ -275,7 +277,7 @@ class HomebrewSource(PythonSource):
 
         self._include_system = bool(cfg.get("include_system", False))
 
-    async def start(self, queue: asyncio.Queue[dict[str, Any]]) -> None:
+    async def start(self, queue: PersistentQueue) -> None:
         brew_path = _find_brew()
         if brew_path is None:
             logger.info("Homebrew not found — homebrew source skipped")
@@ -302,7 +304,7 @@ class HomebrewSource(PythonSource):
         self,
         brew_path: str,
         prev_state: dict[str, dict[str, Any]],
-        queue: asyncio.Queue[dict[str, Any]],
+        queue: PersistentQueue,
     ) -> None:
         """Run one scan cycle."""
         loop = asyncio.get_running_loop()
@@ -375,18 +377,13 @@ class HomebrewSource(PythonSource):
             _save_state(self._state_path, curr_state)
             return
 
-        # Defer disk save until all events are processed through the pipeline
-        state_path = self._state_path
-
-        def _save() -> None:
-            _save_state(state_path, curr_state)
-
-        tracker = _ProgressTracker(
-            total=len(events),
-            sidecar_path=_PROCESSED_SIDECAR,
-            on_all_done=_save,
-        )
-        for ev in events:
-            sid = ev["source_id"]
-            ev["_on_indexed"] = lambda s=sid: tracker.ack(s)
-            await queue.put(ev)
+        cursor_json = json.dumps(curr_state)
+        for i, ev in enumerate(events):
+            is_last = i == len(events) - 1
+            queue.enqueue(
+                ev,
+                cursor_key="homebrew" if is_last else None,
+                cursor_value=cursor_json if is_last else None,
+            )
+        # Also persist to legacy state file
+        _save_state(self._state_path, curr_state)

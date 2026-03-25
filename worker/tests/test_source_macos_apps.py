@@ -25,6 +25,31 @@ from worker.sources.macos_apps import (
 # ── helpers ────────────────────────────────────────────────────────
 
 
+class _TestQueue:
+    """Thin wrapper around asyncio.Queue that exposes PersistentQueue.enqueue()."""
+
+    def __init__(self) -> None:
+        self._q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+
+    def enqueue(
+        self,
+        event: dict[str, Any],
+        cursor_key: str | None = None,
+        cursor_value: str | None = None,
+    ) -> str:
+        self._q.put_nowait(event)
+        return event.get("id", "")
+
+    async def get(self) -> dict[str, Any]:
+        return await self._q.get()
+
+    def get_nowait(self) -> dict[str, Any]:
+        return self._q.get_nowait()
+
+    def qsize(self) -> int:
+        return self._q.qsize()
+
+
 def _create_app(
     base: Path,
     name: str,
@@ -55,7 +80,7 @@ def _create_app(
 
 
 async def _collect_events(
-    queue: asyncio.Queue[dict[str, Any]], timeout: float = 2.0, ack: bool = True
+    queue: _TestQueue, timeout: float = 2.0, ack: bool = True
 ) -> list[dict[str, Any]]:
     """Drain all events from *queue* until *timeout* elapses."""
     events: list[dict[str, Any]] = []
@@ -303,7 +328,7 @@ async def test_initial_scan_emits_created_events(tmp_path: Path) -> None:
         }
     )
 
-    q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    q = _TestQueue()
     task = asyncio.create_task(s.start(q))
     events = await _collect_events(q)
     task.cancel()
@@ -337,7 +362,7 @@ async def test_second_scan_detects_modifications(tmp_path: Path) -> None:
     )
 
     # First scan
-    q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    q = _TestQueue()
     task = asyncio.create_task(s.start(q))
     events = await _collect_events(q)
     task.cancel()
@@ -368,7 +393,7 @@ async def test_second_scan_detects_modifications(tmp_path: Path) -> None:
         }
     )
 
-    q2: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    q2 = _TestQueue()
     task2 = asyncio.create_task(s2.start(q2))
     events2 = await _collect_events(q2)
     task2.cancel()
@@ -399,7 +424,7 @@ async def test_detects_deleted_apps(tmp_path: Path) -> None:
     )
 
     # First scan
-    q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    q = _TestQueue()
     task = asyncio.create_task(s.start(q))
     await _collect_events(q)
     task.cancel()
@@ -424,7 +449,7 @@ async def test_detects_deleted_apps(tmp_path: Path) -> None:
         }
     )
 
-    q2: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    q2 = _TestQueue()
     task2 = asyncio.create_task(s2.start(q2))
     events2 = await _collect_events(q2)
     task2.cancel()
@@ -455,7 +480,7 @@ async def test_unchanged_apps_emit_no_events(tmp_path: Path) -> None:
     )
 
     # First scan
-    q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    q = _TestQueue()
     task = asyncio.create_task(s.start(q))
     await _collect_events(q)
     task.cancel()
@@ -475,7 +500,7 @@ async def test_unchanged_apps_emit_no_events(tmp_path: Path) -> None:
         }
     )
 
-    q2: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    q2 = _TestQueue()
     task2 = asyncio.create_task(s2.start(q2))
     events2 = await _collect_events(q2)
     task2.cancel()
@@ -505,7 +530,7 @@ async def test_skips_broken_app_bundles(tmp_path: Path) -> None:
         }
     )
 
-    q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    q = _TestQueue()
     task = asyncio.create_task(s.start(q))
     events = await _collect_events(q)
     task.cancel()
@@ -533,7 +558,7 @@ async def test_disabled_source_emits_nothing(tmp_path: Path) -> None:
         }
     )
 
-    q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    q = _TestQueue()
     task = asyncio.create_task(s.start(q))
     events = await _collect_events(q, timeout=1.0)
     task.cancel()
@@ -566,7 +591,7 @@ async def test_poll_interval_respected(tmp_path: Path) -> None:
         sleep_args.append(delay)
         raise asyncio.CancelledError
 
-    q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    q = _TestQueue()
     with patch("asyncio.sleep", side_effect=mock_sleep):
         task = asyncio.create_task(s.start(q))
         try:
@@ -592,7 +617,7 @@ async def test_graceful_shutdown_during_sleep(tmp_path: Path) -> None:
         }
     )
 
-    q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    q = _TestQueue()
     task = asyncio.create_task(s.start(q))
 
     # Wait for initial scan to complete

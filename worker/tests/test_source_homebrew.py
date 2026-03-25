@@ -25,6 +25,31 @@ from worker.sources.homebrew import (
 # ── helpers ────────────────────────────────────────────────────────
 
 
+class _TestQueue:
+    """Thin wrapper around asyncio.Queue that exposes PersistentQueue.enqueue()."""
+
+    def __init__(self) -> None:
+        self._q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+
+    def enqueue(
+        self,
+        event: dict[str, Any],
+        cursor_key: str | None = None,
+        cursor_value: str | None = None,
+    ) -> str:
+        self._q.put_nowait(event)
+        return event.get("id", "")
+
+    async def get(self) -> dict[str, Any]:
+        return await self._q.get()
+
+    def get_nowait(self) -> dict[str, Any]:
+        return self._q.get_nowait()
+
+    def qsize(self) -> int:
+        return self._q.qsize()
+
+
 SAMPLE_FORMULA = {
     "name": "ripgrep",
     "desc": "Search tool like grep and The Silver Searcher",
@@ -51,7 +76,7 @@ SAMPLE_BREW_JSON = {
 
 
 async def _collect_events(
-    queue: asyncio.Queue[dict[str, Any]], timeout: float = 2.0, ack: bool = True
+    queue: _TestQueue, timeout: float = 2.0, ack: bool = True
 ) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
     try:
@@ -296,7 +321,7 @@ async def test_start_no_brew_installed() -> None:
     s.configure({})
 
     with patch("worker.sources.homebrew._find_brew", return_value=None):
-        q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        q = _TestQueue()
         task = asyncio.create_task(s.start(q))
         events = await _collect_events(q, timeout=1.0)
         task.cancel()
@@ -321,7 +346,7 @@ async def test_initial_scan_emits_events(tmp_path: Path) -> None:
         ),
         patch("worker.sources.homebrew._brew_prefix", return_value="/usr/local"),
     ):
-        q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        q = _TestQueue()
         task = asyncio.create_task(s.start(q))
         events = await _collect_events(q)
         task.cancel()
@@ -365,7 +390,7 @@ async def test_incremental_scan_detects_changes(tmp_path: Path) -> None:
         ),
         patch("worker.sources.homebrew._brew_prefix", return_value="/usr/local"),
     ):
-        q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        q = _TestQueue()
         task = asyncio.create_task(s.start(q))
         events = await _collect_events(q)
         task.cancel()
@@ -396,7 +421,7 @@ async def test_handles_brew_timeout(tmp_path: Path) -> None:
             "worker.sources.homebrew._collect_installed", side_effect=timeout_collect
         ),
     ):
-        q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        q = _TestQueue()
         task = asyncio.create_task(s.start(q))
         events = await _collect_events(q, timeout=1.0)
         task.cancel()
@@ -434,7 +459,7 @@ async def test_uninstall_detection(tmp_path: Path) -> None:
         patch("worker.sources.homebrew._collect_installed", return_value=brew_json),
         patch("worker.sources.homebrew._brew_prefix", return_value="/usr/local"),
     ):
-        q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        q = _TestQueue()
         task = asyncio.create_task(s.start(q))
         events = await _collect_events(q)
         task.cancel()
@@ -473,7 +498,7 @@ async def test_poll_interval_respected(tmp_path: Path) -> None:
         patch("worker.sources.homebrew._brew_prefix", return_value="/usr/local"),
         patch("asyncio.sleep", side_effect=mock_sleep),
     ):
-        q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        q = _TestQueue()
         task = asyncio.create_task(s.start(q))
         try:
             await task
@@ -501,7 +526,7 @@ async def test_graceful_shutdown_during_sleep(tmp_path: Path) -> None:
         ),
         patch("worker.sources.homebrew._brew_prefix", return_value="/usr/local"),
     ):
-        q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        q = _TestQueue()
         task = asyncio.create_task(s.start(q))
 
         # Wait for initial scan to complete
@@ -529,7 +554,7 @@ async def test_no_changes_emits_nothing(tmp_path: Path) -> None:
         ),
         patch("worker.sources.homebrew._brew_prefix", return_value="/usr/local"),
     ):
-        q1: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        q1 = _TestQueue()
         task1 = asyncio.create_task(s1.start(q1))
         await _collect_events(q1)
         task1.cancel()
@@ -549,7 +574,7 @@ async def test_no_changes_emits_nothing(tmp_path: Path) -> None:
         ),
         patch("worker.sources.homebrew._brew_prefix", return_value="/usr/local"),
     ):
-        q2: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        q2 = _TestQueue()
         task2 = asyncio.create_task(s2.start(q2))
         events = await _collect_events(q2)
         task2.cancel()
