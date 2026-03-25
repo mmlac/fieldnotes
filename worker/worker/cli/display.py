@@ -115,13 +115,19 @@ def _group_sources(hybrid: HybridResult) -> list[_SourceGroup]:
 
 def _format_tree_plain(total: int, groups: list[_SourceGroup]) -> str:
     """Format the progress tree using Unicode box-drawing characters."""
+    from worker.cli.stream import source_id_to_url, _osc8_link
+
     lines = [f"Searching... {total} source{'s' if total != 1 else ''} found"]
     for i, g in enumerate(groups):
         is_last = i == len(groups) - 1
         prefix = "\u2514\u2500" if is_last else "\u251c\u2500"
         desc = f"{g.count} {g.label}"
         if g.identifiers:
-            desc += f" ({', '.join(g.identifiers)})"
+            linked = []
+            for sid in g.identifiers:
+                url = source_id_to_url(sid)
+                linked.append(_osc8_link(url, sid) if url else sid)
+            desc += f" ({', '.join(linked)})"
         lines.append(f"{prefix} {desc}")
     return "\n".join(lines)
 
@@ -161,8 +167,15 @@ def _print_tree_rich(total: int, groups: list[_SourceGroup]) -> None:
     for g in groups:
         desc = f"[cyan]{g.count}[/cyan] {g.label}"
         if g.identifiers:
-            ids_str = ", ".join(f"[dim]{i}[/dim]" for i in g.identifiers)
-            desc += f" ({ids_str})"
+            from worker.cli.stream import source_id_to_url
+            linked = []
+            for sid in g.identifiers:
+                url = source_id_to_url(sid)
+                if url:
+                    linked.append(f"[dim][link={url}]{sid}[/link][/dim]")
+                else:
+                    linked.append(f"[dim]{sid}[/dim]")
+            desc += f" ({', '.join(linked)})"
         tree.add(desc)
     console.print(tree)
 

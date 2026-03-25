@@ -10,12 +10,14 @@ Renders LLM streaming responses to the terminal with:
 
 from __future__ import annotations
 
+import base64
 import json
 import re
 import signal
 import sys
 from collections.abc import Iterator
 from dataclasses import dataclass
+from urllib.parse import quote
 
 from worker.models.base import StreamChunk
 
@@ -32,6 +34,55 @@ _RESET = "\033[0m"
 
 # Citation pattern: [source_id] where source_id contains :// or looks like a hash/path
 _CITATION_RE = re.compile(r"\[([^\]]{4,80})\]")
+
+
+def source_id_to_url(source_id: str) -> str | None:
+    """Convert a source_id to a clickable URL, or *None* if not possible."""
+    if source_id.startswith("gmail:"):
+        msg_id = source_id.removeprefix("gmail:")
+        return f"https://mail.google.com/mail/u/0/#all/{msg_id}"
+
+    if source_id.startswith("gcal:"):
+        # gcal:<calendar_id>:<event_id>  →  Google Calendar event URL
+        parts = source_id.split(":", 2)
+        if len(parts) == 3:
+            _, cal_id, event_id = parts
+            # Google encodes eid as base64(event_id + " " + calendar_id)
+            eid = base64.b64encode(
+                f"{event_id} {cal_id}".encode()
+            ).decode().rstrip("=")
+            return f"https://www.google.com/calendar/event?eid={eid}"
+
+    if source_id.startswith("omnifocus://"):
+        return source_id  # already a URL scheme
+
+    if source_id.startswith("/"):
+        # Local file path → obsidian:// URI if it's in an Obsidian vault,
+        # otherwise file:// URI.
+        if "/Obsidian" in source_id or ".obsidian" in source_id:
+            # Try to extract vault name and relative path.
+            # Convention: .../Obsidian Vaults/<vault_name>/...
+            parts = source_id.split("/")
+            for i, part in enumerate(parts):
+                if "obsidian" in part.lower() and "vault" in part.lower():
+                    if i + 1 < len(parts):
+                        vault_name = parts[i + 1]
+                        rel_path = "/".join(parts[i + 2 :])
+                        # Strip .md extension for Obsidian URI
+                        if rel_path.endswith(".md"):
+                            rel_path = rel_path[:-3]
+                        return (
+                            f"obsidian://open?vault={quote(vault_name)}"
+                            f"&file={quote(rel_path)}"
+                        )
+        return f"file://{source_id}"
+
+    return None
+
+
+def _osc8_link(url: str, text: str) -> str:
+    """Wrap *text* in an OSC 8 terminal hyperlink to *url*."""
+    return f"\033]8;;{url}\033\\{text}\033]8;;\033\\"
 
 
 @dataclass
@@ -71,7 +122,10 @@ def _is_citation(text: str) -> bool:
 
 
 def _format_citation(source_id: str) -> str:
-    """Format a citation marker with dimmed styling."""
+    """Format a citation marker as a clickable terminal hyperlink (dimmed)."""
+    url = source_id_to_url(source_id)
+    if url:
+        return f"{_DIM}[{_osc8_link(url, source_id)}]{_RESET}"
     return f"{_DIM}[{source_id}]{_RESET}"
 
 
@@ -315,14 +369,18 @@ def render_json(
 
 
 def format_sources(source_ids: list[str]) -> str:
-    """Format a source list for display after the answer."""
+    """Format a source list for display after the answer.
+
+    Each source is rendered as a clickable terminal hyperlink (OSC 8)
+    when a URL can be derived from the source_id.
+    """
     if not source_ids:
         return ""
     lines = [f"{_DIM}[Sources]{_RESET}"]
     for sid in source_ids:
-        # Make file:// URIs for local paths
-        if sid.startswith("/"):
-            lines.append(f"  {_DIM}file://{sid}{_RESET}")
-        else:
-            lines.append(f"  {_DIM}{sid}{_RESET}")
+        url = source_id_to_url(sid)
+        display = sid
+        if url:
+            display = _osc8_link(url, sid)
+        lines.append(f"  {_DIM}{display}{_RESET}")
     return "\n".join(lines)
