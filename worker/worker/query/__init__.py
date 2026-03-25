@@ -35,7 +35,7 @@ def is_corpus_empty(
     try:
         with graph_querier._driver.session() as session:
             row = session.run(
-                "MATCH (n) WHERE n:File OR n:Email OR n:ObsidianNote "
+                "MATCH (n) WHERE n:File OR n:Email "
                 "OR n:Repository OR n:Chunk "
                 "RETURN count(n) AS cnt"
             ).single()
