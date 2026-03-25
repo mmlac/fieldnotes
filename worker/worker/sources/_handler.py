@@ -37,7 +37,7 @@ from worker.metrics import (
     WATCHER_LAST_EVENT_TIMESTAMP,
 )
 
-from .cursor import FileEntry
+from .cursor import FileEntry, serialize_file_cursor
 
 logger = logging.getLogger(__name__)
 
@@ -408,9 +408,8 @@ class BaseHandler(FileSystemEventHandler):
             cursor_value: str | None = None
             if self._cursor_key is not None:
                 cursor_key = self._cursor_key
-                cursor_value = json.dumps(
-                    {k: v.__dict__ if hasattr(v, "__dict__") else v
-                     for k, v in self.get_cursor_snapshot().items()}
+                cursor_value = serialize_file_cursor(
+                    self.get_cursor_snapshot()
                 )
 
             SOURCE_WATCHER_EVENTS.labels(

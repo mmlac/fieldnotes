@@ -83,6 +83,45 @@ def load_processed_ids(path: Path) -> set[str]:
     return set()
 
 
+def serialize_file_cursor(cursor: dict[str, FileEntry]) -> str:
+    """Serialize a file cursor to a JSON string for PersistentQueue storage."""
+    return json.dumps(
+        {fp: {"sha256": e.sha256, "mtime_ns": e.mtime_ns, "size": e.size}
+         for fp, e in cursor.items()}
+    )
+
+
+def deserialize_file_cursor(raw: str | None) -> dict[str, FileEntry]:
+    """Deserialize a file cursor from a PersistentQueue JSON string.
+
+    Handles both dict format ``{"sha256": ..., "mtime_ns": ..., "size": ...}``
+    and array format ``[sha256, mtime_ns, size]``.
+    """
+    if raw is None:
+        return {}
+    try:
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            return {}
+        result: dict[str, FileEntry] = {}
+        for fp, entry in data.items():
+            if isinstance(entry, dict):
+                result[fp] = FileEntry(
+                    sha256=entry.get("sha256", ""),
+                    mtime_ns=int(entry.get("mtime_ns", 0)),
+                    size=int(entry.get("size", 0)),
+                )
+            elif isinstance(entry, (list, tuple)) and len(entry) >= 3:
+                result[fp] = FileEntry(
+                    sha256=str(entry[0]),
+                    mtime_ns=int(entry[1]),
+                    size=int(entry[2]),
+                )
+        return result
+    except (json.JSONDecodeError, ValueError):
+        return {}
+
+
 class CursorDiff(NamedTuple):
     """Result of diffing current scan results against a stored cursor."""
 

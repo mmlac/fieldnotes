@@ -10,17 +10,15 @@ from __future__ import annotations
 import asyncio
 import fnmatch
 import logging
-import threading
 import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from watchdog.observers import Observer
 
 from worker.metrics import (
-    CURSOR_CHECKPOINT_WRITES,
     INITIAL_SCAN_DURATION_SECONDS,
     INITIAL_SCAN_FILES_TOTAL,
     WATCHER_ACTIVE,
@@ -38,15 +36,21 @@ from ._handler import (
     streaming_sha256,
 )
 from .base import PythonSource
-from .cursor import CursorDiff, FileEntry, diff_cursor, load_cursor, save_cursor
+from .cursor import (
+    CursorDiff,
+    FileEntry,
+    deserialize_file_cursor,
+    diff_cursor,
+    serialize_file_cursor,
+)
+
+if TYPE_CHECKING:
+    from worker.queue import PersistentQueue
 
 # Re-export for backwards compatibility with existing imports.
 _streaming_sha256 = streaming_sha256
 
 logger = logging.getLogger(__name__)
-
-_DEFAULT_CURSOR_PATH = Path("~/.fieldnotes/data/file_cursor.json")
-DEFAULT_CHECKPOINT_INTERVAL = 300  # 5 minutes
 
 
 class _Handler(BaseHandler):
@@ -63,8 +67,6 @@ class FileSource(PythonSource):
         include_extensions: list[str] — e.g. [".md", ".txt"] (optional, default: all)
         exclude_patterns: list[str]  — glob patterns to skip (optional)
         recursive: bool              — watch subdirectories (default: true)
-        cursor_path: str             — cursor persistence file (optional)
-        cursor_checkpoint_interval: int — seconds between checkpoints (default: 300)
     """
 
     def __init__(self) -> None:
@@ -73,12 +75,6 @@ class FileSource(PythonSource):
         self._exclude_patterns: list[str] = []
         self._recursive: bool = True
         self._max_file_size: int = DEFAULT_MAX_FILE_SIZE
-        self._cursor_path: Path = _DEFAULT_CURSOR_PATH.expanduser()
-        self._checkpoint_interval: int = DEFAULT_CHECKPOINT_INTERVAL
-        # Indexed cursor: only entries whose pipeline processing has
-        # been confirmed.  Updated via _on_indexed callbacks.
-        self._indexed_cursor: dict[str, FileEntry] = {}
-        self._indexed_lock = threading.Lock()
 
     def name(self) -> str:
         return "files"
@@ -104,14 +100,6 @@ class FileSource(PythonSource):
         self._exclude_patterns = cfg.get("exclude_patterns", [])
         self._recursive = cfg.get("recursive", True)
         self._max_file_size = cfg.get("max_file_size", DEFAULT_MAX_FILE_SIZE)
-
-        cursor = cfg.get("cursor_path")
-        if cursor:
-            self._cursor_path = Path(cursor).expanduser().resolve()
-
-        interval = cfg.get("cursor_checkpoint_interval")
-        if interval is not None:
-            self._checkpoint_interval = int(interval)
 
     def _should_skip(self, path: str) -> bool:
         """Apply the same filtering rules as the watchdog handler."""
@@ -209,9 +197,9 @@ class FileSource(PythonSource):
         return ingest
 
     async def _initial_scan(
-        self, queue: asyncio.Queue[dict[str, Any]]
+        self, queue: PersistentQueue
     ) -> tuple[set[tuple[str, str]], dict[str, FileEntry]]:
-        """Walk directories, diff against cursor, and emit events.
+        """Walk directories, diff against cursor, and enqueue events.
 
         Returns a tuple of ``(dedup_pairs, current_entries)`` where
         *dedup_pairs* is the set of ``(path, sha256)`` for the post-scan
@@ -222,7 +210,7 @@ class FileSource(PythonSource):
         loop = asyncio.get_running_loop()
         current = await loop.run_in_executor(None, self._scan_directories)
 
-        stored = load_cursor(self._cursor_path)
+        stored = deserialize_file_cursor(queue.load_cursor("files"))
         diff: CursorDiff = diff_cursor(current, stored)
 
         counts = {"new": 0, "modified": 0, "deleted": 0, "unchanged": 0}
@@ -233,25 +221,21 @@ class FileSource(PythonSource):
 
         for file_path in diff.new:
             event = self._build_scan_event(file_path, "created", current[file_path])
-            event["_on_indexed"] = self._make_indexed_cb(
-                file_path, current[file_path]
-            )
-            await queue.put(event)
+            queue.enqueue(event)
             counts["new"] += 1
 
         for file_path in diff.modified:
             event = self._build_scan_event(file_path, "modified", current[file_path])
-            event["_on_indexed"] = self._make_indexed_cb(
-                file_path, current[file_path]
-            )
-            await queue.put(event)
+            queue.enqueue(event)
             counts["modified"] += 1
 
         for file_path in diff.deleted:
             event = self._build_scan_event(file_path, "deleted", None)
-            event["_on_indexed"] = self._make_indexed_cb(file_path, None)
-            await queue.put(event)
+            queue.enqueue(event)
             counts["deleted"] += 1
+
+        # Persist the scan cursor atomically after all events are enqueued.
+        queue.save_cursor("files", serialize_file_cursor(current))
 
         counts["unchanged"] = len(current) - counts["new"] - counts["modified"]
 
@@ -282,65 +266,8 @@ class FileSource(PythonSource):
 
         return {(path, entry.sha256) for path, entry in current.items()}, current
 
-    # -- Indexed-cursor helpers ----------------------------------------
-
-    def _make_indexed_cb(
-        self, path: str, entry: FileEntry | None
-    ) -> Any:
-        """Return an _on_indexed callback for a single file event.
-
-        Each callback updates the in-memory indexed cursor AND flushes
-        to disk immediately so progress survives crashes.
-        """
-        if entry is None:
-            def _cb() -> None:
-                with self._indexed_lock:
-                    self._indexed_cursor.pop(path, None)
-                self._flush_indexed_cursor()
-            return _cb
-
-        def _cb() -> None:
-            with self._indexed_lock:
-                self._indexed_cursor[path] = entry
-            self._flush_indexed_cursor()
-        return _cb
-
-    def _indexed_factory(self, ingest: dict[str, Any]) -> Any:
-        """Callback factory for watchdog handler events."""
-        source_id = ingest["source_id"]
-        op = ingest["operation"]
-        if op == "deleted":
-            return self._make_indexed_cb(source_id, None)
-        meta = ingest.get("meta", {})
-        sha = meta.get("sha256", "")
-        if not sha:
-            return None
-        size = meta.get("size_bytes", 0)
-        modified_at = ingest.get("source_modified_at", "")
-        mtime_ns = 0
-        if modified_at:
-            try:
-                dt = datetime.fromisoformat(modified_at)
-                mtime_ns = int(dt.timestamp() * 1e9)
-            except (ValueError, OSError):
-                pass
-        return self._make_indexed_cb(
-            source_id, FileEntry(sha256=sha, mtime_ns=mtime_ns, size=size)
-        )
-
-    def _flush_indexed_cursor(self) -> None:
-        """Persist the indexed cursor to disk."""
-        with self._indexed_lock:
-            snapshot = dict(self._indexed_cursor)
-        save_cursor(self._cursor_path, snapshot)
-
-    async def start(self, queue: asyncio.Queue[dict[str, Any]]) -> None:
-        # Seed indexed cursor from on-disk state.
-        stored_cursor = load_cursor(self._cursor_path)
-        with self._indexed_lock:
-            self._indexed_cursor = dict(stored_cursor)
-
-        # Initial scan BEFORE watchdog to avoid duplicate events
+    async def start(self, queue: PersistentQueue) -> None:
+        # Initial scan BEFORE watchdog to avoid duplicate events.
         scan_pairs, scan_current = await self._initial_scan(queue)
         initial_sync_source_done()
 
@@ -351,13 +278,13 @@ class FileSource(PythonSource):
             include_extensions=self._include_extensions,
             exclude_patterns=self._exclude_patterns,
             max_file_size=self._max_file_size,
+            cursor_key="files",
         )
 
-        # Give the handler the post-scan state (not the stale on-disk
+        # Give the handler the post-scan state (not the stale stored
         # cursor) so that FSEvents replays of already-handled deletions
         # are suppressed by the dedup check in _dispatch().
         handler.set_cursor(scan_current)
-        handler.set_indexed_factory(self._indexed_factory)
         handler.set_dedup_window(scan_pairs)
 
         observer = Observer()
@@ -377,20 +304,10 @@ class FileSource(PythonSource):
         WATCHER_ACTIVE.labels(source_type="files").set(1)
         try:
             while True:
-                await asyncio.sleep(self._checkpoint_interval)
-                self._save_checkpoint()
+                await asyncio.sleep(3600)
         except asyncio.CancelledError:
-            self._save_checkpoint()
             raise
         finally:
             WATCHER_ACTIVE.labels(source_type="files").set(0)
             observer.stop()
             observer.join()
-
-    def _save_checkpoint(self) -> None:
-        """Persist indexed cursor to disk."""
-        self._flush_indexed_cursor()
-        CURSOR_CHECKPOINT_WRITES.labels(source_type="files").inc()
-        with self._indexed_lock:
-            n = len(self._indexed_cursor)
-        logger.info("Cursor checkpoint saved: %d files tracked", n)
