@@ -248,45 +248,61 @@ class GraphQuerier:
         )
 
     def _refresh_schema_without_apoc(self) -> None:
-        """Populate the graph schema using only built-in Neo4j procedures.
+        """Populate the graph schema without APOC procedures.
 
         ``langchain_neo4j.Neo4jGraph.refresh_schema()`` relies on APOC
         (``apoc.meta.data``), which is unavailable in Neo4j Community Edition.
-        We build an equivalent schema string from the built-in
-        ``db.schema.nodeTypeProperties`` and ``db.schema.relTypeProperties``
-        procedures instead.
+        We build an equivalent schema using pure Cypher (sampling a few nodes
+        per label to discover properties and their types).
         """
+        _SAMPLE = 100  # nodes sampled per label for property discovery
+
+        # -- Node labels and their properties (via sampling) --
         node_props: dict[str, list[str]] = {}
-        for rec in self._graph.query(
-            "CALL db.schema.nodeTypeProperties() "
-            "YIELD nodeLabels, propertyName, propertyTypes"
-        ):
-            for label in rec["nodeLabels"]:
-                node_props.setdefault(label, []).append(
-                    f"{rec['propertyName']}: {rec['propertyTypes'][0]}"
-                    if rec.get("propertyTypes")
-                    else rec["propertyName"]
-                )
+        labels = [
+            rec["label"]
+            for rec in self._graph.query("CALL db.labels() YIELD label RETURN label")
+        ]
+        for label in labels:
+            props_for_label: dict[str, str] = {}
+            for rec in self._graph.query(
+                f"MATCH (n:`{label}`) WITH n LIMIT {_SAMPLE} "
+                "UNWIND keys(n) AS key "
+                "RETURN DISTINCT key, valueType(n[key]) AS t"
+            ):
+                props_for_label[rec["key"]] = rec["t"]
+            if props_for_label:
+                node_props[label] = [
+                    f"{k}: {v}" for k, v in sorted(props_for_label.items())
+                ]
 
+        # -- Relationship types and their properties (via sampling) --
         rel_props: dict[str, list[str]] = {}
-        for rec in self._graph.query(
-            "CALL db.schema.relTypeProperties() "
-            "YIELD relType, propertyName, propertyTypes"
-        ):
-            # relType comes back as ":`REL_NAME`"
-            name = rec["relType"].strip(":`")
-            if rec.get("propertyName"):
-                rel_props.setdefault(name, []).append(
-                    f"{rec['propertyName']}: {rec['propertyTypes'][0]}"
-                    if rec.get("propertyTypes")
-                    else rec["propertyName"]
-                )
+        rel_types = [
+            rec["rt"]
+            for rec in self._graph.query(
+                "CALL db.relationshipTypes() YIELD relationshipType "
+                "RETURN relationshipType AS rt"
+            )
+        ]
+        for rtype in rel_types:
+            props_for_rel: dict[str, str] = {}
+            for rec in self._graph.query(
+                f"MATCH ()-[r:`{rtype}`]->() WITH r LIMIT {_SAMPLE} "
+                "UNWIND keys(r) AS key "
+                "RETURN DISTINCT key, valueType(r[key]) AS t"
+            ):
+                props_for_rel[rec["key"]] = rec["t"]
+            if props_for_rel:
+                rel_props[rtype] = [
+                    f"{k}: {v}" for k, v in sorted(props_for_rel.items())
+                ]
 
+        # -- Relationship patterns (src)-[rel]->(tgt) --
         rels = self._graph.query(
-            "CALL db.schema.visualization() YIELD nodes, relationships "
-            "UNWIND relationships AS r "
-            "RETURN labels(startNode(r))[0] AS src, type(r) AS rel, "
-            "       labels(endNode(r))[0] AS tgt"
+            "MATCH (a)-[r]->(b) "
+            "WITH DISTINCT labels(a)[0] AS src, type(r) AS rel, labels(b)[0] AS tgt "
+            "RETURN src, rel, tgt ORDER BY src, rel, tgt"
         )
 
         lines = ["Node properties:"]
