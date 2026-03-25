@@ -213,9 +213,10 @@ class GraphQuerier:
             url=neo4j_cfg.uri,
             username=neo4j_cfg.user,
             password=neo4j_cfg.password,
+            refresh_schema=False,
         )
         try:
-            self._graph.refresh_schema()
+            self._refresh_schema_without_apoc()
 
             # Maintain our own driver instance instead of reaching into
             # LangChain internals (_graph._driver) which are not part of the
@@ -245,6 +246,68 @@ class GraphQuerier:
             return_intermediate_steps=True,
             allow_dangerous_requests=True,  # required by LangChain; we validate before execution
         )
+
+    def _refresh_schema_without_apoc(self) -> None:
+        """Populate the graph schema using only built-in Neo4j procedures.
+
+        ``langchain_neo4j.Neo4jGraph.refresh_schema()`` relies on APOC
+        (``apoc.meta.data``), which is unavailable in Neo4j Community Edition.
+        We build an equivalent schema string from the built-in
+        ``db.schema.nodeTypeProperties`` and ``db.schema.relTypeProperties``
+        procedures instead.
+        """
+        node_props: dict[str, list[str]] = {}
+        for rec in self._graph.query(
+            "CALL db.schema.nodeTypeProperties() "
+            "YIELD nodeLabels, propertyName, propertyTypes"
+        ):
+            for label in rec["nodeLabels"]:
+                node_props.setdefault(label, []).append(
+                    f"{rec['propertyName']}: {rec['propertyTypes'][0]}"
+                    if rec.get("propertyTypes")
+                    else rec["propertyName"]
+                )
+
+        rel_props: dict[str, list[str]] = {}
+        for rec in self._graph.query(
+            "CALL db.schema.relTypeProperties() "
+            "YIELD relType, propertyName, propertyTypes"
+        ):
+            # relType comes back as ":`REL_NAME`"
+            name = rec["relType"].strip(":`")
+            if rec.get("propertyName"):
+                rel_props.setdefault(name, []).append(
+                    f"{rec['propertyName']}: {rec['propertyTypes'][0]}"
+                    if rec.get("propertyTypes")
+                    else rec["propertyName"]
+                )
+
+        rels = self._graph.query(
+            "CALL db.schema.visualization() YIELD nodes, relationships "
+            "UNWIND relationships AS r "
+            "RETURN labels(startNode(r))[0] AS src, type(r) AS rel, "
+            "       labels(endNode(r))[0] AS tgt"
+        )
+
+        lines = ["Node properties:"]
+        for label, props in sorted(node_props.items()):
+            lines.append(f"  {label} {{{', '.join(props)}}}")
+        lines.append("Relationship properties:")
+        for rtype, props in sorted(rel_props.items()):
+            lines.append(f"  {rtype} {{{', '.join(props)}}}")
+        lines.append("Relationships:")
+        for r in rels:
+            lines.append(f"  (:{r['src']})-[:{r['rel']}]->(:{r['tgt']})")
+
+        schema_text = "\n".join(lines)
+        self._graph.schema = schema_text
+        self._graph.structured_schema = {
+            "node_props": {k: [{"property": p} for p in v] for k, v in node_props.items()},
+            "rel_props": {k: [{"property": p} for p in v] for k, v in rel_props.items()},
+            "relationships": [
+                {"start": r["src"], "type": r["rel"], "end": r["tgt"]} for r in rels
+            ],
+        }
 
     def query(self, question: str) -> GraphQueryResult:
         """Translate *question* to Cypher, execute, and return structured results.
@@ -331,7 +394,7 @@ class GraphQuerier:
 
     def refresh_schema(self) -> None:
         """Refresh the Neo4j schema cache (call after schema changes)."""
-        self._graph.refresh_schema()
+        self._refresh_schema_without_apoc()
 
     def __enter__(self) -> GraphQuerier:
         return self
