@@ -159,12 +159,12 @@ class OllamaProvider(ModelProvider):
         if req.tools:
             payload["tools"] = req.tools
 
+        raw_timeout = req.timeout if req.timeout is not None else self._completion_timeout
+        timeout = httpx.Timeout(connect=10.0, read=raw_timeout, write=30.0, pool=10.0)
         resp = httpx.post(
             f"{self._base_url}/api/chat",
             json=payload,
-            timeout=req.timeout
-            if req.timeout is not None
-            else self._completion_timeout,
+            timeout=timeout,
         )
         resp.raise_for_status()
         data = resp.json()
@@ -197,7 +197,8 @@ class OllamaProvider(ModelProvider):
             },
         }
 
-        timeout = req.timeout if req.timeout is not None else self._completion_timeout
+        raw_timeout = req.timeout if req.timeout is not None else self._completion_timeout
+        timeout = httpx.Timeout(connect=10.0, read=raw_timeout, write=30.0, pool=10.0)
         with httpx.stream(
             "POST",
             f"{self._base_url}/api/chat",
@@ -222,10 +223,12 @@ class OllamaProvider(ModelProvider):
 
     @_ollama_retry
     def embed(self, model: str, req: EmbedRequest) -> EmbedResponse:
+        raw_timeout = req.timeout if req.timeout is not None else self._embed_timeout
+        timeout = httpx.Timeout(connect=10.0, read=raw_timeout, write=30.0, pool=10.0)
         resp = httpx.post(
             f"{self._base_url}/api/embed",
             json={"model": model, "input": req.texts},
-            timeout=req.timeout if req.timeout is not None else self._embed_timeout,
+            timeout=timeout,
         )
         resp.raise_for_status()
         data = resp.json()
