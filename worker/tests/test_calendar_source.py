@@ -24,6 +24,47 @@ from worker.sources.calendar import (
 # ---------------------------------------------------------------------------
 
 
+class _TestQueue:
+    """Thin wrapper around asyncio.Queue that exposes PersistentQueue API."""
+
+    def __init__(self) -> None:
+        self._q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        self._cursors: dict[str, str] = {}
+        self._enqueued_ids: set[str] = set()
+
+    def enqueue(
+        self,
+        event: dict[str, Any],
+        cursor_key: str | None = None,
+        cursor_value: str | None = None,
+    ) -> str:
+        self._q.put_nowait(event)
+        sid = event.get("source_id", "")
+        if sid:
+            self._enqueued_ids.add(sid)
+        if cursor_key is not None and cursor_value is not None:
+            self._cursors[cursor_key] = cursor_value
+        return event.get("id", "")
+
+    def is_enqueued(self, source_id: str) -> bool:
+        return source_id in self._enqueued_ids
+
+    def load_cursor(self, key: str) -> str | None:
+        return self._cursors.get(key)
+
+    def save_cursor(self, key: str, value: str) -> None:
+        self._cursors[key] = value
+
+    async def get(self) -> dict[str, Any]:
+        return await self._q.get()
+
+    def get_nowait(self) -> dict[str, Any]:
+        return self._q.get_nowait()
+
+    def qsize(self) -> int:
+        return self._q.qsize()
+
+
 def _calendar_event(
     event_id: str = "evt-1",
     summary: str = "Team Meeting",
@@ -219,7 +260,7 @@ class TestGoogleCalendarSource:
         source.configure({
             "client_secrets_path": str(tmp_path / "nonexistent.json"),
         })
-        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        queue = _TestQueue()
 
         task = asyncio.create_task(source.start(queue))
         # Give it a moment to enter the idle loop
@@ -233,7 +274,7 @@ class TestGoogleCalendarSource:
         """_poll_calendar should fetch events and return a sync token."""
         source = GoogleCalendarSource()
         source.configure({})
-        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        queue = _TestQueue()
 
         events_list_result = {
             "items": [_calendar_event()],
@@ -251,7 +292,7 @@ class TestGoogleCalendarSource:
         )
 
         assert token == "sync-abc"
-        assert not queue.empty()
+        assert queue.qsize() > 0
         event = queue.get_nowait()
         assert event["source_type"] == "google_calendar"
         assert event["source_id"] == "gcal:primary:evt-1"
@@ -265,7 +306,7 @@ class TestGoogleCalendarSource:
         """With a sync token, should pass syncToken and showDeleted."""
         source = GoogleCalendarSource()
         source.configure({})
-        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        queue = _TestQueue()
 
         events_list_result = {
             "items": [],
@@ -293,7 +334,7 @@ class TestGoogleCalendarSource:
         """Should handle paginated results."""
         source = GoogleCalendarSource()
         source.configure({})
-        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        queue = _TestQueue()
 
         page1 = {
             "items": [_calendar_event(event_id="evt-1")],
@@ -323,7 +364,7 @@ class TestGoogleCalendarSource:
         """Recurring instances should have text stripped after the first."""
         source = GoogleCalendarSource()
         source.configure({})
-        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        queue = _TestQueue()
 
         # Three instances of the same recurring series
         items = []
@@ -367,7 +408,7 @@ class TestGoogleCalendarSource:
         """Incremental sync should NOT dedup recurring events."""
         source = GoogleCalendarSource()
         source.configure({})
-        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        queue = _TestQueue()
 
         items = []
         for i in range(2):

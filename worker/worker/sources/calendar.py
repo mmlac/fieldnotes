@@ -228,8 +228,19 @@ class GoogleCalendarSource(PythonSource):
         )
         service = build("calendar", "v3", credentials=creds)
 
-        # Load persisted sync tokens
-        sync_tokens = _load_cursor(self._cursor_path)
+        # Load persisted sync tokens from queue DB (migrated from JSON file).
+        raw_cursor = queue.load_cursor("calendar")
+        sync_tokens: dict[str, str] = {}
+        if raw_cursor:
+            try:
+                data = json.loads(raw_cursor)
+                if isinstance(data, dict):
+                    sync_tokens = data
+            except (json.JSONDecodeError, AttributeError):
+                pass
+        # Fall back to legacy JSON file if not yet migrated.
+        if not sync_tokens:
+            sync_tokens = _load_cursor(self._cursor_path)
 
         WATCHER_ACTIVE.labels(source_type="google_calendar").set(1)
         logger.info(

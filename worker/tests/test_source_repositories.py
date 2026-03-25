@@ -23,6 +23,47 @@ from worker.sources.repositories import (
 # ── helpers ────────────────────────────────────────────────────────
 
 
+class _TestQueue:
+    """Thin wrapper around asyncio.Queue that exposes PersistentQueue API."""
+
+    def __init__(self) -> None:
+        self._q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        self._cursors: dict[str, str] = {}
+        self._enqueued_ids: set[str] = set()
+
+    def enqueue(
+        self,
+        event: dict[str, Any],
+        cursor_key: str | None = None,
+        cursor_value: str | None = None,
+    ) -> str:
+        self._q.put_nowait(event)
+        sid = event.get("source_id", "")
+        if sid:
+            self._enqueued_ids.add(sid)
+        if cursor_key is not None and cursor_value is not None:
+            self._cursors[cursor_key] = cursor_value
+        return event.get("id", "")
+
+    def is_enqueued(self, source_id: str) -> bool:
+        return source_id in self._enqueued_ids
+
+    def load_cursor(self, key: str) -> str | None:
+        return self._cursors.get(key)
+
+    def save_cursor(self, key: str, value: str) -> None:
+        self._cursors[key] = value
+
+    async def get(self) -> dict[str, Any]:
+        return await self._q.get()
+
+    def get_nowait(self) -> dict[str, Any]:
+        return self._q.get_nowait()
+
+    def qsize(self) -> int:
+        return self._q.qsize()
+
+
 def _init_repo(path: Path, files: dict[str, str] | None = None) -> git.Repo:
     """Create a non-bare git repo at *path* with an initial commit."""
     path.mkdir(parents=True, exist_ok=True)
@@ -44,7 +85,7 @@ def _init_repo(path: Path, files: dict[str, str] | None = None) -> git.Repo:
 
 
 async def _collect_events(
-    queue: asyncio.Queue[dict[str, Any]], timeout: float = 2.0, ack: bool = True
+    queue: _TestQueue, timeout: float = 2.0, ack: bool = True
 ) -> list[dict[str, Any]]:
     """Drain all events from *queue* until *timeout* elapses with no new events."""
     events: list[dict[str, Any]] = []
@@ -216,7 +257,7 @@ async def test_initial_scan_emits_file_events(tmp_path: Path) -> None:
         }
     )
 
-    q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    q = _TestQueue()
     task = asyncio.create_task(s.start(q))
     events = await _collect_events(q)
     task.cancel()
@@ -259,7 +300,7 @@ async def test_incremental_scan_only_new_changes(tmp_path: Path) -> None:
     )
 
     # First scan
-    q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    q = _TestQueue()
     task = asyncio.create_task(s.start(q))
     await _collect_events(q)
     task.cancel()
@@ -284,7 +325,7 @@ async def test_incremental_scan_only_new_changes(tmp_path: Path) -> None:
         }
     )
 
-    q2: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    q2 = _TestQueue()
     task2 = asyncio.create_task(s2.start(q2))
     events = await _collect_events(q2)
     task2.cancel()
@@ -328,7 +369,7 @@ async def test_include_patterns_filter_files(tmp_path: Path) -> None:
         }
     )
 
-    q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    q = _TestQueue()
     task = asyncio.create_task(s.start(q))
     events = await _collect_events(q)
     task.cancel()
@@ -358,7 +399,7 @@ async def test_commit_event_structure(tmp_path: Path) -> None:
         }
     )
 
-    q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    q = _TestQueue()
     task = asyncio.create_task(s.start(q))
     events = await _collect_events(q)
     task.cancel()
@@ -402,7 +443,7 @@ async def test_skips_bare_repo_during_scan(tmp_path: Path) -> None:
         }
     )
 
-    q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    q = _TestQueue()
     task = asyncio.create_task(s.start(q))
     events = await _collect_events(q)
     task.cancel()
@@ -432,7 +473,7 @@ async def test_handles_invalid_git_repo(tmp_path: Path) -> None:
         }
     )
 
-    q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    q = _TestQueue()
     task = asyncio.create_task(s.start(q))
     # Should not crash, just skip the bad repo
     events = await _collect_events(q, timeout=1.0)

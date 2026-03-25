@@ -321,7 +321,19 @@ class RepositorySource(PythonSource):
         self._max_commits = int(cfg.get("max_commits", DEFAULT_MAX_COMMITS))
 
     async def start(self, queue: PersistentQueue) -> None:
-        cursors = _load_cursor(self._cursor_path)
+        # Load cursors from queue DB (migrated from JSON file).
+        raw_cursor = queue.load_cursor("repositories")
+        cursors: dict[str, str] = {}
+        if raw_cursor:
+            try:
+                data = json.loads(raw_cursor)
+                if isinstance(data, dict):
+                    cursors = data
+            except (json.JSONDecodeError, AttributeError):
+                pass
+        # Fall back to legacy JSON file if not yet migrated.
+        if not cursors:
+            cursors = _load_cursor(self._cursor_path)
 
         # Initial scan if we have no cursors at all
         if not cursors:
