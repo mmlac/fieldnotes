@@ -295,6 +295,10 @@ class Writer:
     # Public API
     # ------------------------------------------------------------------
 
+    def neo4j_session(self) -> Any:
+        """Return a new Neo4j session (context manager)."""
+        return self._neo4j_driver.session()
+
     def mark_vision_processed(self, source_id: str) -> None:
         """Set vision_processed=True on the Image node after vision completes.
 
@@ -609,8 +613,7 @@ class Writer:
                 RETURN count(r) AS cnt
                 """,
                 pairs=[
-                    {"name_a": a, "name_b": b, "confidence": c}
-                    for a, b, c in pairs
+                    {"name_a": a, "name_b": b, "confidence": c} for a, b, c in pairs
                 ],
             )
             created = result.single()["cnt"]
