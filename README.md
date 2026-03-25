@@ -86,10 +86,9 @@ Topic discovery runs on a schedule (default: weekly) or on demand via `fieldnote
 brew install libheif
 ```
 
-> **Note:** `pillow-heif>=0.22` requires `libheif>=1.22`. If you see compilation
-> errors about `heif_camera_intrinsic_matrix`, your libheif is older than what
-> `pillow-heif` expects. Fieldnotes pins `pillow-heif<0.22` for compatibility
-> with libheif 1.17–1.21.
+> **Note:** `pillow-heif` versions 0.18–1.0 fail to build against system libheif
+> 1.20+ due to a header reorganization (`heif_camera_intrinsic_matrix` moved to
+> `heif_properties.h`). Fieldnotes requires `pillow-heif>=1.1` which includes the fix.
 
 **Linux (Debian/Ubuntu):**
 ```bash
