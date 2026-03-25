@@ -247,6 +247,11 @@ class BaseHandler(FileSystemEventHandler):
         for pattern in self._exclude_patterns:
             if fnmatch.fnmatch(path, pattern) or fnmatch.fnmatch(p.name, pattern):
                 return True
+            # Check if any parent directory component matches the pattern,
+            # so excluding "Photos Library.photoslibrary" skips all files
+            # inside that directory.
+            if any(fnmatch.fnmatch(part, pattern) for part in p.parts):
+                return True
         return False
 
     # -- Event mapping ------------------------------------------------------

@@ -100,6 +100,8 @@ def _should_skip_scan(
     for pattern in exclude_patterns:
         if fnmatch(path_str, pattern) or fnmatch(path.name, pattern):
             return True
+        if any(fnmatch(part, pattern) for part in path.parts):
+            return True
 
     return False
 
