@@ -45,6 +45,10 @@ from worker.pipeline.vision import (
     vision_result_to_entities,
 )
 from worker.pipeline.exif import apply_exif_to_doc
+from worker.pipeline.geocode import (
+    link_image_to_location,
+    reverse_geocode_cached,
+)
 from worker.pipeline.app_describer import (
     AppDescriptionCache,
     AppInfo,
@@ -481,6 +485,8 @@ class Pipeline:
             sha256=sha256,
             text=chunk.text if chunk else "",
             entities=entities,
+            latitude=doc.node_props.get("latitude"),
+            longitude=doc.node_props.get("longitude"),
         )
 
     def on_vision_result(self, result: VisionQueueResult) -> None:
@@ -540,6 +546,33 @@ class Pipeline:
             depicts_entities=depicts_entities,
         )
         self._writer.write(unit)
+
+        # Reverse geocode if the image has GPS coordinates
+        if result.latitude is not None and result.longitude is not None:
+            try:
+                geo = reverse_geocode_cached(
+                    result.latitude,
+                    result.longitude,
+                    self._writer.neo4j_session,
+                )
+                if geo.display_name:
+                    link_image_to_location(
+                        result.source_id,
+                        result.latitude,
+                        result.longitude,
+                        self._writer.neo4j_session,
+                    )
+                    logger.info(
+                        "Geocoded %s → %s",
+                        result.source_id,
+                        geo.display_name,
+                    )
+            except Exception:
+                logger.debug(
+                    "Reverse geocoding failed for %s",
+                    result.source_id,
+                    exc_info=True,
+                )
 
         logger.info(
             "Vision processed %s: %d chunks, %d entities",

@@ -1,0 +1,242 @@
+"""Reverse geocoding for photo GPS coordinates.
+
+Uses Nominatim (OpenStreetMap) via geopy to convert lat/lon into human-readable
+location data. Results are cached in Neo4j Location nodes — before calling the
+API, checks if a Location node exists within ~1km radius.
+
+Rate limit: 1 request/second per Nominatim ToS.
+"""
+
+from __future__ import annotations
+
+import logging
+import threading
+import time
+from dataclasses import dataclass
+from typing import Any, Callable
+
+from geopy.geocoders import Nominatim
+from geopy.exc import GeocoderTimedOut, GeocoderServiceError
+
+logger = logging.getLogger(__name__)
+
+# Nominatim ToS: max 1 request per second
+_RATE_LIMIT_INTERVAL = 1.0
+_last_request_time = 0.0
+_rate_lock = threading.Lock()
+
+# ~1km in degrees (at equator; conservative for higher latitudes)
+_CACHE_RADIUS_DEG = 0.009
+
+
+@dataclass
+class GeocodedLocation:
+    """Result of a reverse geocode lookup."""
+
+    city: str | None = None
+    state: str | None = None
+    country: str | None = None
+    display_name: str | None = None
+
+
+def reverse_geocode(lat: float, lon: float) -> GeocodedLocation:
+    """Reverse geocode a lat/lon pair via Nominatim.
+
+    Parameters
+    ----------
+    lat:
+        Latitude in decimal degrees.
+    lon:
+        Longitude in decimal degrees.
+
+    Returns
+    -------
+    GeocodedLocation
+        Resolved location fields. All fields may be None on failure.
+    """
+    _enforce_rate_limit()
+
+    try:
+        geolocator = Nominatim(user_agent="fieldnotes-pipeline/0.1")
+        location = geolocator.reverse(
+            (lat, lon),
+            exactly_one=True,
+            language="en",
+            timeout=10,
+        )
+    except (GeocoderTimedOut, GeocoderServiceError) as exc:
+        logger.warning("Nominatim reverse geocode failed: %s", exc)
+        return GeocodedLocation()
+    except Exception:
+        logger.warning("Unexpected geocoding error", exc_info=True)
+        return GeocodedLocation()
+
+    if location is None:
+        return GeocodedLocation()
+
+    addr = location.raw.get("address", {})
+
+    city = (
+        addr.get("city")
+        or addr.get("town")
+        or addr.get("village")
+        or addr.get("hamlet")
+    )
+    state = addr.get("state")
+    country = addr.get("country")
+    display_name = location.raw.get("display_name")
+
+    return GeocodedLocation(
+        city=city,
+        state=state,
+        country=country,
+        display_name=display_name,
+    )
+
+
+def _enforce_rate_limit() -> None:
+    """Block until at least _RATE_LIMIT_INTERVAL seconds since last request."""
+    global _last_request_time
+    with _rate_lock:
+        now = time.monotonic()
+        elapsed = now - _last_request_time
+        if elapsed < _RATE_LIMIT_INTERVAL:
+            time.sleep(_RATE_LIMIT_INTERVAL - elapsed)
+        _last_request_time = time.monotonic()
+
+
+def reverse_geocode_cached(
+    lat: float,
+    lon: float,
+    neo4j_session_factory: Callable[[], Any],
+) -> GeocodedLocation:
+    """Reverse geocode with Neo4j Location node cache.
+
+    Before calling the Nominatim API, checks if a Location node exists
+    within ~1km radius. If found, returns the cached result. Otherwise
+    calls the API, creates a new Location node, and returns the result.
+
+    Parameters
+    ----------
+    lat:
+        Latitude in decimal degrees.
+    lon:
+        Longitude in decimal degrees.
+    neo4j_session_factory:
+        Callable returning a Neo4j session context manager.
+
+    Returns
+    -------
+    GeocodedLocation
+        Resolved location data.
+    """
+    cached = _find_nearby_location(lat, lon, neo4j_session_factory)
+    if cached is not None:
+        logger.debug(
+            "Geocode cache hit for (%.4f, %.4f): %s",
+            lat,
+            lon,
+            cached.display_name,
+        )
+        return cached
+
+    result = reverse_geocode(lat, lon)
+
+    if result.display_name:
+        _create_location_node(lat, lon, result, neo4j_session_factory)
+        logger.debug(
+            "Geocoded (%.4f, %.4f) → %s",
+            lat,
+            lon,
+            result.display_name,
+        )
+
+    return result
+
+
+def _find_nearby_location(
+    lat: float,
+    lon: float,
+    neo4j_session_factory: Callable[[], Any],
+) -> GeocodedLocation | None:
+    """Query Neo4j for a Location node within ~1km of the given coordinates."""
+    with neo4j_session_factory() as session:
+        result = session.run(
+            """
+            MATCH (loc:Location)
+            WHERE abs(loc.latitude - $lat) < $radius
+              AND abs(loc.longitude - $lon) < $radius
+            RETURN loc.city AS city, loc.state AS state,
+                   loc.country AS country, loc.display_name AS display_name
+            LIMIT 1
+            """,
+            lat=lat,
+            lon=lon,
+            radius=_CACHE_RADIUS_DEG,
+        )
+        record = result.single()
+        if record is None:
+            return None
+
+        return GeocodedLocation(
+            city=record["city"],
+            state=record["state"],
+            country=record["country"],
+            display_name=record["display_name"],
+        )
+
+
+def _create_location_node(
+    lat: float,
+    lon: float,
+    location: GeocodedLocation,
+    neo4j_session_factory: Callable[[], Any],
+) -> None:
+    """Create a Location node in Neo4j for cache."""
+    with neo4j_session_factory() as session:
+        session.run(
+            """
+            CREATE (loc:Location {
+                latitude: $lat,
+                longitude: $lon,
+                city: $city,
+                state: $state,
+                country: $country,
+                display_name: $display_name
+            })
+            """,
+            lat=lat,
+            lon=lon,
+            city=location.city,
+            state=location.state,
+            country=location.country,
+            display_name=location.display_name,
+        )
+
+
+def link_image_to_location(
+    source_id: str,
+    lat: float,
+    lon: float,
+    neo4j_session_factory: Callable[[], Any],
+) -> None:
+    """Link an Image node to the nearest Location node via TAKEN_AT.
+
+    Finds the nearest Location node within ~1km and creates the relationship.
+    """
+    with neo4j_session_factory() as session:
+        session.run(
+            """
+            MATCH (img:Image {source_id: $source_id})
+            MATCH (loc:Location)
+            WHERE abs(loc.latitude - $lat) < $radius
+              AND abs(loc.longitude - $lon) < $radius
+            WITH img, loc
+            LIMIT 1
+            MERGE (img)-[:TAKEN_AT]->(loc)
+            """,
+            source_id=source_id,
+            lat=lat,
+            lon=lon,
+            radius=_CACHE_RADIUS_DEG,
+        )
