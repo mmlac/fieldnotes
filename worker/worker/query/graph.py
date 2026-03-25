@@ -317,9 +317,19 @@ class GraphQuerier:
 
         schema_text = "\n".join(lines)
         self._graph.schema = schema_text
+        def _to_prop_list(entries: list[str]) -> list[dict[str, str]]:
+            result = []
+            for entry in entries:
+                if ": " in entry:
+                    name, typ = entry.split(": ", 1)
+                    result.append({"property": name, "type": typ})
+                else:
+                    result.append({"property": entry, "type": "STRING"})
+            return result
+
         self._graph.structured_schema = {
-            "node_props": {k: [{"property": p} for p in v] for k, v in node_props.items()},
-            "rel_props": {k: [{"property": p} for p in v] for k, v in rel_props.items()},
+            "node_props": {k: _to_prop_list(v) for k, v in node_props.items()},
+            "rel_props": {k: _to_prop_list(v) for k, v in rel_props.items()},
             "relationships": [
                 {"start": r["src"], "type": r["rel"], "end": r["tgt"]} for r in rels
             ],

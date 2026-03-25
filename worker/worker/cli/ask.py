@@ -616,12 +616,7 @@ def run_ask(
     # One-shot mode.
     cfg = load_config(config_path)
     registry = ModelRegistry(cfg)
-    try:
-        graph_querier = GraphQuerier(registry, cfg.neo4j)
-    except Exception:
-        import traceback
-        traceback.print_exc()
-        raise
+    graph_querier = GraphQuerier(registry, cfg.neo4j)
     vector_querier = VectorQuerier(registry, cfg.qdrant)
 
     # One-shot conversations are also persisted.
@@ -658,8 +653,6 @@ def run_ask(
             print(answer)
             return 0
     except Exception as exc:
-        import traceback
-        traceback.print_exc()
         print(f"error: {exc}", file=sys.stderr)
         return 1
     finally:
