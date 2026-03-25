@@ -44,6 +44,7 @@ from worker.pipeline.vision import (
     vision_result_to_chunk,
     vision_result_to_entities,
 )
+from worker.pipeline.exif import apply_exif_to_doc
 from worker.pipeline.app_describer import (
     AppDescriptionCache,
     AppInfo,
@@ -121,6 +122,17 @@ class Pipeline:
             ).inc()
             logger.info("Deleted %s %s", parsed_doc.source_type, parsed_doc.source_id)
             return
+
+        # EXIF extraction: pull GPS coordinates and date from image metadata
+        if parsed_doc.image_bytes:
+            try:
+                apply_exif_to_doc(parsed_doc.image_bytes, parsed_doc.node_props)
+            except Exception:
+                logger.debug(
+                    "EXIF extraction failed for %s",
+                    parsed_doc.source_id,
+                    exc_info=True,
+                )
 
         # Image documents: route to vision queue if available
         if parsed_doc.image_bytes and not parsed_doc.text:
