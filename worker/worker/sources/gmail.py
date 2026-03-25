@@ -414,16 +414,22 @@ class GmailSource(PythonSource):
             # Rate-limit: pause between page fetches
             await asyncio.sleep(BACKFILL_PAGE_DELAY)
 
-        # Enqueue collected events with atomic cursor update.
+        # Enqueue collected events; save cursor atomically with the last
+        # event so a crash mid-enqueue doesn't leave cursor stale.
         if pending_events:
-            for ev in pending_events:
-                queue.enqueue(ev)
-            # Save cursor after all events are enqueued.
-            if latest_history_id:
-                queue.save_cursor(
-                    "gmail",
-                    json.dumps({"history_id": latest_history_id}),
+            cursor_val = (
+                json.dumps({"history_id": latest_history_id})
+                if latest_history_id
+                else None
+            )
+            for i, ev in enumerate(pending_events):
+                is_last = i == len(pending_events) - 1
+                queue.enqueue(
+                    ev,
+                    cursor_key="gmail" if is_last and cursor_val else None,
+                    cursor_value=cursor_val if is_last else None,
                 )
+            if latest_history_id:
                 logger.info(
                     "Gmail backfill cursor saved (history_id=%s)",
                     latest_history_id,
@@ -582,9 +588,17 @@ class GmailSource(PythonSource):
 
         if pending_events:
             logger.info("Incremental poll: %d new message(s)", len(pending_events))
-            for ev in pending_events:
-                queue.enqueue(ev)
-        # Save cursor (whether or not there were events — historyId may advance).
-        queue.save_cursor("gmail", json.dumps({"history_id": new_history_id}))
+            cursor_val = json.dumps({"history_id": new_history_id})
+            for i, ev in enumerate(pending_events):
+                is_last = i == len(pending_events) - 1
+                queue.enqueue(
+                    ev,
+                    cursor_key="gmail" if is_last else None,
+                    cursor_value=cursor_val if is_last else None,
+                )
+        else:
+            # No new messages but historyId may have advanced — safe to
+            # save immediately since there's nothing in the pipeline.
+            queue.save_cursor("gmail", json.dumps({"history_id": new_history_id}))
 
         return new_history_id

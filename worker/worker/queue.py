@@ -104,7 +104,11 @@ class PersistentQueue:
         If *cursor_key* and *cursor_value* are provided, the cursor table
         is updated in the **same transaction** so the two writes are atomic.
 
-        Returns the queue row ID.
+        Skips the insert (no-op) if the same ``source_id`` is already
+        pending or processing — this prevents double-enqueue even when
+        two threads race past an external ``is_enqueued()`` check.
+
+        Returns the queue row ID (or the existing row's ID if skipped).
         """
         event_id = event.get("id") or str(uuid.uuid4())
         source_type = event.get("source_type", "")
@@ -112,26 +116,45 @@ class PersistentQueue:
         operation = event.get("operation", "")
         enqueued_at = event.get("enqueued_at") or _now_iso()
 
-        # Handle binary data: write to disk, remove from payload.
-        blob_path: str | None = None
-        raw_bytes = event.get("raw_bytes")
+        # Prepare payload (strip binary data and legacy callbacks).
         payload_event = dict(event)
-        payload_event.pop("raw_bytes", None)
-        payload_event.pop("_on_indexed", None)  # strip legacy callback
-
-        if raw_bytes is not None:
-            self._blob_dir.mkdir(parents=True, exist_ok=True)
-            blob_file = self._blob_dir / event_id
-            blob_file.write_bytes(raw_bytes)
-            blob_path = str(blob_file)
-
+        raw_bytes = payload_event.pop("raw_bytes", None)
+        payload_event.pop("_on_indexed", None)
         payload = json.dumps(payload_event, default=str)
 
+        blob_path: str | None = None
+
         with self._lock:
+            # Atomic source_id dedup check inside the lock — prevents the
+            # race where two threads both pass is_enqueued() then both insert.
+            existing = self._conn.execute(
+                "SELECT id FROM queue WHERE source_id = ? "
+                "AND status IN ('pending', 'processing') LIMIT 1",
+                (source_id,),
+            ).fetchone()
+            if existing:
+                # Already enqueued — still apply cursor update if requested.
+                if cursor_key is not None and cursor_value is not None:
+                    self._conn.execute(
+                        "INSERT OR REPLACE INTO cursors (key, value, updated_at) "
+                        "VALUES (?, ?, ?)",
+                        (cursor_key, cursor_value, _now_iso()),
+                    )
+                return existing[0]
+
             self._conn.execute("BEGIN IMMEDIATE")
             try:
+                # Write blob AFTER acquiring the transaction lock so a crash
+                # between blob write and INSERT leaves the DB clean (the
+                # orphaned blob is cleaned up on rollback).
+                if raw_bytes is not None:
+                    self._blob_dir.mkdir(parents=True, exist_ok=True)
+                    blob_file = self._blob_dir / event_id
+                    blob_file.write_bytes(raw_bytes)
+                    blob_path = str(blob_file)
+
                 self._conn.execute(
-                    "INSERT OR IGNORE INTO queue "
+                    "INSERT INTO queue "
                     "(id, source_type, source_id, operation, status, payload, "
                     " blob_path, enqueued_at) "
                     "VALUES (?, ?, ?, ?, 'pending', ?, ?, ?)",
@@ -146,7 +169,10 @@ class PersistentQueue:
                     )
                 self._conn.execute("COMMIT")
             except BaseException:
-                self._conn.execute("ROLLBACK")
+                try:
+                    self._conn.execute("ROLLBACK")
+                except Exception:
+                    pass
                 # Clean up blob on failure.
                 if blob_path is not None:
                     with contextlib.suppress(OSError):

@@ -340,7 +340,13 @@ class OmniFocusSource(PythonSource):
             _save_state(self._state_path, current)
             return
 
-        for ev in events:
-            queue.enqueue(ev)
-        # Save state after all events enqueued.
+        state_json = json.dumps(current, default=str)
+        for i, ev in enumerate(events):
+            is_last = i == len(events) - 1
+            queue.enqueue(
+                ev,
+                cursor_key="omnifocus" if is_last else None,
+                cursor_value=state_json if is_last else None,
+            )
+        # Also persist to legacy file for backwards compatibility.
         _save_state(self._state_path, current)

@@ -25,8 +25,11 @@ _RATE_LIMIT_INTERVAL = 1.0
 _last_request_time = 0.0
 _rate_lock = threading.Lock()
 
-# ~1km in degrees (at equator; conservative for higher latitudes)
-_CACHE_RADIUS_DEG = 0.009
+# Cache radius for nearby Location dedup.
+# 0.005° ≈ 550m at equator, ~275m at 60°N latitude.
+# Kept small to avoid matching wrong cities. The Chebyshev (square)
+# check means actual match distance is up to sqrt(2) × this value.
+_CACHE_RADIUS_DEG = 0.005
 
 
 @dataclass
@@ -57,7 +60,9 @@ def reverse_geocode(lat: float, lon: float) -> GeocodedLocation:
     _enforce_rate_limit()
 
     try:
-        geolocator = Nominatim(user_agent="fieldnotes-pipeline/0.1")
+        geolocator = Nominatim(
+            user_agent="fieldnotes-pipeline/0.1 (https://github.com/mmlac/fieldnotes)"
+        )
         location = geolocator.reverse(
             (lat, lon),
             exactly_one=True,

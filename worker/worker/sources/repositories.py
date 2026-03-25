@@ -408,9 +408,15 @@ class RepositorySource(PythonSource):
         # through the pipeline.
         cursors[repo_key] = head_sha
 
-        for ev in events:
-            queue.enqueue(ev)
-        # Save cursor after all events enqueued.
+        cursor_json = json.dumps(cursors)
+        for i, ev in enumerate(events):
+            is_last = i == len(events) - 1
+            queue.enqueue(
+                ev,
+                cursor_key="repositories" if is_last else None,
+                cursor_value=cursor_json if is_last else None,
+            )
+        # Also persist to legacy file for backwards compatibility.
         _save_cursor(self._cursor_path, cursors)
 
     async def _collect_all_files(

@@ -16,6 +16,13 @@ from typing import Any
 
 from PIL import Image
 
+# Register HEIF/HEIC support if pillow-heif is installed.
+try:
+    from pillow_heif import register_heif_opener
+    register_heif_opener()
+except ImportError:
+    pass
+
 logger = logging.getLogger(__name__)
 
 
@@ -52,6 +59,8 @@ def extract_exif_gps(image_bytes: bytes) -> ExifGpsResult:
     except Exception:
         logger.debug("Could not read EXIF data")
         return ExifGpsResult()
+    finally:
+        img.close()
 
     if not exif_data:
         return ExifGpsResult()
@@ -116,6 +125,20 @@ def _parse_gps_coordinate(
 
     if ref in ("S", "W"):
         decimal = -decimal
+
+    # Reject invalid, infinite, or NaN coordinates.
+    import math
+    if math.isnan(decimal) or math.isinf(decimal):
+        return None
+    # Reject out-of-range values.
+    if ref in ("N", "S") and abs(decimal) > 90:
+        return None
+    if ref in ("E", "W") and abs(decimal) > 180:
+        return None
+    # Reject 0,0 (Null Island) — almost always a GPS malfunction.
+    # Genuine photos from 0°N 0°E in the Gulf of Guinea are extremely rare.
+    if decimal == 0.0:
+        return None
 
     return decimal
 
