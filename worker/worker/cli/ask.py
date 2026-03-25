@@ -653,6 +653,8 @@ def run_ask(
             print(answer)
             return 0
     except Exception as exc:
+        import traceback
+        traceback.print_exc()
         print(f"error: {exc}", file=sys.stderr)
         return 1
     finally:
