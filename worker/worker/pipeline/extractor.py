@@ -12,6 +12,7 @@ per chunk.
 from __future__ import annotations
 
 import json
+import os
 import logging
 from dataclasses import dataclass, field
 from typing import Any
@@ -24,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 EXTRACT_ROLE = "extract"
 FALLBACK_ROLE = "extract_fallback"
-LLM_TIMEOUT = 120.0  # seconds
+LLM_TIMEOUT = float(os.environ.get("FIELDNOTES_LLM_TIMEOUT", 600.0))
 
 ALLOWED_ENTITY_TYPES = frozenset(
     {"Person", "Technology", "Project", "Organization", "Concept", "Location"}

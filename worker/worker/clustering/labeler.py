@@ -12,6 +12,7 @@ Returns a list of LabeledCluster(cluster_id, label, description).
 from __future__ import annotations
 
 import json
+import os
 import logging
 from collections import Counter
 from dataclasses import dataclass
@@ -28,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 CLUSTER_LABEL_ROLE = "cluster_label"
 DEFAULT_TOP_K = 20
-LLM_TIMEOUT = 120.0  # seconds
+LLM_TIMEOUT = float(os.environ.get("FIELDNOTES_LLM_TIMEOUT", 600.0))
 
 MAX_LABEL_LEN = 100
 MAX_DESCRIPTION_LEN = 500

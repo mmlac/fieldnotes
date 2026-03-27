@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import logging
 from dataclasses import dataclass, field
 from typing import Any
@@ -23,7 +24,7 @@ logger = logging.getLogger(__name__)
 VISION_ROLE = "vision"
 
 ENTITY_CONFIDENCE = 0.80
-LLM_TIMEOUT = 120.0  # seconds
+LLM_TIMEOUT = float(os.environ.get("FIELDNOTES_LLM_TIMEOUT", 600.0))
 MAX_ENTITY_NAME_LEN = 512
 MAX_DESCRIPTION_LEN = 5000
 MAX_VISIBLE_TEXT_LEN = 10000

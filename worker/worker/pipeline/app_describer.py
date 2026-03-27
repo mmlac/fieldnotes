@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -24,7 +25,7 @@ logger = logging.getLogger(__name__)
 DESCRIBE_ROLE = "describe"
 FALLBACK_ROLE = "extract"
 BATCH_SIZE = 10
-LLM_TIMEOUT = 60.0
+LLM_TIMEOUT = float(os.environ.get("FIELDNOTES_LLM_TIMEOUT", 600.0))
 
 SYSTEM_PROMPT = """\
 You are a macOS application identifier. For each application, generate a \
