@@ -404,8 +404,8 @@ class TestGoogleCalendarSource:
         assert "Lunch" in events[3]["text"]
 
     @pytest.mark.asyncio
-    async def test_recurring_dedup_not_applied_during_incremental(self) -> None:
-        """Incremental sync should NOT dedup recurring events."""
+    async def test_recurring_dedup_applied_during_incremental(self) -> None:
+        """Incremental sync should also dedup recurring events."""
         source = GoogleCalendarSource()
         source.configure({})
         queue = _TestQueue()
@@ -431,7 +431,38 @@ class TestGoogleCalendarSource:
         await source._poll_calendar(mock_service, queue, "primary", "old-token", {})
 
         assert queue.qsize() == 2
-        # Both should retain text in incremental mode
-        for _ in range(2):
-            event = queue.get_nowait()
-            assert event["text"] != ""
+        first = queue.get_nowait()
+        second = queue.get_nowait()
+        # First instance keeps text, second is stripped
+        assert first["text"] != ""
+        assert second["text"] == ""
+
+    @pytest.mark.asyncio
+    async def test_seen_series_persisted_across_polls(self) -> None:
+        """Persistent seen_series prevents re-extraction on subsequent polls."""
+        source = GoogleCalendarSource()
+        source.configure({})
+        queue = _TestQueue()
+
+        # Simulate a series already seen in a previous poll
+        seen_series = {"recurring-base-id"}
+
+        items = [_calendar_event(event_id="new-instance", summary="Daily Standup")]
+        items[0]["recurringEventId"] = "recurring-base-id"
+
+        result_page = {"items": items, "nextSyncToken": "sync-2"}
+        mock_events = MagicMock()
+        mock_list = MagicMock()
+        mock_list.execute.return_value = result_page
+        mock_events.list.return_value = mock_list
+        mock_service = MagicMock()
+        mock_service.events.return_value = mock_events
+
+        await source._poll_calendar(
+            mock_service, queue, "primary", "old-token", {}, seen_series,
+        )
+
+        assert queue.qsize() == 1
+        event = queue.get_nowait()
+        # Series was already seen — text stripped even for first instance in this poll
+        assert event["text"] == ""

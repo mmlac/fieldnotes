@@ -228,14 +228,21 @@ class GoogleCalendarSource(PythonSource):
         )
         service = build("calendar", "v3", credentials=creds)
 
-        # Load persisted sync tokens from queue DB (migrated from JSON file).
+        # Load persisted cursor state from queue DB (migrated from JSON file).
         raw_cursor = queue.load_cursor("calendar")
         sync_tokens: dict[str, str] = {}
+        seen_series: set[str] = set()
         if raw_cursor:
             try:
                 data = json.loads(raw_cursor)
                 if isinstance(data, dict):
-                    sync_tokens = data
+                    # New format: {"sync_tokens": {...}, "seen_series": [...]}
+                    if "sync_tokens" in data:
+                        sync_tokens = data["sync_tokens"]
+                        seen_series = set(data.get("seen_series", []))
+                    else:
+                        # Legacy format: {calendar_id: sync_token}
+                        sync_tokens = data
             except (json.JSONDecodeError, AttributeError):
                 pass
         # Fall back to legacy JSON file if not yet migrated.
@@ -257,7 +264,7 @@ class GoogleCalendarSource(PythonSource):
                         sync_token = sync_tokens.get(cal_id)
                         new_token = await self._poll_calendar(
                             service, queue, cal_id, sync_token,
-                            sync_tokens,
+                            sync_tokens, seen_series,
                         )
                         if new_token:
                             sync_tokens[cal_id] = new_token
@@ -296,6 +303,7 @@ class GoogleCalendarSource(PythonSource):
         calendar_id: str,
         sync_token: str | None,
         sync_tokens: dict[str, str],
+        seen_series: set[str] | None = None,
     ) -> str | None:
         """Fetch events for a single calendar.  Returns new sync token."""
         is_backfill = sync_token is None
@@ -330,11 +338,13 @@ class GoogleCalendarSource(PythonSource):
         total_recurring_skipped = 0
         total_skipped_processed = 0
         page_token: str | None = None
-        # During backfill, track recurring series we've already emitted a
-        # full (text-bearing) event for.  Subsequent instances of the same
-        # series get their CalendarEvent node + GraphHints written but
-        # skip the expensive chunk → embed → extract pipeline.
-        seen_recurring: set[str] = set()
+        # Track recurring series we've already emitted a full (text-bearing)
+        # event for.  Subsequent instances of the same series get their
+        # CalendarEvent node + GraphHints written but skip the expensive
+        # chunk → embed → extract pipeline.  The persistent seen_series set
+        # is shared across poll cycles to prevent re-extraction on re-index.
+        if seen_series is None:
+            seen_series = set()
         pending_events: list[dict[str, Any]] = []
 
         try:
@@ -356,19 +366,22 @@ class GoogleCalendarSource(PythonSource):
                             continue
                         if is_backfill:
                             ingest["initial_scan"] = True
-                            # Dedup recurring instances: keep full text
-                            # only for the first occurrence of each series.
-                            rid = event.get("recurringEventId", "")
-                            if rid:
-                                if rid in seen_recurring:
-                                    # Strip text so pipeline writes the
-                                    # CalendarEvent node (with its own
-                                    # start/end times) and GraphHints
-                                    # but skips embed + extract.
-                                    ingest["text"] = ""
-                                    total_recurring_skipped += 1
-                                else:
-                                    seen_recurring.add(rid)
+                        # Dedup recurring instances: keep full text only
+                        # for the first occurrence of each series.  Applied
+                        # in both backfill and incremental modes — the
+                        # persistent seen_series set prevents re-extraction
+                        # across poll cycles.
+                        rid = event.get("recurringEventId", "")
+                        if rid:
+                            if rid in seen_series:
+                                # Strip text so pipeline writes the
+                                # CalendarEvent node (with its own
+                                # start/end times) and GraphHints
+                                # but skips embed + extract.
+                                ingest["text"] = ""
+                                total_recurring_skipped += 1
+                            else:
+                                seen_series.add(rid)
                         pending_events.append(ingest)
                         total_events += 1
                         SOURCE_WATCHER_EVENTS.labels(
@@ -392,19 +405,19 @@ class GoogleCalendarSource(PythonSource):
             # capture whatever sync token we obtained so far.
             raise
 
-        # Enqueue the collected events with _on_indexed callbacks.
-        if is_backfill and pending_events:
-            # Capture the sync token to save once ALL events are indexed.
-            def _save_sync_token() -> None:
-                if new_sync_token:
-                    sync_tokens[calendar_id] = new_sync_token
-                    save_json_atomic(self._cursor_path, sync_tokens)
-                    logger.info(
-                        "Calendar %s: sync token saved after backfill",
-                        calendar_id,
-                    )
+        def _cursor_json() -> str:
+            """Build cursor JSON with sync tokens and seen series."""
+            return json.dumps({
+                "sync_tokens": sync_tokens,
+                "seen_series": sorted(seen_series),
+            })
 
-            cursor_val = json.dumps(sync_tokens) if new_sync_token else None
+        # Enqueue the collected events with cursor persistence.
+        if is_backfill and pending_events:
+            if new_sync_token:
+                sync_tokens[calendar_id] = new_sync_token
+
+            cursor_val = _cursor_json() if new_sync_token else None
             for i, ingest in enumerate(pending_events):
                 is_last = i == len(pending_events) - 1
                 queue.enqueue(
@@ -413,11 +426,18 @@ class GoogleCalendarSource(PythonSource):
                     cursor_value=cursor_val if is_last else None,
                 )
             # Also persist to legacy file.
-            _save_sync_token()
+            if new_sync_token:
+                save_json_atomic(self._cursor_path, sync_tokens)
+                logger.info(
+                    "Calendar %s: sync token saved after backfill",
+                    calendar_id,
+                )
         else:
             # Incremental poll.
             if pending_events:
-                cursor_val = json.dumps(sync_tokens) if new_sync_token else None
+                if new_sync_token:
+                    sync_tokens[calendar_id] = new_sync_token
+                cursor_val = _cursor_json() if new_sync_token else None
                 for i, ingest in enumerate(pending_events):
                     is_last = i == len(pending_events) - 1
                     queue.enqueue(

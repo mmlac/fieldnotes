@@ -102,7 +102,43 @@ class GoogleCalendarParser(BaseParser):
         # --- GraphHints: Person ↔ CalendarEvent relationships ---
         graph_hints: list[GraphHint] = []
 
-        # ORGANIZED_BY: CalendarEvent → Person (organizer)
+        # For recurring events, create a CalendarSeries node and link
+        # person relationships to the series instead of each instance.
+        # This prevents N×M edge explosion (N instances × M attendees).
+        if recurring_event_id:
+            series_props: dict[str, Any] = {
+                "series_id": recurring_event_id,
+                "summary": summary,
+            }
+            if calendar_id:
+                series_props["calendar_id"] = calendar_id
+
+            # INSTANCE_OF: CalendarEvent → CalendarSeries
+            graph_hints.append(
+                GraphHint(
+                    subject_id=source_id,
+                    subject_label="CalendarEvent",
+                    predicate="INSTANCE_OF",
+                    object_id=recurring_event_id,
+                    object_label="CalendarSeries",
+                    object_props=series_props,
+                    object_merge_key="series_id",
+                    confidence=1.0,
+                )
+            )
+
+        # Determine the anchor node for person relationships:
+        # series node for recurring events, event node otherwise.
+        if recurring_event_id:
+            person_anchor_id = recurring_event_id
+            person_anchor_label = "CalendarSeries"
+            person_anchor_merge_key = "series_id"
+        else:
+            person_anchor_id = source_id
+            person_anchor_label = "CalendarEvent"
+            person_anchor_merge_key = "source_id"
+
+        # ORGANIZED_BY: anchor → Person (organizer)
         if organizer_email:
             norm_org = canonicalize_email(organizer_email)
             org_props: dict[str, Any] = {"email": norm_org}
@@ -110,8 +146,9 @@ class GoogleCalendarParser(BaseParser):
                 org_props["name"] = organizer_name
             graph_hints.append(
                 GraphHint(
-                    subject_id=source_id,
-                    subject_label="CalendarEvent",
+                    subject_id=person_anchor_id,
+                    subject_label=person_anchor_label,
+                    subject_merge_key=person_anchor_merge_key,
                     predicate="ORGANIZED_BY",
                     object_id=f"person:{norm_org}",
                     object_label="Person",
@@ -121,7 +158,7 @@ class GoogleCalendarParser(BaseParser):
                 )
             )
 
-        # ATTENDED_BY: CalendarEvent → Person (each attendee)
+        # ATTENDED_BY: anchor → Person (each attendee)
         if len(attendees) > _MAX_ATTENDEES:
             logger.warning(
                 "Event %s has %d attendees, truncating to %d",
@@ -140,12 +177,12 @@ class GoogleCalendarParser(BaseParser):
             att_name = att.get("name", "")
             if att_name:
                 att_props["name"] = att_name
-            response_status = att.get("response", "needsAction")
 
             graph_hints.append(
                 GraphHint(
-                    subject_id=source_id,
-                    subject_label="CalendarEvent",
+                    subject_id=person_anchor_id,
+                    subject_label=person_anchor_label,
+                    subject_merge_key=person_anchor_merge_key,
                     predicate="ATTENDED_BY",
                     object_id=f"person:{norm_att}",
                     object_label="Person",
@@ -155,16 +192,14 @@ class GoogleCalendarParser(BaseParser):
                 )
             )
 
-            # Store response status on the relationship
-            # (The writer will set hint=true on the edge)
-
-        # CREATED_BY: CalendarEvent → Person (creator, if different from organizer)
+        # CREATED_BY: anchor → Person (creator, if different from organizer)
         if creator_email and canonicalize_email(creator_email) != canonicalize_email(organizer_email):
             norm_creator = canonicalize_email(creator_email)
             graph_hints.append(
                 GraphHint(
-                    subject_id=source_id,
-                    subject_label="CalendarEvent",
+                    subject_id=person_anchor_id,
+                    subject_label=person_anchor_label,
+                    subject_merge_key=person_anchor_merge_key,
                     predicate="CREATED_BY",
                     object_id=f"person:{norm_creator}",
                     object_label="Person",

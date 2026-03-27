@@ -104,7 +104,8 @@ class TestGoogleCalendarParser:
         assert meta["calendar_id"] == "primary"
         assert meta["start_time"] == "2026-03-21T09:00:00-07:00"
 
-    def test_organizer_hint(self):
+    def test_organizer_hint_non_recurring(self):
+        """Non-recurring events attach person hints to CalendarEvent."""
         docs = self.parser.parse(_make_event())
         org_hints = [
             h for h in docs[0].graph_hints if h.predicate == "ORGANIZED_BY"
@@ -119,6 +120,44 @@ class TestGoogleCalendarParser:
         assert h.object_props["name"] == "Alice Smith"
         assert h.object_merge_key == "email"
         assert h.confidence == 1.0
+
+    def test_recurring_creates_series_node(self):
+        """Recurring events create a CalendarSeries node with INSTANCE_OF."""
+        event = _make_event(meta={"recurring_event_id": "series-abc"})
+        docs = self.parser.parse(event)
+        instance_hints = [
+            h for h in docs[0].graph_hints if h.predicate == "INSTANCE_OF"
+        ]
+        assert len(instance_hints) == 1
+        h = instance_hints[0]
+        assert h.subject_id == "gcal:primary:evt-123"
+        assert h.subject_label == "CalendarEvent"
+        assert h.object_id == "series-abc"
+        assert h.object_label == "CalendarSeries"
+        assert h.object_merge_key == "series_id"
+        assert h.object_props["series_id"] == "series-abc"
+        assert h.object_props["summary"] == "Team standup"
+
+    def test_recurring_person_hints_on_series(self):
+        """Recurring events attach person hints to CalendarSeries, not instance."""
+        event = _make_event(meta={"recurring_event_id": "series-abc"})
+        docs = self.parser.parse(event)
+        org_hints = [
+            h for h in docs[0].graph_hints if h.predicate == "ORGANIZED_BY"
+        ]
+        assert len(org_hints) == 1
+        h = org_hints[0]
+        assert h.subject_id == "series-abc"
+        assert h.subject_label == "CalendarSeries"
+        assert h.subject_merge_key == "series_id"
+        assert h.object_props["email"] == "alice@example.com"
+
+        att_hints = [
+            h for h in docs[0].graph_hints if h.predicate == "ATTENDED_BY"
+        ]
+        for ah in att_hints:
+            assert ah.subject_label == "CalendarSeries"
+            assert ah.subject_merge_key == "series_id"
 
     def test_attendee_hints_exclude_self(self):
         """The 'self' attendee (me@example.com) should not generate a hint."""

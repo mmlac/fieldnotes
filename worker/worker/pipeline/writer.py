@@ -448,6 +448,7 @@ class Writer:
             # Indexes for hint-based node lookups
             "CREATE INDEX person_email IF NOT EXISTS FOR (n:Person) ON (n.email)",
             "CREATE INDEX thread_thread_id IF NOT EXISTS FOR (n:Thread) ON (n.thread_id)",
+            "CREATE INDEX calendar_series_id IF NOT EXISTS FOR (n:CalendarSeries) ON (n.series_id)",
             # Fulltext index for fuzzy entity candidate lookup
             (
                 "CREATE FULLTEXT INDEX entity_name_fulltext IF NOT EXISTS "
