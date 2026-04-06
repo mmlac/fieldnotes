@@ -44,6 +44,22 @@ class TestOllamaProviderConfigure:
         assert p._completion_timeout == 60.0
         assert p._embed_timeout == 15.0
 
+    def test_env_vars_override_config(self, monkeypatch) -> None:
+        monkeypatch.setenv("OLLAMA_COMPLETION_TIMEOUT", "99")
+        monkeypatch.setenv("OLLAMA_EMBED_TIMEOUT", "42")
+        p = OllamaProvider()
+        p.configure({"completion_timeout": 60, "embed_timeout": 15})
+        assert p._completion_timeout == 99.0
+        assert p._embed_timeout == 42.0
+
+    def test_env_vars_override_defaults(self, monkeypatch) -> None:
+        monkeypatch.setenv("OLLAMA_COMPLETION_TIMEOUT", "120")
+        monkeypatch.setenv("OLLAMA_EMBED_TIMEOUT", "90")
+        p = OllamaProvider()
+        p.configure({})
+        assert p._completion_timeout == 120.0
+        assert p._embed_timeout == 90.0
+
     @patch(
         "worker.models.providers.ollama._validate_ollama_url",
         side_effect=lambda url: url,

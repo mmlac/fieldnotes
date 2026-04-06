@@ -2,6 +2,7 @@
 
 import ipaddress
 import logging
+import os
 import socket
 from urllib.parse import urlparse
 from typing import Any
@@ -116,7 +117,7 @@ class OllamaProvider(ModelProvider):
 
     _base_url: str = "http://localhost:11434"
     _completion_timeout: float = 600.0
-    _embed_timeout: float = 30.0
+    _embed_timeout: float = 600.0
 
     @property
     def provider_type(self) -> str:
@@ -136,9 +137,13 @@ class OllamaProvider(ModelProvider):
         # When no base_url is provided the built-in default
         # (http://localhost:11434) is trusted and skips validation.
         self._completion_timeout = float(
-            cfg.get("completion_timeout", self._completion_timeout)
+            os.environ.get("OLLAMA_COMPLETION_TIMEOUT")
+            or cfg.get("completion_timeout", self._completion_timeout)
         )
-        self._embed_timeout = float(cfg.get("embed_timeout", self._embed_timeout))
+        self._embed_timeout = float(
+            os.environ.get("OLLAMA_EMBED_TIMEOUT")
+            or cfg.get("embed_timeout", self._embed_timeout)
+        )
 
     @_ollama_retry
     def complete(self, model: str, req: CompletionRequest) -> CompletionResponse:
