@@ -281,6 +281,73 @@ class TestRunDaemon:
 
         mock_server_cls.assert_not_called()
 
+    @pytest.mark.asyncio
+    @patch(_P_PARSER)
+    @patch(_P_PIPELINE)
+    @patch(_P_WRITER)
+    @patch(_P_REGISTRY)
+    @patch(_P_BUILD)
+    async def test_source_task_failure_is_logged_loudly(
+        self,
+        mock_build,
+        mock_reg,
+        mock_writer,
+        mock_pipeline,
+        mock_parser,
+        caplog,
+    ) -> None:
+        """A source.start() that raises must produce an ERROR log line
+        and bump the SOURCE_TASK_FAILED counter — not silently swallow
+        the exception inside the asyncio Task object.
+        """
+        from worker.metrics import SOURCE_TASK_FAILED
+
+        bad_source = MagicMock()
+        bad_source.name.return_value = "files"
+
+        async def fake_start_that_raises(queue, **_kwargs):
+            raise RuntimeError("watch path /missing does not exist")
+
+        bad_source.start = fake_start_that_raises
+
+        good_source = MagicMock()
+        good_source.name.return_value = "obsidian"
+
+        async def fake_start_ok(queue, **_kwargs):
+            await asyncio.sleep(999)
+
+        good_source.start = fake_start_ok
+        mock_build.return_value = [bad_source, good_source]
+
+        before = SOURCE_TASK_FAILED.labels(source_type="files")._value.get()
+
+        import logging as _logging
+
+        with caplog.at_level(_logging.ERROR, logger="worker.serve_daemon"):
+            task = asyncio.create_task(_run_daemon(_cfg()))
+            # Give the failing source task time to crash and the
+            # done_callback to fire.
+            await asyncio.sleep(0.2)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        # The crash must have been logged with traceback context.
+        crash_logs = [
+            r for r in caplog.records
+            if r.levelname == "ERROR"
+            and "files" in r.message
+            and "crashed" in r.message
+        ]
+        assert crash_logs, (
+            f"Expected an ERROR log surfacing the files source crash; "
+            f"got: {[r.message for r in caplog.records]}"
+        )
+
+        # The metric should have incremented.
+        after = SOURCE_TASK_FAILED.labels(source_type="files")._value.get()
+        assert after == before + 1
+
 
 # ------------------------------------------------------------------
 # run_daemon — synchronous entrypoint with retry logic

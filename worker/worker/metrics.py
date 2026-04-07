@@ -173,6 +173,15 @@ INDEXED_PREFILTER_SKIPPED = Counter(
     registry=REGISTRY,
 )
 
+SOURCE_TASK_FAILED = Counter(
+    "source_task_failed_total",
+    "Source background task crashed and exited prematurely. "
+    "A non-zero value here means the source is no longer running and "
+    "will not emit further events until the daemon restarts.",
+    ["source_type"],
+    registry=REGISTRY,
+)
+
 # ---------------------------------------------------------------------------
 # Pipeline histograms
 # ---------------------------------------------------------------------------

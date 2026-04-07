@@ -699,3 +699,92 @@ async def test_restart_only_emits_new_changes(tmp_path: Path) -> None:
     created = [e for e in scan_events if e["operation"] == "created"]
     assert len(created) == 1
     assert "new.md" in created[0]["source_id"]
+
+
+# ── Resilience: bad watch paths must not stop the scan ──────────────
+
+
+@pytest.mark.asyncio
+async def test_missing_watch_path_does_not_stop_scan(tmp_path: Path) -> None:
+    """A non-existent watch_path is logged-and-skipped; other paths still scan."""
+    good = tmp_path / "good"
+    good.mkdir()
+    (good / "kept.md").write_text("hello")
+
+    missing = tmp_path / "this_dir_does_not_exist"
+
+    fs = FileSource()
+    fs.configure({"watch_paths": [str(missing), str(good)]})
+
+    q = FakeQueue()
+    events = await _run_source_briefly(fs, q)
+
+    created = [e for e in events if e["operation"] == "created"]
+    source_ids = {e["source_id"] for e in created}
+    # Good directory was scanned in spite of the missing one being listed first.
+    assert any("kept.md" in sid for sid in source_ids)
+
+
+@pytest.mark.asyncio
+async def test_file_watch_path_does_not_stop_scan(tmp_path: Path) -> None:
+    """A watch_path that points at a regular file (not a directory) is
+    skipped with a warning; sibling paths still scan."""
+    good = tmp_path / "good"
+    good.mkdir()
+    (good / "kept.md").write_text("hi")
+
+    not_a_dir = tmp_path / "i_am_a_file.txt"
+    not_a_dir.write_text("oops, file not directory")
+
+    fs = FileSource()
+    fs.configure({"watch_paths": [str(not_a_dir), str(good)]})
+
+    q = FakeQueue()
+    events = await _run_source_briefly(fs, q)
+
+    created = [e for e in events if e["operation"] == "created"]
+    source_ids = {e["source_id"] for e in created}
+    assert any("kept.md" in sid for sid in source_ids)
+    # The file-as-watch-path itself must not have been emitted as an event.
+    assert not any("i_am_a_file.txt" in sid for sid in source_ids)
+
+
+@pytest.mark.asyncio
+async def test_unreadable_subdir_does_not_stop_scan(tmp_path: Path) -> None:
+    """A subdirectory that raises PermissionError when listed must not
+    stop iteration of its sibling subdirectories."""
+    import os as _os
+    import sys
+
+    if sys.platform.startswith("win"):
+        pytest.skip("chmod-based permission test is POSIX-only")
+    if _os.geteuid() == 0:  # pragma: no cover - root bypasses chmod
+        pytest.skip("running as root, chmod 000 has no effect")
+
+    watched = tmp_path / "watched"
+    watched.mkdir()
+    (watched / "readable_a.md").write_text("alpha")
+
+    locked = watched / "locked"
+    locked.mkdir()
+    (locked / "secret.md").write_text("hidden")
+    (watched / "readable_b.md").write_text("beta")
+
+    # Strip read+execute from the locked dir so os.walk's listdir fails on it.
+    _os.chmod(locked, 0o000)
+    try:
+        fs = _make_source(tmp_path)
+        q = FakeQueue()
+        events = await _run_source_briefly(fs, q)
+    finally:
+        # Always restore permissions so pytest can clean up tmp_path.
+        _os.chmod(locked, 0o700)
+
+    created = [e for e in events if e["operation"] == "created"]
+    source_ids = {e["source_id"] for e in created}
+    # Both readable siblings should have been picked up despite the
+    # locked subdirectory being unlistable.
+    assert any("readable_a.md" in sid for sid in source_ids)
+    assert any("readable_b.md" in sid for sid in source_ids)
+    # The hidden file should NOT have been read.
+    assert not any("secret.md" in sid for sid in source_ids)

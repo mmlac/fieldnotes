@@ -42,6 +42,7 @@ async def _run_daemon(cfg: Config) -> None:
         INITIAL_SYNC_ITEMS_PROCESSED,
         QUEUE_DEPTH,
         QUEUE_FINISH_ETA_SECONDS,
+        SOURCE_TASK_FAILED,
         initial_sync_all_sources_done,
         initial_sync_register_source,
     )
@@ -102,12 +103,49 @@ async def _run_daemon(cfg: Config) -> None:
     if recovered:
         logger.info("Recovered %d interrupted queue item(s) from previous run", recovered)
 
+    def _on_source_task_done(source_name: str, task: asyncio.Task[None]) -> None:
+        """Surface silent source-task crashes.
+
+        ``asyncio.create_task`` parks unretrieved exceptions inside the
+        Task object — they only appear at shutdown when the task is
+        finalised, which is far too late to debug a startup failure.
+        This callback fires the moment a source task finishes (cleanly,
+        cancelled, or with an exception) and logs any non-cancellation
+        exception with a full traceback.  It also bumps a Prometheus
+        counter so the dashboard can show "source X is dead" instead of
+        a silently-stopped gauge.
+        """
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is None:
+            # Source returned normally — unusual for a long-running
+            # watcher loop, worth a warning.
+            logger.warning(
+                "Source task %s exited cleanly without being cancelled — "
+                "this source will no longer emit events",
+                source_name,
+            )
+            SOURCE_TASK_FAILED.labels(source_type=source_name).inc()
+            return
+        logger.error(
+            "Source task %s crashed and will no longer emit events: %s",
+            source_name,
+            exc,
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
+        SOURCE_TASK_FAILED.labels(source_type=source_name).inc()
+
     source_tasks: list[asyncio.Task[None]] = []
     for source in sources:
         initial_sync_register_source()
+        source_name = source.name()
         task = asyncio.create_task(
             source.start(queue, indexed_check=indexed_check),
-            name=f"source:{source.name()}",
+            name=f"source:{source_name}",
+        )
+        task.add_done_callback(
+            lambda t, name=source_name: _on_source_task_done(name, t)
         )
         source_tasks.append(task)
 

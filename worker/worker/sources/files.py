@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import fnmatch
 import logging
+import os
 import time
 import uuid
 from datetime import datetime, timezone
@@ -119,29 +120,101 @@ class FileSource(PythonSource):
         return False
 
     def _scan_directories(self) -> dict[str, FileEntry]:
-        """Walk all watch_paths and build a map of path → FileEntry."""
+        """Walk all watch_paths and build a map of path → FileEntry.
+
+        A failure on one watch_path (missing directory, permission denied,
+        unreadable subtree) MUST NOT stop the scan of the others.  Each
+        path is wrapped in its own try/except, and the per-directory walk
+        uses ``os.walk`` with an ``onerror`` callback so unreadable
+        subdirs are logged-and-skipped instead of aborting iteration.
+        """
         current: dict[str, FileEntry] = {}
         for watch_path in self._watch_paths:
+            try:
+                self._scan_one_watch_path(watch_path, current)
+            except Exception:
+                # Last-resort backstop — anything that escapes the
+                # per-directory error handling below should still leave
+                # the remaining watch_paths scannable.
+                logger.exception(
+                    "Initial scan of %s failed, skipping the rest of this path",
+                    watch_path,
+                )
+        return current
+
+    def _scan_one_watch_path(
+        self, watch_path: Path, current: dict[str, FileEntry]
+    ) -> None:
+        """Scan a single watch_path and merge its results into *current*.
+
+        Resilient to:
+          - watch_path missing or not a directory
+          - watch_path stat raising (broken symlink, mount unavailable)
+          - subdirectories that raise PermissionError or OSError mid-walk
+          - individual files that disappear or become unreadable mid-walk
+        """
+        try:
+            if not watch_path.exists():
+                logger.warning(
+                    "Watch path does not exist, skipping: %s", watch_path
+                )
+                return
             if not watch_path.is_dir():
-                continue
-            if self._recursive:
-                iterator = watch_path.rglob("*")
-            else:
-                iterator = watch_path.glob("*")
-            for file_path in iterator:
-                if not file_path.is_file():
-                    continue
+                logger.warning(
+                    "Watch path is not a directory, skipping: %s", watch_path
+                )
+                return
+        except OSError as exc:
+            logger.warning(
+                "Cannot stat watch path %s, skipping: %s", watch_path, exc
+            )
+            return
+
+        def _on_walk_error(exc: OSError) -> None:
+            # os.walk's onerror is called when listing a directory fails.
+            # Log and continue — the walker will skip the unreadable dir
+            # but keep going through siblings.
+            logger.warning(
+                "Cannot read directory during scan (%s), skipping: %s",
+                exc.__class__.__name__,
+                exc,
+            )
+
+        if self._recursive:
+            walker = os.walk(str(watch_path), onerror=_on_walk_error)
+        else:
+            # Non-recursive: emit just the top-level entries.
+            try:
+                top_entries = list(watch_path.iterdir())
+            except OSError as exc:
+                logger.warning(
+                    "Cannot list %s, skipping: %s", watch_path, exc
+                )
+                return
+            top_files = [e.name for e in top_entries if not e.is_dir()]
+            walker = [(str(watch_path), [], top_files)]
+
+        for dirpath, _dirnames, filenames in walker:
+            for fname in filenames:
+                file_path = Path(dirpath) / fname
                 abs_path = str(file_path)
-                if self._should_skip(abs_path):
-                    continue
+                # Per-file try/except so a single bad file (vanished
+                # mid-scan, permissions, dangling symlink) can never
+                # poison the rest of the directory walk.
                 try:
+                    if not file_path.is_file():
+                        continue
+                    if self._should_skip(abs_path):
+                        continue
                     result = _read_file_atomic(file_path, self._max_file_size)
                     if result is None:
                         # File exceeds max_file_size — index metadata only
                         # (no content hash, no body for parsing).
                         stat = file_path.stat()
                         current[abs_path] = FileEntry(
-                            sha256="", mtime_ns=stat.st_mtime_ns, size=stat.st_size
+                            sha256="",
+                            mtime_ns=stat.st_mtime_ns,
+                            size=stat.st_size,
                         )
                         continue
                     data, mtime_ns = result
@@ -149,11 +222,12 @@ class FileSource(PythonSource):
                     current[abs_path] = FileEntry(
                         sha256=sha256, mtime_ns=mtime_ns, size=len(data)
                     )
-                except OSError:
+                except OSError as exc:
                     logger.warning(
-                        "Failed to read %s during initial scan, skipping", abs_path
+                        "Failed to read %s during initial scan (%s), skipping",
+                        abs_path,
+                        exc,
                     )
-        return current
 
     def _build_scan_event(
         self, file_path: str, operation: str, entry: FileEntry | None
