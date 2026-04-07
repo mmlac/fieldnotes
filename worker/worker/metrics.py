@@ -328,9 +328,11 @@ INITIAL_SYNC_ITEMS_PROCESSED = Gauge(
     registry=REGISTRY,
 )
 
-INITIAL_SYNC_ETA_SECONDS = Gauge(
-    "fieldnotes_initial_sync_eta_seconds",
-    "Estimated seconds remaining for initial sync to complete",
+QUEUE_FINISH_ETA_SECONDS = Gauge(
+    "fieldnotes_queue_finish_eta_seconds",
+    "Estimated seconds until the ingest queue is fully drained "
+    "(rolling-average processing time per item × current queue depth). "
+    "0 = queue empty.",
     registry=REGISTRY,
 )
 

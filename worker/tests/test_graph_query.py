@@ -374,11 +374,24 @@ class TestGraphQuerier:
         mock_chain_cls: MagicMock,
         mock_gdb_cls: MagicMock,
     ) -> None:
+        """``refresh_schema`` now uses APOC-free Cypher (Neo4j Community
+        Edition lacks ``apoc.meta.data``), so it queries the graph
+        directly via ``db.labels()`` / ``db.relationshipTypes()``
+        instead of delegating to ``Neo4jGraph.refresh_schema``.
+        """
         querier = _make_querier(mock_neo4j_graph_cls, mock_chain_cls, mock_gdb_cls)
         mock_graph = mock_neo4j_graph_cls.return_value
-        mock_graph.refresh_schema.reset_mock()
+        mock_graph.query.return_value = []
+        mock_graph.query.reset_mock()
+
         querier.refresh_schema()
-        mock_graph.refresh_schema.assert_called_once()
+
+        # Verify the APOC-free schema discovery queries fired.
+        cyphers = [
+            (call.args[0] if call.args else "") for call in mock_graph.query.call_args_list
+        ]
+        assert any("db.labels()" in c for c in cyphers)
+        assert any("db.relationshipTypes()" in c for c in cyphers)
 
     @patch("worker.query.graph.GraphDatabase")
     @patch("worker.query.graph.GraphCypherQAChain")

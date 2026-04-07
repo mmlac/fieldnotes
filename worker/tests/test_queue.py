@@ -155,6 +155,135 @@ class TestDedup:
         assert queue.depth() == 1
 
 
+class TestIndexedCheckPreFilter:
+    """Queue-level pre-filter that drops created events for source_ids
+    already chunked in Neo4j (avoids re-emission after cursor loss/restart).
+    """
+
+    def test_drops_created_event_when_already_indexed(
+        self, tmp_path: Path
+    ) -> None:
+        def indexed_check(sids):
+            return {sid for sid in sids if sid == "gmail:msg-1"}
+
+        q = PersistentQueue(
+            db_path=tmp_path / "queue.db", indexed_check=indexed_check
+        )
+        result = q.enqueue(
+            {
+                "id": "ev-1",
+                "source_type": "gmail",
+                "source_id": "gmail:msg-1",
+                "operation": "created",
+            }
+        )
+        assert result.startswith("skipped:")
+        assert q.depth() == 0
+
+    def test_allows_created_event_when_not_indexed(
+        self, tmp_path: Path
+    ) -> None:
+        q = PersistentQueue(
+            db_path=tmp_path / "queue.db",
+            indexed_check=lambda _sids: set(),
+        )
+        q.enqueue(
+            {
+                "id": "ev-1",
+                "source_type": "gmail",
+                "source_id": "gmail:new",
+                "operation": "created",
+            }
+        )
+        assert q.depth() == 1
+
+    def test_modified_event_always_enqueued_even_if_indexed(
+        self, tmp_path: Path
+    ) -> None:
+        """Modified events bypass the pre-filter so content_hash can decide."""
+        q = PersistentQueue(
+            db_path=tmp_path / "queue.db",
+            indexed_check=lambda sids: set(sids),  # everything is "indexed"
+        )
+        q.enqueue(
+            {
+                "id": "ev-1",
+                "source_type": "obsidian",
+                "source_id": "notes/foo.md",
+                "operation": "modified",
+            }
+        )
+        assert q.depth() == 1
+
+    def test_deleted_event_always_enqueued_even_if_indexed(
+        self, tmp_path: Path
+    ) -> None:
+        q = PersistentQueue(
+            db_path=tmp_path / "queue.db",
+            indexed_check=lambda sids: set(sids),
+        )
+        q.enqueue(
+            {
+                "id": "ev-1",
+                "source_type": "files",
+                "source_id": "/tmp/gone.txt",
+                "operation": "deleted",
+            }
+        )
+        assert q.depth() == 1
+
+    def test_skipped_enqueue_still_advances_cursor(
+        self, tmp_path: Path
+    ) -> None:
+        """Even when an item is dropped, the source's cursor must move
+        forward — otherwise the source would re-emit the same already-
+        indexed item every poll cycle."""
+        q = PersistentQueue(
+            db_path=tmp_path / "queue.db",
+            indexed_check=lambda sids: set(sids),
+        )
+        q.enqueue(
+            {
+                "id": "ev-1",
+                "source_type": "gmail",
+                "source_id": "gmail:msg-1",
+                "operation": "created",
+            },
+            cursor_key="gmail",
+            cursor_value=json.dumps({"history_id": "12345"}),
+        )
+        assert q.load_cursor("gmail") == json.dumps({"history_id": "12345"})
+
+    def test_indexed_check_failure_falls_through(self, tmp_path: Path) -> None:
+        """If indexed_check raises, the event must still enqueue."""
+        def boom(_sids):
+            raise RuntimeError("neo4j down")
+
+        q = PersistentQueue(db_path=tmp_path / "queue.db", indexed_check=boom)
+        q.enqueue(
+            {
+                "id": "ev-1",
+                "source_type": "files",
+                "source_id": "/a",
+                "operation": "created",
+            }
+        )
+        assert q.depth() == 1
+
+    def test_no_indexed_check_behaves_normally(self, tmp_path: Path) -> None:
+        """Backwards compat: queue without indexed_check enqueues everything."""
+        q = PersistentQueue(db_path=tmp_path / "queue.db")
+        q.enqueue(
+            {
+                "id": "ev-1",
+                "source_type": "files",
+                "source_id": "/a",
+                "operation": "created",
+            }
+        )
+        assert q.depth() == 1
+
+
 class TestAtomicCursorUpdate:
     def test_cursor_saved_with_enqueue(self, queue: PersistentQueue, event: dict) -> None:
         queue.enqueue(

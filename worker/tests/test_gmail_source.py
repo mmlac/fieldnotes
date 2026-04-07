@@ -17,6 +17,7 @@ import pytest
 from googleapiclient.errors import HttpError
 from httplib2 import Response
 
+from _fake_queue import FakeQueue
 from worker.sources.gmail import (
     BACKFILL_PAGE_DELAY,
     GmailSource,
@@ -266,7 +267,7 @@ class TestBackfill:
         source._max_initial_threads = 100
         source._label_filter = "INBOX"
 
-        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        queue = FakeQueue()
         history_id = await source._backfill(api, queue)
 
         assert history_id == "20"  # highest
@@ -282,7 +283,7 @@ class TestBackfill:
         source._max_initial_threads = 100
         source._label_filter = "INBOX"
 
-        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        queue = FakeQueue()
         await source._backfill(api, queue)
 
         event = queue.get_nowait()
@@ -299,7 +300,7 @@ class TestBackfill:
         source._max_initial_threads = 100
         source._label_filter = "INBOX"
 
-        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        queue = FakeQueue()
         await source._backfill(api, queue)
 
         _, call_kwargs = api.get.call_args
@@ -315,7 +316,7 @@ class TestBackfill:
         source._max_initial_threads = 3
         source._label_filter = "INBOX"
 
-        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        queue = FakeQueue()
         await source._backfill(api, queue)
 
         assert queue.qsize() == 3
@@ -331,7 +332,7 @@ class TestBackfill:
         source._max_initial_threads = 100
         source._label_filter = "INBOX"
 
-        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        queue = FakeQueue()
         result = await source._backfill(api, queue)
 
         assert result is None
@@ -348,7 +349,7 @@ class TestBackfill:
         source._max_initial_threads = 100
         source._label_filter = "INBOX"
 
-        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        queue = FakeQueue()
         result = await source._backfill(api, queue)
 
         assert result is None
@@ -385,7 +386,7 @@ class TestPollIncremental:
         source._cursor_path = tmp_path / "cursor.json"
         source._label_filter = "INBOX"
 
-        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        queue = FakeQueue()
         new_cursor = await source._poll_incremental(service, messages_api, queue, "100")
 
         assert new_cursor == "200"
@@ -416,7 +417,7 @@ class TestPollIncremental:
         source._cursor_path = tmp_path / "cursor.json"
         source._label_filter = "INBOX"
 
-        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        queue = FakeQueue()
         await source._poll_incremental(service, messages_api, queue, "100")
 
         event = queue.get_nowait()
@@ -446,7 +447,7 @@ class TestPollIncremental:
         source._cursor_path = tmp_path / "cursor.json"
         source._label_filter = "INBOX"
 
-        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        queue = FakeQueue()
         await source._poll_incremental(service, messages_api, queue, "100")
 
         _, call_kwargs = messages_api.get.call_args
@@ -458,7 +459,7 @@ class TestPollIncremental:
         source = GmailSource()
         source._cursor_path = tmp_path / "cursor.json"
 
-        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        queue = FakeQueue()
         result = await source._poll_incremental(MagicMock(), MagicMock(), queue, None)
 
         assert result is None
@@ -490,7 +491,7 @@ class TestPollIncremental:
         source._cursor_path = tmp_path / "cursor.json"
         source._label_filter = "INBOX"
 
-        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        queue = FakeQueue()
         await source._poll_incremental(service, messages_api, queue, "100")
 
         assert queue.qsize() == 1
@@ -511,7 +512,7 @@ class TestPollIncremental:
         source._cursor_path = tmp_path / "cursor.json"
         source._label_filter = "INBOX"
 
-        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        queue = FakeQueue()
         result = await source._poll_incremental(service, MagicMock(), queue, "100")
 
         assert result == "100"
@@ -536,7 +537,7 @@ class TestPollIncremental:
         source._cursor_path = cursor_file
         source._label_filter = "INBOX"
 
-        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        queue = FakeQueue()
         result = await source._poll_incremental(service, MagicMock(), queue, "100")
 
         assert result is None
@@ -561,13 +562,17 @@ class TestPollIncremental:
         source._cursor_path = tmp_path / "nonexistent.json"
         source._label_filter = "INBOX"
 
-        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        queue = FakeQueue()
         result = await source._poll_incremental(service, MagicMock(), queue, "100")
 
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_saves_new_cursor_to_disk(self, tmp_path: Path) -> None:
+    async def test_saves_new_cursor_to_queue(self, tmp_path: Path) -> None:
+        """When _poll_incremental advances the historyId it persists the
+        new value via ``queue.save_cursor("gmail", ...)`` — the cursor
+        no longer lives on disk.
+        """
         service = MagicMock()
         history_api = MagicMock()
         history_list_req = MagicMock()
@@ -578,15 +583,16 @@ class TestPollIncremental:
         history_api.list.return_value = history_list_req
         service.users.return_value.history.return_value = history_api
 
-        cursor_file = tmp_path / "cursor.json"
         source = GmailSource()
-        source._cursor_path = cursor_file
+        source._cursor_path = tmp_path / "unused.json"
         source._label_filter = "INBOX"
 
-        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        queue = FakeQueue()
         await source._poll_incremental(service, MagicMock(), queue, "400")
 
-        data = json.loads(cursor_file.read_text())
+        raw = queue.load_cursor("gmail")
+        assert raw is not None
+        data = json.loads(raw)
         assert data["history_id"] == "500"
 
 
@@ -718,7 +724,7 @@ class TestBackfillRateLimiting:
         async def mock_sleep(seconds):
             sleep_calls.append(seconds)
 
-        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        queue = FakeQueue()
         with patch("worker.sources.gmail.asyncio.sleep", side_effect=mock_sleep):
             await source._backfill(api, queue)
 

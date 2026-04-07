@@ -21,9 +21,19 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
+
+IndexedCheck = Callable[[list[str]], set[str]]
+"""Callable returning the subset of *source_ids* already chunked in Neo4j.
+
+Wired into :class:`PersistentQueue` so ``enqueue()`` can drop ``created``
+events whose source_id is already fully indexed — saving the per-item
+parse cost on restart and after cursor loss.  ``modified`` and
+``deleted`` events are always enqueued (modified content needs to be
+re-checked via the content-hash compare; deletions must be processed).
+"""
 
 _SCHEMA = """\
 CREATE TABLE IF NOT EXISTS queue (
@@ -73,10 +83,12 @@ class PersistentQueue:
         db_path: Path,
         blob_dir: Path | None = None,
         max_retries: int = DEFAULT_MAX_RETRIES,
+        indexed_check: IndexedCheck | None = None,
     ) -> None:
         self._db_path = db_path
         self._blob_dir = blob_dir or db_path.parent / "queue_blobs"
         self._max_retries = max_retries
+        self._indexed_check = indexed_check
         self._lock = threading.Lock()
 
         db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -104,17 +116,67 @@ class PersistentQueue:
         If *cursor_key* and *cursor_value* are provided, the cursor table
         is updated in the **same transaction** so the two writes are atomic.
 
-        Skips the insert (no-op) if the same ``source_id`` is already
-        pending or processing — this prevents double-enqueue even when
-        two threads race past an external ``is_enqueued()`` check.
+        Skips the insert (no-op) in two cases:
 
-        Returns the queue row ID (or the existing row's ID if skipped).
+        1. The same ``source_id`` is already pending or processing — this
+           prevents double-enqueue even when two threads race past an
+           external ``is_enqueued()`` check.
+        2. The event is a ``created`` operation and the configured
+           ``indexed_check`` reports the ``source_id`` as already chunked
+           in Neo4j.  This stops sources from re-introducing work for
+           items the graph already has, e.g. after cursor loss or restart.
+           ``modified`` and ``deleted`` events are not subject to this
+           check (modified must be re-evaluated via content_hash; deletes
+           must always be processed).
+
+        In all skip cases the cursor update (if any) is still applied so
+        the source's progress marker advances even though no new work
+        was added.
+
+        Returns the queue row ID (or the existing row's ID if skipped, or
+        a synthetic "skipped:<source_id>" marker if dropped by the
+        indexed-check pre-filter).
         """
         event_id = event.get("id") or str(uuid.uuid4())
         source_type = event.get("source_type", "")
         source_id = event.get("source_id", "")
         operation = event.get("operation", "")
         enqueued_at = event.get("enqueued_at") or _now_iso()
+
+        # Indexed-check pre-filter: drop already-chunked "created" events
+        # before they ever hit SQLite.  Done outside the lock because the
+        # check is read-only against Neo4j and may be slow.
+        if (
+            operation == "created"
+            and source_id
+            and self._indexed_check is not None
+        ):
+            try:
+                hit = self._indexed_check([source_id])
+            except Exception:
+                logger.debug(
+                    "indexed_check failed for enqueue of %s — falling through",
+                    source_id,
+                    exc_info=True,
+                )
+                hit = set()
+            if source_id in hit:
+                # Still apply the cursor update so the source's
+                # progress marker advances and we don't keep retrying
+                # the same already-indexed item every poll.
+                if cursor_key is not None and cursor_value is not None:
+                    with self._lock:
+                        self._conn.execute(
+                            "INSERT OR REPLACE INTO cursors "
+                            "(key, value, updated_at) VALUES (?, ?, ?)",
+                            (cursor_key, cursor_value, _now_iso()),
+                        )
+                logger.debug(
+                    "Dropped enqueue of %s %s — already chunked in Neo4j",
+                    source_type,
+                    source_id,
+                )
+                return f"skipped:{source_id}"
 
         # Prepare payload (strip binary data and legacy callbacks).
         payload_event = dict(event)

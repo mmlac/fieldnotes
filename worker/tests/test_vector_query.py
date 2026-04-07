@@ -82,6 +82,17 @@ def _make_scored_point(
     return point
 
 
+def _set_query_points(client: MagicMock, points: list[MagicMock]) -> None:
+    """Wire ``client.query_points`` to return a response with ``.points``.
+
+    Production now uses ``QdrantClient.query_points`` (not the deprecated
+    ``search``), and reads results from ``response.points``.
+    """
+    response = MagicMock()
+    response.points = points
+    client.query_points.return_value = response
+
+
 class TestVectorQuerier:
     """Tests for VectorQuerier with mocked Qdrant and registry."""
 
@@ -89,10 +100,13 @@ class TestVectorQuerier:
     def test_query_returns_ranked_results(self, mock_qdrant_cls: MagicMock) -> None:
         mock_client = MagicMock()
         mock_qdrant_cls.return_value = mock_client
-        mock_client.search.return_value = [
-            _make_scored_point(0.95, text="best match"),
-            _make_scored_point(0.80, text="second match"),
-        ]
+        _set_query_points(
+            mock_client,
+            [
+                _make_scored_point(0.95, text="best match"),
+                _make_scored_point(0.80, text="second match"),
+            ],
+        )
 
         registry = MagicMock()
         resolved = MagicMock()
@@ -112,9 +126,9 @@ class TestVectorQuerier:
         assert result.results[1].score == 0.80
 
         registry.for_role.assert_called_with("embed")
-        mock_client.search.assert_called_once()
+        mock_client.query_points.assert_called_once()
 
-        call_kwargs = mock_client.search.call_args
+        call_kwargs = mock_client.query_points.call_args
         assert call_kwargs.kwargs["collection_name"] == "fieldnotes"
         assert call_kwargs.kwargs["limit"] == DEFAULT_TOP_K
         assert call_kwargs.kwargs["query_filter"] is None
@@ -123,9 +137,9 @@ class TestVectorQuerier:
     def test_query_with_source_type_filter(self, mock_qdrant_cls: MagicMock) -> None:
         mock_client = MagicMock()
         mock_qdrant_cls.return_value = mock_client
-        mock_client.search.return_value = [
-            _make_scored_point(0.90, source_type="email"),
-        ]
+        _set_query_points(
+            mock_client, [_make_scored_point(0.90, source_type="email")]
+        )
 
         registry = MagicMock()
         resolved = MagicMock()
@@ -140,7 +154,7 @@ class TestVectorQuerier:
         assert len(result.results) == 1
         assert result.results[0].source_type == "email"
 
-        call_kwargs = mock_client.search.call_args
+        call_kwargs = mock_client.query_points.call_args
         query_filter = call_kwargs.kwargs["query_filter"]
         assert query_filter is not None
         assert len(query_filter.must) == 1
@@ -150,7 +164,7 @@ class TestVectorQuerier:
     def test_query_custom_top_k(self, mock_qdrant_cls: MagicMock) -> None:
         mock_client = MagicMock()
         mock_qdrant_cls.return_value = mock_client
-        mock_client.search.return_value = []
+        _set_query_points(mock_client, [])
 
         registry = MagicMock()
         resolved = MagicMock()
@@ -163,14 +177,14 @@ class TestVectorQuerier:
         result = querier.query("test", top_k=5)
 
         assert result.results == []
-        call_kwargs = mock_client.search.call_args
+        call_kwargs = mock_client.query_points.call_args
         assert call_kwargs.kwargs["limit"] == 5
 
     @patch("worker.query.vector.QdrantClient")
     def test_query_handles_exception(self, mock_qdrant_cls: MagicMock) -> None:
         mock_client = MagicMock()
         mock_qdrant_cls.return_value = mock_client
-        mock_client.search.side_effect = RuntimeError("qdrant down")
+        mock_client.query_points.side_effect = RuntimeError("qdrant down")
 
         registry = MagicMock()
         resolved = MagicMock()
@@ -215,16 +229,19 @@ class TestVectorQuerier:
         """Verify all payload fields are correctly mapped to VectorResult."""
         mock_client = MagicMock()
         mock_qdrant_cls.return_value = mock_client
-        mock_client.search.return_value = [
-            _make_scored_point(
-                0.88,
-                source_type="email",
-                source_id="inbox/msg42",
-                text="important meeting notes",
-                date="2026-03-11",
-                chunk_index=3,
-            ),
-        ]
+        _set_query_points(
+            mock_client,
+            [
+                _make_scored_point(
+                    0.88,
+                    source_type="email",
+                    source_id="inbox/msg42",
+                    text="important meeting notes",
+                    date="2026-03-11",
+                    chunk_index=3,
+                ),
+            ],
+        )
 
         registry = MagicMock()
         resolved = MagicMock()

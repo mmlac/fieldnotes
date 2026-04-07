@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from _fake_queue import FakeQueue
 from worker.config import (
     Config,
     CoreConfig,
@@ -279,28 +280,52 @@ class TestRun:
         pipeline_inst.close.assert_called_once()
 
     @pytest.mark.asyncio
+    @patch("worker.queue.PersistentQueue")
     @patch("worker.main.get_parser")
     @patch("worker.main.Pipeline")
     @patch("worker.main.Writer")
     @patch("worker.main.ModelRegistry")
     @patch("worker.main._build_sources")
     async def test_processes_events_from_queue(
-        self, mock_build, mock_reg, mock_writer, mock_pipeline, mock_get_parser
+        self,
+        mock_build,
+        mock_reg,
+        mock_writer,
+        mock_pipeline,
+        mock_get_parser,
+        mock_pq,
     ):
         """Events put on the queue are parsed and processed through the pipeline."""
+        # Use a FakeQueue as the PersistentQueue replacement so we don't
+        # touch ~/.fieldnotes/data/queue.db.
+        fake_q = FakeQueue()
+        fake_q.recover = lambda: 0
+        fake_q.depth = lambda: fake_q.qsize()
+
+        def _claim():
+            try:
+                ev = fake_q.get_nowait()
+                ev["_queue_id"] = ev.get("id", "qid-1")
+                return ev
+            except asyncio.QueueEmpty:
+                return None
+
+        fake_q.claim = _claim
+        fake_q.complete = lambda _qid: None
+        fake_q.fail = lambda _qid, _err=None: None
+        mock_pq.return_value = fake_q
+
         fake_source = MagicMock()
         fake_source.name.return_value = "files"
 
-        # Source pushes one event then the stop signal fires
         async def fake_start(queue, **_kwargs):
-            await queue.put(
+            queue.enqueue(
                 {
                     "source_type": "file",
                     "source_id": "test.md",
                     "operation": "created",
                 }
             )
-            # Give the consumer a moment to process
             await asyncio.sleep(0.05)
 
         fake_source.start = fake_start
@@ -313,8 +338,9 @@ class TestRun:
         pipeline_inst = mock_pipeline.return_value
 
         task = asyncio.create_task(_run(_cfg()))
-        # Let it process, then stop
-        await asyncio.sleep(0.15)
+        # Give the consumer at least one full poll cycle (0.5s) to drain
+        # the event the source enqueues.
+        await asyncio.sleep(1.0)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
@@ -324,27 +350,51 @@ class TestRun:
         pipeline_inst.process.assert_called_once()
 
     @pytest.mark.asyncio
+    @patch("worker.queue.PersistentQueue")
     @patch("worker.main.get_parser")
     @patch("worker.main.Pipeline")
     @patch("worker.main.Writer")
     @patch("worker.main.ModelRegistry")
     @patch("worker.main._build_sources")
     async def test_parser_error_does_not_crash_loop(
-        self, mock_build, mock_reg, mock_writer, mock_pipeline, mock_get_parser
+        self,
+        mock_build,
+        mock_reg,
+        mock_writer,
+        mock_pipeline,
+        mock_get_parser,
+        mock_pq,
     ):
         """A parsing error on one event should not stop processing."""
+        fake_q = FakeQueue()
+        fake_q.recover = lambda: 0
+        fake_q.depth = lambda: fake_q.qsize()
+
+        def _claim():
+            try:
+                ev = fake_q.get_nowait()
+                ev["_queue_id"] = ev.get("id", "qid-1")
+                return ev
+            except asyncio.QueueEmpty:
+                return None
+
+        fake_q.claim = _claim
+        fake_q.complete = lambda _qid: None
+        fake_q.fail = lambda _qid, _err=None: None
+        mock_pq.return_value = fake_q
+
         fake_source = MagicMock()
         fake_source.name.return_value = "files"
 
         async def fake_start(queue, **_kwargs):
-            await queue.put(
+            queue.enqueue(
                 {
                     "source_type": "file",
                     "source_id": "bad.md",
                     "operation": "created",
                 }
             )
-            await queue.put(
+            queue.enqueue(
                 {
                     "source_type": "file",
                     "source_id": "good.md",
@@ -366,7 +416,9 @@ class TestRun:
         pipeline_inst = mock_pipeline.return_value
 
         task = asyncio.create_task(_run(_cfg()))
-        await asyncio.sleep(0.3)
+        # Give the consumer time to claim BOTH enqueued events across
+        # its 0.5s poll cycles.
+        await asyncio.sleep(2.0)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task

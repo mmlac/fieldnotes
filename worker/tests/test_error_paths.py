@@ -23,6 +23,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from _fake_queue import FakeQueue
+
 # ---------------------------------------------------------------------------
 # Cypher validation edge cases
 # ---------------------------------------------------------------------------
@@ -434,7 +436,7 @@ class TestEmptyGitRepo:
             }
         )
 
-        q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        q = FakeQueue()
         task = asyncio.create_task(s.start(q))
 
         events: list[dict[str, Any]] = []

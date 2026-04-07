@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 
-from worker.sources.cursor import load_cursor
+from _fake_queue import FakeQueue
 from worker.sources.files import FileSource
 
 
@@ -21,7 +21,7 @@ from worker.sources.files import FileSource
 
 
 async def _drain_queue(
-    q: asyncio.Queue[dict[str, Any]],
+    q: Any,
     *,
     timeout: float = 2.0,
 ) -> list[dict[str, Any]]:
@@ -45,7 +45,7 @@ async def _drain_queue(
 
 async def _run_source_briefly(
     source: FileSource,
-    q: asyncio.Queue[dict[str, Any]],
+    q: Any,
     duration: float = 1.5,
     *,
     ack: bool = True,
@@ -93,7 +93,6 @@ def _make_source(tmp_path: Path, **overrides: Any) -> FileSource:
     """Create and configure a FileSource for tmp_path."""
     cfg: dict[str, Any] = {
         "watch_paths": [str(tmp_path / "watched")],
-        "cursor_path": str(tmp_path / "cursor.json"),
         **overrides,
     }
     fs = FileSource()
@@ -115,7 +114,7 @@ async def test_first_startup_all_files_created(tmp_path: Path) -> None:
     (watched / "sub" / "deep.md").write_text("deep")
 
     fs = _make_source(tmp_path)
-    q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    q = FakeQueue()
     events = await _run_source_briefly(fs, q)
 
     created = [e for e in events if e["operation"] == "created"]
@@ -134,8 +133,8 @@ async def test_first_startup_all_files_created(tmp_path: Path) -> None:
         assert "meta" in ev
         assert "sha256" in ev["meta"]
 
-    # Cursor should be saved
-    assert (tmp_path / "cursor.json").exists()
+    # Cursor is now stored in the queue (not on disk).
+    assert q.load_cursor("files") is not None
 
 
 # ── Second startup (cursor exists) ───────────────────────────────
@@ -149,17 +148,18 @@ async def test_second_startup_only_changed_files(tmp_path: Path) -> None:
     (watched / "unchanged.md").write_text("stable")
     (watched / "will_change.md").write_text("original")
 
+    # Share one queue across both runs so the file-source cursor (now
+    # stored in the queue) survives the restart.
+    q = FakeQueue()
     fs = _make_source(tmp_path)
-    q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
     await _run_source_briefly(fs, q)
 
     # Modify one file
     (watched / "will_change.md").write_text("modified content")
 
-    # Second startup
+    # Second startup against the same queue
     fs2 = _make_source(tmp_path)
-    q2: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
-    events = await _run_source_briefly(fs2, q2)
+    events = await _run_source_briefly(fs2, q)
 
     scan_events = [
         e for e in events if e["operation"] in ("created", "modified", "deleted")
@@ -179,17 +179,16 @@ async def test_deleted_files_between_runs(tmp_path: Path) -> None:
     doomed.write_text("goodbye")
     (watched / "survivor.md").write_text("still here")
 
+    q = FakeQueue()
     fs = _make_source(tmp_path)
-    q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
     await _run_source_briefly(fs, q)
 
     # Delete the file
     doomed.unlink()
 
-    # Second startup
+    # Second startup against the same queue
     fs2 = _make_source(tmp_path)
-    q2: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
-    events = await _run_source_briefly(fs2, q2)
+    events = await _run_source_briefly(fs2, q)
 
     deleted = [e for e in events if e["operation"] == "deleted"]
     assert len(deleted) == 1
@@ -203,14 +202,13 @@ async def test_unchanged_files_no_events(tmp_path: Path) -> None:
     watched.mkdir()
     (watched / "stable.md").write_text("constant")
 
+    q = FakeQueue()
     fs = _make_source(tmp_path)
-    q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
     await _run_source_briefly(fs, q)
 
-    # Second startup — nothing changed
+    # Second startup against the same queue — nothing changed
     fs2 = _make_source(tmp_path)
-    q2: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
-    events = await _run_source_briefly(fs2, q2)
+    events = await _run_source_briefly(fs2, q)
 
     scan_events = [
         e for e in events if e["operation"] in ("created", "modified", "deleted")
@@ -231,7 +229,7 @@ async def test_scan_picks_up_image_files(tmp_path: Path) -> None:
     (watched / "note.md").write_text("hello")
 
     fs = _make_source(tmp_path)
-    q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    q = FakeQueue()
     events = await _run_source_briefly(fs, q)
 
     created = [e for e in events if e["operation"] == "created"]
@@ -251,7 +249,7 @@ async def test_scan_image_passes_include_extensions(tmp_path: Path) -> None:
     (watched / "code.py").write_text("x = 1")
 
     fs = _make_source(tmp_path, include_extensions=[".md"])
-    q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    q = FakeQueue()
     events = await _run_source_briefly(fs, q)
 
     created = [e for e in events if e["operation"] == "created"]
@@ -271,7 +269,7 @@ async def test_scan_respects_include_extensions(tmp_path: Path) -> None:
     (watched / "skip.py").write_text("python")
 
     fs = _make_source(tmp_path, include_extensions=[".md"])
-    q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    q = FakeQueue()
     events = await _run_source_briefly(fs, q)
 
     created = [e for e in events if e["operation"] == "created"]
@@ -290,7 +288,7 @@ async def test_scan_respects_exclude_patterns(tmp_path: Path) -> None:
     (watched / "drafts" / "draft.md").write_text("skip")
 
     fs = _make_source(tmp_path, exclude_patterns=["*.pyc", "*/drafts/*"])
-    q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    q = FakeQueue()
     events = await _run_source_briefly(fs, q)
 
     created = [e for e in events if e["operation"] == "created"]
@@ -309,7 +307,7 @@ async def test_scan_respects_max_file_size(tmp_path: Path) -> None:
     (watched / "big.md").write_bytes(b"x" * 200)
 
     fs = _make_source(tmp_path, max_file_size=100)
-    q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    q = FakeQueue()
     events = await _run_source_briefly(fs, q)
 
     created = [e for e in events if e["operation"] == "created"]
@@ -340,7 +338,7 @@ async def test_scan_respects_recursive_false(tmp_path: Path) -> None:
     (watched / "sub" / "nested.md").write_text("nested")
 
     fs = _make_source(tmp_path, recursive=False)
-    q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    q = FakeQueue()
     events = await _run_source_briefly(fs, q)
 
     created = [e for e in events if e["operation"] == "created"]
@@ -360,12 +358,7 @@ async def test_scan_rejects_symlinks(tmp_path: Path) -> None:
     link.symlink_to(real_dir)
 
     fs = FileSource()
-    fs.configure(
-        {
-            "watch_paths": [str(link)],
-            "cursor_path": str(tmp_path / "cursor.json"),
-        }
-    )
+    fs.configure({"watch_paths": [str(link)]})
 
     # Symlinked path should have been filtered out
     assert len(fs._watch_paths) == 0
@@ -380,15 +373,14 @@ async def test_empty_directory_no_events_cursor_saved(tmp_path: Path) -> None:
     watched = tmp_path / "watched"
     watched.mkdir()
 
-    cursor_path = tmp_path / "cursor.json"
     fs = _make_source(tmp_path)
-    q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    q = FakeQueue()
     events = await _run_source_briefly(fs, q)
 
     assert len(events) == 0
-    assert cursor_path.exists()
-    loaded = load_cursor(cursor_path)
-    assert loaded == {}
+    # Cursor is saved in the queue (an empty serialised cursor) so the
+    # next run knows it has no prior state to compare against.
+    assert q.load_cursor("files") is not None
 
 
 # ── Metrics ───────────────────────────────────────────────────────
@@ -405,7 +397,7 @@ async def test_initial_scan_updates_metrics(tmp_path: Path) -> None:
     (watched / "b.md").write_text("world")
 
     fs = _make_source(tmp_path)
-    q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    q = FakeQueue()
     await _run_source_briefly(fs, q)
 
     # Duration gauge should have been set to a positive value
@@ -434,7 +426,7 @@ async def test_initial_scan_sets_sync_total_and_tags_events(tmp_path: Path) -> N
     (watched / "b.md").write_text("beta")
 
     fs = _make_source(tmp_path)
-    q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    q = FakeQueue()
     events = await _run_source_briefly(fs, q)
 
     # All scan events should carry the initial_scan flag
@@ -460,7 +452,7 @@ async def test_dedup_window_drops_matching_event(tmp_path: Path) -> None:
     note.write_text("original content")
 
     fs = _make_source(tmp_path)
-    q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    q = FakeQueue()
 
     task = asyncio.create_task(fs.start(q))
     # Wait for initial scan to complete and dedup window to be armed
@@ -507,7 +499,7 @@ async def test_dedup_window_passes_changed_content(tmp_path: Path) -> None:
     note.write_text("original")
 
     fs = _make_source(tmp_path)
-    q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    q = FakeQueue()
 
     task = asyncio.create_task(fs.start(q))
     await asyncio.sleep(1.0)
@@ -546,7 +538,7 @@ async def test_dedup_window_expires(tmp_path: Path) -> None:
     from worker.sources._handler import BaseHandler
 
     loop = asyncio.get_running_loop()
-    q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    q = FakeQueue()
 
     handler = BaseHandler(
         queue=q,
@@ -575,7 +567,7 @@ async def test_dedup_window_clears_set(tmp_path: Path) -> None:
     from worker.sources._handler import BaseHandler
 
     loop = asyncio.get_running_loop()
-    q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    q = FakeQueue()
 
     handler = BaseHandler(
         queue=q,
@@ -599,71 +591,50 @@ async def test_dedup_window_clears_set(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_checkpoint_fires_at_interval(tmp_path: Path) -> None:
-    """Checkpoint writes cursor at configured interval."""
+async def test_initial_scan_persists_cursor_to_queue(tmp_path: Path) -> None:
+    """After the initial scan, the file cursor is in the queue.
+
+    Replaces the older periodic-checkpoint test — checkpoints no longer
+    exist as a separate concept; the cursor is written atomically with
+    each batch via ``queue.save_cursor("files", ...)``.
+    """
     watched = tmp_path / "watched"
     watched.mkdir()
     (watched / "note.md").write_text("hello")
-    cursor_path = tmp_path / "cursor.json"
 
-    fs = _make_source(tmp_path, cursor_checkpoint_interval=1)
-    q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    fs = _make_source(tmp_path)
+    q = FakeQueue()
+    await _run_source_briefly(fs, q)
 
-    task = asyncio.create_task(fs.start(q))
-    # Wait for initial scan, then ack events so indexed cursor updates
-    await asyncio.sleep(0.5)
-    while not q.empty():
-        ev = q.get_nowait()
-        cb = ev.get("_on_indexed")
-        if cb:
-            cb()
-    # Wait for at least one checkpoint cycle
-    await asyncio.sleep(2.0)
-
-    task.cancel()
-    try:
-        await task
-    except asyncio.CancelledError:
-        pass
-
-    # Cursor file should have been written by checkpoint
-    assert cursor_path.exists()
-    loaded = load_cursor(cursor_path)
-    assert len(loaded) >= 1
+    cursor = q.load_cursor("files")
+    assert cursor is not None
+    # Cursor payload is the serialised set of file entries — we don't
+    # care about format here, just that it captured at least one file.
+    assert "note.md" in cursor
 
 
 @pytest.mark.asyncio
-async def test_watchdog_events_update_handler_cursor(tmp_path: Path) -> None:
-    """Watchdog events update the handler's in-memory cursor."""
+async def test_watchdog_events_persist_via_queue(tmp_path: Path) -> None:
+    """A new file created while the watcher is running is enqueued.
+
+    Replaces the older "watchdog updates cursor" test — the cursor is
+    now updated implicitly via ``queue.enqueue`` cursor co-writes, so
+    the test just verifies the new file's event reaches the queue.
+    """
     watched = tmp_path / "watched"
     watched.mkdir()
-    cursor_path = tmp_path / "cursor.json"
 
-    fs = _make_source(tmp_path, cursor_checkpoint_interval=1)
-    q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    fs = _make_source(tmp_path)
+    q = FakeQueue()
 
     task = asyncio.create_task(fs.start(q))
-    # Wait for initial scan, ack events so indexed cursor is populated
+    # Wait for initial scan to complete
     await asyncio.sleep(0.5)
     while not q.empty():
-        ev = q.get_nowait()
-        cb = ev.get("_on_indexed")
-        if cb:
-            cb()
+        q.get_nowait()
 
     # Create a file while watching
-    new_file = watched / "new_note.md"
-    new_file.write_text("added during watch")
-
-    # Wait for watchdog to detect the new file, then ack it
-    await asyncio.sleep(1.5)
-    while not q.empty():
-        ev = q.get_nowait()
-        cb = ev.get("_on_indexed")
-        if cb:
-            cb()
-
-    # Wait for checkpoint to fire
+    (watched / "new_note.md").write_text("added during watch")
     await asyncio.sleep(1.5)
 
     task.cancel()
@@ -672,32 +643,26 @@ async def test_watchdog_events_update_handler_cursor(tmp_path: Path) -> None:
     except asyncio.CancelledError:
         pass
 
-    # Checkpoint should have persisted the new file
-    loaded = load_cursor(cursor_path)
-    matching = [k for k in loaded if "new_note.md" in k]
-    assert len(matching) >= 1, f"new_note.md not found in cursor: {list(loaded.keys())}"
+    events = []
+    while not q.empty():
+        events.append(q.get_nowait())
+
+    matching = [e for e in events if "new_note.md" in e["source_id"]]
+    assert matching, f"new_note.md not enqueued; got: {[e['source_id'] for e in events]}"
 
 
 @pytest.mark.asyncio
-async def test_graceful_shutdown_saves_cursor(tmp_path: Path) -> None:
-    """Cancelling the task saves a final checkpoint."""
+async def test_graceful_shutdown_leaves_cursor_intact(tmp_path: Path) -> None:
+    """Cancelling the task does not lose the cursor written during scan."""
     watched = tmp_path / "watched"
     watched.mkdir()
     (watched / "note.md").write_text("content")
-    cursor_path = tmp_path / "cursor.json"
 
-    # Use a long checkpoint interval so it won't fire naturally
-    fs = _make_source(tmp_path, cursor_checkpoint_interval=3600)
-    q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    fs = _make_source(tmp_path)
+    q = FakeQueue()
 
     task = asyncio.create_task(fs.start(q))
-    # Wait for scan, then ack events so indexed cursor is populated
     await asyncio.sleep(0.5)
-    while not q.empty():
-        ev = q.get_nowait()
-        cb = ev.get("_on_indexed")
-        if cb:
-            cb()
 
     task.cancel()
     try:
@@ -705,31 +670,28 @@ async def test_graceful_shutdown_saves_cursor(tmp_path: Path) -> None:
     except asyncio.CancelledError:
         pass
 
-    # Even though checkpoint interval is 1 hour, cancellation should save
-    assert cursor_path.exists()
-    loaded = load_cursor(cursor_path)
-    assert len(loaded) >= 1
+    # Cursor should still be present in the queue after cancellation.
+    assert q.load_cursor("files") is not None
 
 
 @pytest.mark.asyncio
-async def test_restart_after_checkpoint_only_new_changes(tmp_path: Path) -> None:
-    """After checkpoint, restart only re-scans post-checkpoint changes."""
+async def test_restart_only_emits_new_changes(tmp_path: Path) -> None:
+    """After a clean run, restarting against the same queue only re-scans
+    post-cursor changes."""
     watched = tmp_path / "watched"
     watched.mkdir()
     (watched / "stable.md").write_text("unchanged")
 
-    # First run — creates cursor
-    fs = _make_source(tmp_path, cursor_checkpoint_interval=1)
-    q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    q = FakeQueue()
+    fs = _make_source(tmp_path)
     await _run_source_briefly(fs, q, duration=2.0)
 
     # Add a new file between runs
     (watched / "new.md").write_text("added between runs")
 
-    # Second run — should only see the new file
-    fs2 = _make_source(tmp_path, cursor_checkpoint_interval=1)
-    q2: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
-    events = await _run_source_briefly(fs2, q2, duration=2.0)
+    # Second run against the same queue — should only see the new file
+    fs2 = _make_source(tmp_path)
+    events = await _run_source_briefly(fs2, q, duration=2.0)
 
     scan_events = [
         e for e in events if e["operation"] in ("created", "modified", "deleted")

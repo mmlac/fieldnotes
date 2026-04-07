@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import Any
 
 import pytest
 
+from _fake_queue import FakeQueue
 from worker.sources.obsidian import ObsidianSource, _scan_vault, discover_vaults
 
 
@@ -87,7 +87,7 @@ async def test_obsidian_source_detects_create(tmp_path: Path):
             "cursor_path": str(tmp_path / "cursor.json"),
         }
     )
-    q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    q = FakeQueue()
 
     task = asyncio.create_task(s.start(q))
     await asyncio.sleep(0.5)
@@ -134,7 +134,7 @@ async def test_obsidian_source_skips_dotobsidian_files(tmp_path: Path):
             "cursor_path": str(tmp_path / "cursor.json"),
         }
     )
-    q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    q = FakeQueue()
 
     task = asyncio.create_task(s.start(q))
     await asyncio.sleep(0.5)
@@ -176,7 +176,7 @@ async def test_obsidian_source_no_vaults_found(tmp_path: Path):
             "cursor_path": str(tmp_path / "cursor.json"),
         }
     )
-    q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    q = FakeQueue()
 
     task = asyncio.create_task(s.start(q))
     await asyncio.sleep(0.3)
@@ -274,16 +274,9 @@ async def test_initial_scan_first_startup(tmp_path: Path):
     (vault / "note1.md").write_text("# Note 1")
     (vault / "note2.md").write_text("# Note 2")
 
-    cursor_path = tmp_path / "cursor.json"
-
     s = ObsidianSource()
-    s.configure(
-        {
-            "vault_paths": [str(tmp_path)],
-            "cursor_path": str(cursor_path),
-        }
-    )
-    q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    s.configure({"vault_paths": [str(tmp_path)]})
+    q = FakeQueue()
 
     task = asyncio.create_task(s.start(q))
     # Give the scan time to complete and events to be enqueued
@@ -314,8 +307,8 @@ async def test_initial_scan_first_startup(tmp_path: Path):
         assert "relative_path" in ev["meta"]
         assert ev["meta"]["sha256"]
 
-    # Verify cursor was saved
-    assert cursor_path.exists()
+    # Cursor is now stored in the queue itself, not on disk.
+    assert q.load_cursor("obsidian") is not None
 
 
 @pytest.mark.asyncio
@@ -328,26 +321,19 @@ async def test_initial_scan_detects_modifications(tmp_path: Path):
     note = vault / "note.md"
     note.write_text("original")
 
-    cursor_path = tmp_path / "cursor.json"
+    # Share a single FakeQueue between both runs so the cursor persists
+    # — production uses one PersistentQueue per daemon process and the
+    # cursor lives inside it (not on disk anymore).
+    q = FakeQueue()
 
     # First scan — builds cursor
     s = ObsidianSource()
-    s.configure(
-        {
-            "vault_paths": [str(tmp_path)],
-            "cursor_path": str(cursor_path),
-        }
-    )
-    q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    s.configure({"vault_paths": [str(tmp_path)]})
     task = asyncio.create_task(s.start(q))
     await asyncio.sleep(1.0)
 
-    # Ack events so cursor is persisted
     while not q.empty():
-        ev = q.get_nowait()
-        cb = ev.get("_on_indexed")
-        if cb:
-            cb()
+        q.get_nowait()
 
     task.cancel()
     try:
@@ -358,16 +344,10 @@ async def test_initial_scan_detects_modifications(tmp_path: Path):
     # Modify the file
     note.write_text("modified content")
 
-    # Second scan — should detect modification
+    # Second scan against the same queue — should detect modification
     s2 = ObsidianSource()
-    s2.configure(
-        {
-            "vault_paths": [str(tmp_path)],
-            "cursor_path": str(cursor_path),
-        }
-    )
-    q2: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
-    task2 = asyncio.create_task(s2.start(q2))
+    s2.configure({"vault_paths": [str(tmp_path)]})
+    task2 = asyncio.create_task(s2.start(q))
     await asyncio.sleep(1.0)
     task2.cancel()
     try:
@@ -376,8 +356,8 @@ async def test_initial_scan_detects_modifications(tmp_path: Path):
         pass
 
     events = []
-    while not q2.empty():
-        events.append(q2.get_nowait())
+    while not q.empty():
+        events.append(q.get_nowait())
 
     modified = [e for e in events if e["operation"] == "modified"]
     assert len(modified) >= 1
@@ -394,26 +374,16 @@ async def test_initial_scan_detects_deletions(tmp_path: Path):
     note = vault / "note.md"
     note.write_text("will be deleted")
 
-    cursor_path = tmp_path / "cursor.json"
+    q = FakeQueue()
 
     # First scan
     s = ObsidianSource()
-    s.configure(
-        {
-            "vault_paths": [str(tmp_path)],
-            "cursor_path": str(cursor_path),
-        }
-    )
-    q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    s.configure({"vault_paths": [str(tmp_path)]})
     task = asyncio.create_task(s.start(q))
     await asyncio.sleep(1.0)
 
-    # Ack events so cursor is persisted
     while not q.empty():
-        ev = q.get_nowait()
-        cb = ev.get("_on_indexed")
-        if cb:
-            cb()
+        q.get_nowait()
 
     task.cancel()
     try:
@@ -424,16 +394,10 @@ async def test_initial_scan_detects_deletions(tmp_path: Path):
     # Delete the file
     note.unlink()
 
-    # Second scan — should detect deletion
+    # Second scan against the same queue — should detect deletion
     s2 = ObsidianSource()
-    s2.configure(
-        {
-            "vault_paths": [str(tmp_path)],
-            "cursor_path": str(cursor_path),
-        }
-    )
-    q2: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
-    task2 = asyncio.create_task(s2.start(q2))
+    s2.configure({"vault_paths": [str(tmp_path)]})
+    task2 = asyncio.create_task(s2.start(q))
     await asyncio.sleep(1.0)
     task2.cancel()
     try:
@@ -442,8 +406,8 @@ async def test_initial_scan_detects_deletions(tmp_path: Path):
         pass
 
     events = []
-    while not q2.empty():
-        events.append(q2.get_nowait())
+    while not q.empty():
+        events.append(q.get_nowait())
 
     deleted = [e for e in events if e["operation"] == "deleted"]
     assert len(deleted) >= 1
@@ -458,26 +422,16 @@ async def test_initial_scan_no_events_when_unchanged(tmp_path: Path):
     (vault / ".obsidian").mkdir()
     (vault / "note.md").write_text("stable")
 
-    cursor_path = tmp_path / "cursor.json"
+    q = FakeQueue()
 
     # First scan
     s = ObsidianSource()
-    s.configure(
-        {
-            "vault_paths": [str(tmp_path)],
-            "cursor_path": str(cursor_path),
-        }
-    )
-    q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    s.configure({"vault_paths": [str(tmp_path)]})
     task = asyncio.create_task(s.start(q))
     await asyncio.sleep(1.0)
 
-    # Ack events so cursor is persisted
     while not q.empty():
-        ev = q.get_nowait()
-        cb = ev.get("_on_indexed")
-        if cb:
-            cb()
+        q.get_nowait()
 
     task.cancel()
     try:
@@ -485,16 +439,10 @@ async def test_initial_scan_no_events_when_unchanged(tmp_path: Path):
     except asyncio.CancelledError:
         pass
 
-    # Second scan — nothing changed
+    # Second scan against the same queue — nothing changed
     s2 = ObsidianSource()
-    s2.configure(
-        {
-            "vault_paths": [str(tmp_path)],
-            "cursor_path": str(cursor_path),
-        }
-    )
-    q2: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
-    task2 = asyncio.create_task(s2.start(q2))
+    s2.configure({"vault_paths": [str(tmp_path)]})
+    task2 = asyncio.create_task(s2.start(q))
     await asyncio.sleep(1.0)
     task2.cancel()
     try:
@@ -503,8 +451,8 @@ async def test_initial_scan_no_events_when_unchanged(tmp_path: Path):
         pass
 
     events = []
-    while not q2.empty():
-        events.append(q2.get_nowait())
+    while not q.empty():
+        events.append(q.get_nowait())
 
     # No scan events should be emitted (only watcher events if any)
     scan_events = [
@@ -514,14 +462,27 @@ async def test_initial_scan_no_events_when_unchanged(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_initial_scan_cursor_path_config(tmp_path: Path):
-    """cursor_path config should be respected."""
+async def test_cursor_persisted_via_queue(tmp_path: Path):
+    """ObsidianSource persists scan cursor through the queue's cursor table.
+
+    Replaces the older ``cursor_path`` config check — cursors are no
+    longer stored in a per-source JSON file; the persistent queue owns
+    them now (one cursor key per source: ``"obsidian"``).
+    """
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    (vault / ".obsidian").mkdir()
+    (vault / "note.md").write_text("hello")
+
     s = ObsidianSource()
-    custom_path = tmp_path / "custom" / "cursor.json"
-    s.configure(
-        {
-            "vault_paths": [str(tmp_path)],
-            "cursor_path": str(custom_path),
-        }
-    )
-    assert s._cursor_path == custom_path
+    s.configure({"vault_paths": [str(tmp_path)]})
+    q = FakeQueue()
+    task = asyncio.create_task(s.start(q))
+    await asyncio.sleep(1.0)
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+    assert q.load_cursor("obsidian") is not None

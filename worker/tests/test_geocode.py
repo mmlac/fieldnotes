@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from worker.pipeline.geocode import (
     GeocodedLocation,
     _CACHE_RADIUS_DEG,
@@ -211,10 +213,13 @@ class TestCreateLocationNode:
 
         assert len(session.queries) == 1
         query, params = session.queries[0]
-        assert "CREATE" in query
+        # Function now uses MERGE+ON CREATE on rounded coordinates
+        # to avoid duplicate Location nodes from GPS noise.
+        assert "MERGE" in query
         assert "Location" in query
         assert params["city"] == "Berlin"
-        assert params["lat"] == 52.52
+        assert params["rounded_lat"] == pytest.approx(52.52, abs=0.01)
+        assert params["rounded_lon"] == pytest.approx(13.405, abs=0.01)
 
 
 class TestLinkImageToLocation:

@@ -39,11 +39,10 @@ async def _run_daemon(cfg: Config) -> None:
     """Run the ingest pipeline as a background service."""
     from worker.clustering.scheduler import clustering_loop
     from worker.metrics import (
-        INITIAL_SYNC_ETA_SECONDS,
         INITIAL_SYNC_ITEMS_PROCESSED,
         QUEUE_DEPTH,
+        QUEUE_FINISH_ETA_SECONDS,
         initial_sync_all_sources_done,
-        initial_sync_get_total,
         initial_sync_register_source,
     )
     from worker.models.resolver import ModelRegistry
@@ -85,19 +84,23 @@ async def _run_daemon(cfg: Config) -> None:
         )
         background_tasks.append(cluster_task)
 
-    # Persistent event queue (SQLite-backed)
+    # Persistent event queue (SQLite-backed).  The writer-backed
+    # ``indexed_check`` is wired into the queue itself so any "created"
+    # event for a source_id already chunked in Neo4j is dropped before
+    # it consumes a queue slot — protecting against re-emission after
+    # cursor loss, daemon restart, or fresh source initialisation.
     from worker.queue import PersistentQueue
 
+    indexed_check = writer.indexed_source_ids
+
     data_dir = Path.home() / ".fieldnotes" / "data"
-    queue = PersistentQueue(db_path=data_dir / "queue.db")
+    queue = PersistentQueue(
+        db_path=data_dir / "queue.db",
+        indexed_check=indexed_check,
+    )
     recovered = queue.recover()
     if recovered:
         logger.info("Recovered %d interrupted queue item(s) from previous run", recovered)
-
-    # Backstop dedup callable: sources with content-immutable items
-    # (gmail messages, git commits, etc.) use this to skip the per-item
-    # fetch path for source_ids that already have chunks in Neo4j.
-    indexed_check = writer.indexed_source_ids
 
     source_tasks: list[asyncio.Task[None]] = []
     for source in sources:
@@ -157,13 +160,17 @@ async def _run_daemon(cfg: Config) -> None:
     # Main ingest loop — claim/complete/fail against PersistentQueue
     try:
         _sync_processed = 0
-        _sync_times: collections.deque[float] = collections.deque(maxlen=50)
+        # Rolling window of per-item processing durations.  Drives the
+        # queue-finish ETA: ETA ≈ avg(window) × queue.depth().
+        _proc_times: collections.deque[float] = collections.deque(maxlen=50)
         _last_depth_log = 0.0
 
         while not stop_event.is_set():
             QUEUE_DEPTH.set(queue.depth())
             event = await loop.run_in_executor(None, queue.claim)
             if event is None:
+                # Queue empty — ETA is 0 by definition.
+                QUEUE_FINISH_ETA_SECONDS.set(0)
                 await asyncio.sleep(0.5)
                 continue
 
@@ -210,20 +217,26 @@ async def _run_daemon(cfg: Config) -> None:
                 )
                 queue.fail(queue_id, str(sys.exc_info()[1]))
 
+            # Track processing time for ALL items (not just initial sync)
+            # so the queue-finish ETA is meaningful at steady state too.
+            elapsed = time.monotonic() - t0
+            _proc_times.append(elapsed)
+
             if is_initial:
-                elapsed = time.monotonic() - t0
                 _sync_processed += 1
-                _sync_times.append(elapsed)
                 INITIAL_SYNC_ITEMS_PROCESSED.set(_sync_processed)
-                remaining = initial_sync_get_total() - _sync_processed
-                if remaining > 0 and _sync_times:
-                    avg = sum(_sync_times) / len(_sync_times)
-                    INITIAL_SYNC_ETA_SECONDS.set(remaining * avg)
-                elif not initial_sync_all_sources_done():
-                    # Sources still scanning — don't report complete yet
-                    INITIAL_SYNC_ETA_SECONDS.set(-1)
-                else:
-                    INITIAL_SYNC_ETA_SECONDS.set(0)
+
+            # Queue-finish ETA: rolling avg processing time × current depth.
+            # Sources may still be scanning when the queue briefly empties,
+            # so emit -1 ("indeterminate") rather than 0 in that window.
+            depth_now = queue.depth()
+            if _proc_times and depth_now > 0:
+                avg = sum(_proc_times) / len(_proc_times)
+                QUEUE_FINISH_ETA_SECONDS.set(avg * depth_now)
+            elif depth_now == 0 and not initial_sync_all_sources_done():
+                QUEUE_FINISH_ETA_SECONDS.set(-1)
+            else:
+                QUEUE_FINISH_ETA_SECONDS.set(0)
 
             # Periodic queue depth log (every 60s)
             now = time.monotonic()

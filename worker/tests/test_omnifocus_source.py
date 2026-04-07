@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 import pytest
 
+from _fake_queue import FakeQueue
 from worker.sources.omnifocus import (
     DEFAULT_POLL_INTERVAL,
     OmniFocusSource,
@@ -52,7 +53,7 @@ def _make_task(
 
 
 async def _collect_events(
-    queue: asyncio.Queue[dict[str, Any]], timeout: float = 2.0, ack: bool = True
+    queue: Any, timeout: float = 2.0, ack: bool = True
 ) -> list[dict[str, Any]]:
     """Drain all events from *queue* until *timeout* elapses."""
     events: list[dict[str, Any]] = []
@@ -212,7 +213,7 @@ async def test_initial_poll_emits_created_events(tmp_path: Path) -> None:
     )
 
     with patch("worker.sources.omnifocus._fetch_tasks", return_value=tasks):
-        q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        q = FakeQueue()
         task = asyncio.create_task(s.start(q))
         events = await _collect_events(q)
         task.cancel()
@@ -249,7 +250,7 @@ async def test_modified_task_emits_modified_event(tmp_path: Path) -> None:
     )
 
     with patch("worker.sources.omnifocus._fetch_tasks", return_value=[task_v2]):
-        q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        q = FakeQueue()
         task = asyncio.create_task(s.start(q))
         events = await _collect_events(q)
         task.cancel()
@@ -280,7 +281,7 @@ async def test_deleted_task_emits_deleted_event(tmp_path: Path) -> None:
     )
 
     with patch("worker.sources.omnifocus._fetch_tasks", return_value=[]):
-        q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        q = FakeQueue()
         t = asyncio.create_task(s.start(q))
         events = await _collect_events(q)
         t.cancel()
@@ -311,7 +312,7 @@ async def test_unchanged_tasks_emit_nothing(tmp_path: Path) -> None:
     )
 
     with patch("worker.sources.omnifocus._fetch_tasks", return_value=[task]):
-        q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        q = FakeQueue()
         t = asyncio.create_task(s.start(q))
         events = await _collect_events(q, timeout=1.0)
         t.cancel()
@@ -329,7 +330,7 @@ async def test_disabled_source_emits_nothing(tmp_path: Path) -> None:
     s = OmniFocusSource()
     s.configure({"enabled": False})
 
-    q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    q = FakeQueue()
     t = asyncio.create_task(s.start(q))
     events = await _collect_events(q, timeout=0.5)
     t.cancel()
@@ -357,7 +358,7 @@ async def test_fetch_failure_does_not_crash(tmp_path: Path) -> None:
         "worker.sources.omnifocus._fetch_tasks",
         side_effect=RuntimeError("osascript failed"),
     ):
-        q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        q = FakeQueue()
         t = asyncio.create_task(s.start(q))
         events = await _collect_events(q, timeout=1.0)
         t.cancel()

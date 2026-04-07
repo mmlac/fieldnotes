@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 
+from _fake_queue import FakeQueue
 from worker.sources.base import PythonSource
 from worker.sources.files import DEFAULT_MAX_FILE_SIZE, FileSource, _streaming_sha256
 
@@ -21,7 +22,7 @@ from worker.sources.files import DEFAULT_MAX_FILE_SIZE, FileSource, _streaming_s
 
 
 async def _collect_events(
-    q: asyncio.Queue[dict[str, Any]],
+    q: Any,
     *,
     min_events: int = 1,
     timeout: float = 5.0,
@@ -52,7 +53,7 @@ async def _collect_events(
 
 
 async def _collect_until(
-    q: asyncio.Queue[dict[str, Any]],
+    q: Any,
     predicate,
     *,
     timeout: float = 5.0,
@@ -94,8 +95,8 @@ class DummySource(PythonSource):
     def configure(self, cfg: dict[str, Any]) -> None:
         self.cfg = cfg
 
-    async def start(self, queue: asyncio.Queue[dict[str, Any]]) -> None:
-        await queue.put({"source_type": "dummy"})
+    async def start(self, queue: Any, **_kwargs: Any) -> None:
+        queue.enqueue({"source_type": "dummy"})
 
 
 def test_python_source_subclass():
@@ -108,7 +109,7 @@ def test_python_source_subclass():
 @pytest.mark.asyncio
 async def test_dummy_source_emits_event():
     s = DummySource()
-    q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    q = FakeQueue()
     await s.start(q)
     event = q.get_nowait()
     assert event["source_type"] == "dummy"
@@ -181,7 +182,7 @@ async def test_file_source_detects_create(tmp_path: Path):
     prefix = str(tmp_path.resolve())
     fs = FileSource()
     fs.configure({"watch_paths": [str(tmp_path)]})
-    q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    q = FakeQueue()
 
     task = asyncio.create_task(fs.start(q))
     # Give the observer thread a moment to attach.
@@ -214,7 +215,7 @@ async def test_file_source_populates_text_for_text_files(tmp_path: Path):
     prefix = str(tmp_path.resolve())
     fs = FileSource()
     fs.configure({"watch_paths": [str(tmp_path)]})
-    q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    q = FakeQueue()
 
     task = asyncio.create_task(fs.start(q))
     await asyncio.sleep(0.3)
@@ -242,7 +243,7 @@ async def test_file_source_no_text_for_binary_files(tmp_path: Path):
     prefix = str(tmp_path.resolve())
     fs = FileSource()
     fs.configure({"watch_paths": [str(tmp_path)], "include_extensions": [".png"]})
-    q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    q = FakeQueue()
 
     task = asyncio.create_task(fs.start(q))
     await asyncio.sleep(0.3)
@@ -273,7 +274,7 @@ async def test_file_source_respects_extension_filter(tmp_path: Path):
             "include_extensions": [".md"],
         }
     )
-    q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    q = FakeQueue()
 
     task = asyncio.create_task(fs.start(q))
     await asyncio.sleep(0.3)
@@ -311,7 +312,7 @@ async def test_file_source_respects_exclude_pattern(tmp_path: Path):
             "exclude_patterns": ["*.pyc"],
         }
     )
-    q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    q = FakeQueue()
 
     task = asyncio.create_task(fs.start(q))
     await asyncio.sleep(0.3)
@@ -346,7 +347,7 @@ async def test_file_source_delete_event(tmp_path: Path):
 
     fs = FileSource()
     fs.configure({"watch_paths": [str(tmp_path)]})
-    q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    q = FakeQueue()
 
     task = asyncio.create_task(fs.start(q))
     await asyncio.sleep(0.3)
@@ -404,7 +405,7 @@ async def test_file_source_indexes_oversized_as_metadata(tmp_path: Path):
             "max_file_size": 50,
         }
     )
-    q: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    q = FakeQueue()
 
     task = asyncio.create_task(fs.start(q))
     await asyncio.sleep(0.3)

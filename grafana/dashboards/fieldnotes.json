@@ -213,11 +213,11 @@
       "gridPos": { "h": 4, "w": 6, "x": 18, "y": 5 },
       "id": 8,
       "options": { "colorMode": "value", "graphMode": "none", "justifyMode": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "auto" },
-      "title": "Initial Sync ETA",
+      "title": "Queue Finish ETA",
       "type": "stat",
       "targets": [
         {
-          "expr": "fieldnotes_initial_sync_eta_seconds{job=\"fieldnotes_worker\"}",
+          "expr": "fieldnotes_queue_finish_eta_seconds{job=\"fieldnotes_worker\"}",
           "legendFormat": "ETA",
           "refId": "A"
         }
