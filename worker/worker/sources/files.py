@@ -266,7 +266,7 @@ class FileSource(PythonSource):
 
         return {(path, entry.sha256) for path, entry in current.items()}, current
 
-    async def start(self, queue: PersistentQueue) -> None:
+    async def start(self, queue: PersistentQueue, **_kwargs) -> None:
         # Initial scan BEFORE watchdog to avoid duplicate events.
         scan_pairs, scan_current = await self._initial_scan(queue)
         initial_sync_source_done()

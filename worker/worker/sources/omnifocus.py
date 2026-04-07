@@ -29,13 +29,14 @@ if TYPE_CHECKING:
     from worker.queue import PersistentQueue
 
 from worker.metrics import (
+    INDEXED_PREFILTER_SKIPPED,
     SOURCE_WATCHER_EVENTS,
     WATCHER_ACTIVE,
     WATCHER_LAST_EVENT_TIMESTAMP,
     initial_sync_source_done,
 )
 
-from .base import PythonSource
+from .base import IndexedCheck, PythonSource
 from .cursor import save_json_atomic
 
 logger = logging.getLogger(__name__)
@@ -236,7 +237,12 @@ class OmniFocusSource(PythonSource):
         if state:
             self._state_path = Path(state).expanduser().resolve()
 
-    async def start(self, queue: PersistentQueue) -> None:
+    async def start(
+        self,
+        queue: PersistentQueue,
+        *,
+        indexed_check: IndexedCheck | None = None,
+    ) -> None:
         if not self._enabled:
             logger.info("OmniFocus source skipped (disabled)")
             initial_sync_source_done()
@@ -248,7 +254,7 @@ class OmniFocusSource(PythonSource):
         first_cycle = True
         try:
             while True:
-                await self._poll(state, queue)
+                await self._poll(state, queue, indexed_check=indexed_check)
                 if first_cycle:
                     initial_sync_source_done()
                     first_cycle = False
@@ -261,8 +267,17 @@ class OmniFocusSource(PythonSource):
         self,
         state: dict[str, str],
         queue: asyncio.Queue[dict[str, Any]],
+        *,
+        indexed_check: IndexedCheck | None = None,
     ) -> None:
-        """Perform one poll cycle, emitting events for changes."""
+        """Perform one poll cycle, emitting events for changes.
+
+        ``indexed_check`` acts as a backstop for the case where the local
+        state file is missing or stale: tasks that look "newly created"
+        from a local-state perspective but are already chunked in Neo4j
+        are skipped (and seeded into the local state) so they aren't
+        re-emitted on every cold start.
+        """
         loop = asyncio.get_running_loop()
         try:
             tasks = await loop.run_in_executor(None, _fetch_tasks)
@@ -272,6 +287,9 @@ class OmniFocusSource(PythonSource):
 
         current: dict[str, str] = {}  # task_id → hash
         events: list[dict[str, Any]] = []
+        # Tasks that look "created" from local state — collected first,
+        # then bulk-checked against Neo4j to drop already-indexed ones.
+        created_pending: list[tuple[dict[str, Any], str]] = []  # (task, hash)
 
         for task in tasks:
             task_id = task.get("id")
@@ -283,7 +301,8 @@ class OmniFocusSource(PythonSource):
 
             prev_hash = state.get(task_id)
             if prev_hash is None:
-                operation = "created"
+                created_pending.append((task, h))
+                continue
             elif prev_hash != h:
                 operation = "modified"
             else:
@@ -294,6 +313,40 @@ class OmniFocusSource(PythonSource):
             SOURCE_WATCHER_EVENTS.labels(
                 source_type=_SOURCE_TYPE,
                 event_type=operation,
+            ).inc()
+            WATCHER_LAST_EVENT_TIMESTAMP.labels(
+                source_type=_SOURCE_TYPE,
+            ).set_to_current_time()
+
+        # Phase 1 backstop: check Neo4j for any "created" tasks before
+        # emitting events.  Tasks already chunked there are absorbed into
+        # local state without being re-emitted.
+        already_indexed: set[str] = set()
+        if created_pending and indexed_check is not None:
+            candidate_sids = [
+                f"omnifocus://{t.get('id')}" for t, _ in created_pending
+            ]
+            try:
+                already_indexed = await loop.run_in_executor(
+                    None, indexed_check, candidate_sids
+                )
+            except Exception:
+                logger.warning(
+                    "OmniFocus indexed_check failed; emitting all created tasks",
+                    exc_info=True,
+                )
+                already_indexed = set()
+
+        for task, _h in created_pending:
+            sid = f"omnifocus://{task.get('id')}"
+            if sid in already_indexed:
+                INDEXED_PREFILTER_SKIPPED.labels(source_type=_SOURCE_TYPE).inc()
+                continue
+            event = _build_event(task, "created")
+            events.append(event)
+            SOURCE_WATCHER_EVENTS.labels(
+                source_type=_SOURCE_TYPE,
+                event_type="created",
             ).inc()
             WATCHER_LAST_EVENT_TIMESTAMP.labels(
                 source_type=_SOURCE_TYPE,

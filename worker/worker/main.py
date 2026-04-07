@@ -229,10 +229,18 @@ async def _run(cfg: Config) -> None:
     if recovered:
         logger.info("Recovered %d interrupted queue item(s) from previous run", recovered)
 
+    # Backstop dedup callable: sources with content-immutable items
+    # (gmail messages, git commits, etc.) use this to skip the per-item
+    # fetch path for source_ids that already have chunks in Neo4j.
+    indexed_check = writer.indexed_source_ids
+
     # Start source tasks
     source_tasks: list[asyncio.Task[None]] = []
     for source in sources:
-        task = asyncio.create_task(source.start(queue), name=f"source:{source.name()}")
+        task = asyncio.create_task(
+            source.start(queue, indexed_check=indexed_check),
+            name=f"source:{source.name()}",
+        )
         source_tasks.append(task)
     logger.info("Started %d source(s)", len(source_tasks))
 

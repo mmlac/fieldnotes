@@ -231,6 +231,14 @@ class WriteUnit:
     entities: list[dict[str, Any]] = field(default_factory=list)
     triples: list[dict[str, str]] = field(default_factory=list)
     depicts_entities: list[dict[str, Any]] = field(default_factory=list)
+    content_hash: str | None = None
+    """SHA-256 hex digest of ``doc.text`` at indexing time.
+
+    Persisted on the source node so subsequent runs can detect unchanged
+    content and skip the chunk → embed → extract path.  ``None`` means
+    "do not write a hash" (e.g. for metadata-only re-upserts of an
+    already-indexed document, or deletions).
+    """
 
 
 class Writer:
@@ -356,6 +364,101 @@ class Writer:
         with self._entity_cache_lock:
             self._entity_cache = None
             self._entity_cache_ts = 0.0
+
+    # ------------------------------------------------------------------
+    # Dedup helpers — used by sources/pipeline to skip already-indexed work
+    # ------------------------------------------------------------------
+
+    def indexed_source_ids(self, source_ids: list[str]) -> set[str]:
+        """Return the subset of *source_ids* that already have ≥1 chunk in Neo4j.
+
+        Used as a pre-filter to skip sources whose canonical content cannot
+        change (gmail messages, git commits) or that have already been
+        processed.  Exploits the existing ``chunk_id_unique`` constraint
+        index by looking up the deterministic ``{source_id}:chunk:0`` node
+        for each candidate — no per-label source_id index is required.
+
+        Performs the lookup in batches of 1000 to keep parameter sizes
+        well under Neo4j's limits.
+        """
+        if not source_ids:
+            return set()
+
+        # De-duplicate the input list while preserving order; callers may
+        # pass duplicates and we'd rather not pay for them twice.
+        seen: set[str] = set()
+        unique: list[str] = []
+        for sid in source_ids:
+            if sid not in seen:
+                seen.add(sid)
+                unique.append(sid)
+
+        found: set[str] = set()
+        suffix = ":chunk:0"
+        BATCH = 1000
+        with self._neo4j_driver.session() as session:
+            for start in range(0, len(unique), BATCH):
+                batch = unique[start : start + BATCH]
+                chunk_ids = [sid + suffix for sid in batch]
+                result = session.run(
+                    "UNWIND $cids AS cid "
+                    "MATCH (c:Chunk {id: cid}) "
+                    "RETURN c.id AS cid",
+                    cids=chunk_ids,
+                )
+                for record in result:
+                    cid = record["cid"]
+                    if cid.endswith(suffix):
+                        found.add(cid[: -len(suffix)])
+        return found
+
+    def get_content_hashes(
+        self, source_ids_by_label: dict[str, list[str]]
+    ) -> dict[str, str]:
+        """Return ``source_id → content_hash`` for source nodes with stored hashes.
+
+        The caller groups source_ids by their Neo4j node label so each
+        per-label index (e.g. ``email_source_id``, ``file_source_id``) is
+        used.  Labels not in the safe-identifier allowlist are skipped.
+
+        Returns an empty dict for empty input.  Source nodes without a
+        ``content_hash`` property are simply absent from the returned dict.
+        """
+        result: dict[str, str] = {}
+        if not source_ids_by_label:
+            return result
+
+        BATCH = 1000
+        with self._neo4j_driver.session() as session:
+            for label, sids in source_ids_by_label.items():
+                if not label or not sids:
+                    continue
+                # Reject any label that isn't a safe Cypher identifier; we
+                # interpolate it into the query string and must not allow
+                # injection from caller-supplied values.
+                try:
+                    safe_label = _validate_cypher_identifier(label, "node_label")
+                except ValueError:
+                    logger.warning(
+                        "Skipping content-hash lookup for unsafe label %r", label
+                    )
+                    continue
+
+                # De-duplicate within the per-label group.
+                unique_sids = list(dict.fromkeys(sids))
+
+                for start in range(0, len(unique_sids), BATCH):
+                    batch = unique_sids[start : start + BATCH]
+                    cypher = (
+                        f"UNWIND $sids AS sid "
+                        f"MATCH (n:`{safe_label}` {{source_id: sid}}) "
+                        f"WHERE n.content_hash IS NOT NULL "
+                        f"RETURN sid, n.content_hash AS hash"
+                    )
+                    records = session.run(cypher, sids=batch)
+                    for r in records:
+                        result[r["sid"]] = r["hash"]
+        return result
 
     def fetch_candidate_entities(self, names: list[str]) -> list[dict[str, Any]]:
         """Fetch entities similar to the given names using full-text index.
@@ -1006,7 +1109,7 @@ class Writer:
         # ── Phase 1: Write new state ──────────────────────────────
 
         # 1. Upsert source node
-        _upsert_source_node(tx, doc)
+        _upsert_source_node(tx, doc, content_hash=unit.content_hash)
 
         # 2. Batch upsert entity nodes and MENTIONS edges
         if unit.entities:
@@ -1250,14 +1353,22 @@ class Writer:
 # ------------------------------------------------------------------
 
 
-def _upsert_source_node(tx: Any, doc: ParsedDocument) -> None:
-    """MERGE a source node on source_id and set its properties."""
+def _upsert_source_node(
+    tx: Any, doc: ParsedDocument, content_hash: str | None = None
+) -> None:
+    """MERGE a source node on source_id and set its properties.
+
+    If *content_hash* is provided, it is stored as ``s.content_hash`` so
+    later runs can detect unchanged content and skip re-processing.
+    """
     label = _validate_cypher_identifier(doc.node_label, "node_label")
     props = {
         **doc.node_props,
         "source_id": doc.source_id,
         "source_type": doc.source_type,
     }
+    if content_hash is not None:
+        props["content_hash"] = content_hash
     for k in props:
         _validate_cypher_identifier(k, "node_props key")
     # Build a dynamic SET clause from node_props

@@ -330,7 +330,7 @@ class TestBatchProcess:
 
         call_count = 0
 
-        def side_effect(doc):
+        def side_effect(doc, **_kwargs):
             nonlocal call_count
             call_count += 1
             if doc.source_id == "doc/1":
@@ -353,6 +353,216 @@ class TestBatchProcess:
             failed = pipeline.process_batch(docs)
 
         assert failed == []
+
+
+# ------------------------------------------------------------------
+# Dedup: Phase 1 (already_indexed) and Phase 2 (content_hash)
+# ------------------------------------------------------------------
+
+
+class TestPhase1AlreadyIndexed:
+    def test_skips_when_already_indexed_and_created(self):
+        pipeline, registry, writer = _make_pipeline()
+        doc = _doc(operation="created")
+
+        with patch("worker.pipeline.chunk_text") as mock_chunk:
+            pipeline.process(doc, already_indexed=True)
+            mock_chunk.assert_not_called()
+        writer.write.assert_not_called()
+
+    def test_does_not_skip_modified_even_if_already_indexed(self):
+        pipeline, registry, writer = _make_pipeline()
+        doc = _doc(operation="modified")
+
+        with patch("worker.pipeline.chunk_text", return_value=[]) as mock_chunk:
+            pipeline.process(doc, already_indexed=True)
+            mock_chunk.assert_called_once()
+
+    def test_does_not_skip_deleted_even_if_already_indexed(self):
+        pipeline, _, writer = _make_pipeline()
+        doc = _doc(operation="deleted")
+
+        pipeline.process(doc, already_indexed=True)
+        writer.write.assert_called_once()  # deletion forwarded
+
+    def test_does_not_skip_when_already_indexed_false(self):
+        pipeline, registry, writer = _make_pipeline()
+        doc = _doc(operation="created")
+
+        with patch(
+            "worker.pipeline.chunk_text", return_value=[Chunk(text="hi", index=0)]
+        ) as mock_chunk:
+            with patch(
+                "worker.pipeline.embed_chunks",
+                return_value=[("hi", [0.1] * 768)],
+            ):
+                with patch(
+                    "worker.pipeline.extract_chunks",
+                    return_value=[
+                        ExtractionResult(entities=[], triples=[], failed=False)
+                    ],
+                ):
+                    with patch(
+                        "worker.pipeline.resolve_entities_from_registry",
+                        return_value=ResolutionResult(entities=[]),
+                    ):
+                        pipeline.process(doc, already_indexed=False)
+                        mock_chunk.assert_called_once()
+
+
+class TestPhase2ContentHash:
+    def _hash(self, text: str) -> str:
+        import hashlib
+
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    def test_skips_chunk_embed_extract_when_hash_matches(self):
+        pipeline, registry, writer = _make_pipeline()
+        doc = _doc(text="Hello world.", operation="modified")
+        existing = self._hash("Hello world.")
+
+        with patch("worker.pipeline.chunk_text") as mock_chunk:
+            with patch("worker.pipeline.embed_chunks") as mock_embed:
+                with patch("worker.pipeline.extract_chunks") as mock_extract:
+                    pipeline.process(doc, existing_hash=existing)
+                    mock_chunk.assert_not_called()
+                    mock_embed.assert_not_called()
+                    mock_extract.assert_not_called()
+
+        # Source-node metadata is still re-upserted (with the same hash).
+        writer.write.assert_called_once()
+        unit = writer.write.call_args[0][0]
+        assert unit.content_hash == existing
+        assert unit.chunks == []
+
+    def test_runs_full_pipeline_when_hash_differs(self):
+        pipeline, registry, writer = _make_pipeline()
+        doc = _doc(text="New content.", operation="modified")
+        old_hash = self._hash("OLD content.")
+
+        with patch(
+            "worker.pipeline.chunk_text",
+            return_value=[Chunk(text="New content.", index=0)],
+        ) as mock_chunk:
+            with patch(
+                "worker.pipeline.embed_chunks",
+                return_value=[("New content.", [0.1] * 768)],
+            ):
+                with patch(
+                    "worker.pipeline.extract_chunks",
+                    return_value=[
+                        ExtractionResult(entities=[], triples=[], failed=False)
+                    ],
+                ):
+                    with patch(
+                        "worker.pipeline.resolve_entities_from_registry",
+                        return_value=ResolutionResult(entities=[]),
+                    ):
+                        pipeline.process(doc, existing_hash=old_hash)
+                        mock_chunk.assert_called_once()
+
+        # Write should have happened with the NEW hash.
+        writer.write.assert_called_once()
+        unit = writer.write.call_args[0][0]
+        assert unit.content_hash == self._hash("New content.")
+
+    def test_runs_full_pipeline_when_no_existing_hash(self):
+        pipeline, registry, writer = _make_pipeline()
+        doc = _doc(text="Brand new doc.", operation="created")
+
+        with patch(
+            "worker.pipeline.chunk_text",
+            return_value=[Chunk(text="Brand new doc.", index=0)],
+        ) as mock_chunk:
+            with patch(
+                "worker.pipeline.embed_chunks",
+                return_value=[("Brand new doc.", [0.1] * 768)],
+            ):
+                with patch(
+                    "worker.pipeline.extract_chunks",
+                    return_value=[
+                        ExtractionResult(entities=[], triples=[], failed=False)
+                    ],
+                ):
+                    with patch(
+                        "worker.pipeline.resolve_entities_from_registry",
+                        return_value=ResolutionResult(entities=[]),
+                    ):
+                        pipeline.process(doc, existing_hash=None)
+                        mock_chunk.assert_called_once()
+
+        unit = writer.write.call_args[0][0]
+        assert unit.content_hash == self._hash("Brand new doc.")
+
+
+class TestPrefetchDedupState:
+    def test_prefetches_indexed_and_hashes(self):
+        pipeline, _, writer = _make_pipeline()
+        writer.indexed_source_ids.return_value = {"doc/1"}
+        writer.get_content_hashes.return_value = {"doc/2": "abc"}
+
+        docs = [
+            _doc(source_id="doc/1", operation="created"),
+            _doc(source_id="doc/2", operation="modified"),
+            _doc(source_id="doc/3", operation="created"),
+        ]
+        already, hashes = pipeline._prefetch_dedup_state(docs)
+
+        assert already == {"doc/1"}
+        assert hashes == {"doc/2": "abc"}
+
+        # indexed_source_ids only gets created docs
+        writer.indexed_source_ids.assert_called_once()
+        sids_arg = writer.indexed_source_ids.call_args[0][0]
+        assert set(sids_arg) == {"doc/1", "doc/3"}
+
+        # get_content_hashes excludes the already-indexed doc/1 but
+        # still asks about doc/2 (modified) and doc/3 (created+not-indexed)
+        writer.get_content_hashes.assert_called_once()
+        grouped = writer.get_content_hashes.call_args[0][0]
+        assert "File" in grouped
+        assert set(grouped["File"]) == {"doc/2", "doc/3"}
+
+    def test_prefetch_swallows_writer_errors(self):
+        pipeline, _, writer = _make_pipeline()
+        writer.indexed_source_ids.side_effect = RuntimeError("neo4j down")
+        writer.get_content_hashes.side_effect = RuntimeError("neo4j down")
+
+        docs = [_doc(source_id="doc/1", operation="created")]
+        already, hashes = pipeline._prefetch_dedup_state(docs)
+        # Falls back to "process everything"
+        assert already == set()
+        assert hashes == {}
+
+    def test_prefetch_empty_docs_returns_empty(self):
+        pipeline, _, writer = _make_pipeline()
+        already, hashes = pipeline._prefetch_dedup_state([])
+        assert already == set()
+        assert hashes == {}
+        writer.indexed_source_ids.assert_not_called()
+        writer.get_content_hashes.assert_not_called()
+
+    def test_process_batch_passes_dedup_hints(self):
+        pipeline, _, writer = _make_pipeline()
+        writer.indexed_source_ids.return_value = {"doc/0"}
+        writer.get_content_hashes.return_value = {"doc/1": "hashval"}
+
+        docs = [
+            _doc(source_id="doc/0", operation="created"),
+            _doc(source_id="doc/1", operation="modified"),
+        ]
+        seen: list[tuple[str, bool, str | None]] = []
+
+        def fake_process(doc, *, already_indexed=False, existing_hash=None):
+            seen.append((doc.source_id, already_indexed, existing_hash))
+
+        with patch.object(pipeline, "process", side_effect=fake_process):
+            pipeline.process_batch(docs)
+
+        assert seen == [
+            ("doc/0", True, None),
+            ("doc/1", False, "hashval"),
+        ]
 
 
 # ------------------------------------------------------------------

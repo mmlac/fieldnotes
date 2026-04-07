@@ -32,6 +32,7 @@ from googleapiclient.errors import HttpError
 
 from worker.log_sanitizer import redact_home_path
 from worker.metrics import (
+    INDEXED_PREFILTER_SKIPPED,
     SOURCE_WATCHER_EVENTS,
     WATCHER_ACTIVE,
     WATCHER_LAST_EVENT_TIMESTAMP,
@@ -39,7 +40,7 @@ from worker.metrics import (
     initial_sync_source_done,
 )
 
-from .base import PythonSource
+from .base import IndexedCheck, PythonSource
 from .calendar_auth import get_credentials
 from .cursor import save_json_atomic
 
@@ -212,7 +213,12 @@ class GoogleCalendarSource(PythonSource):
         if "token_path" in cfg:
             self._token_path = Path(cfg["token_path"]).expanduser().resolve()
 
-    async def start(self, queue: PersistentQueue) -> None:
+    async def start(
+        self,
+        queue: PersistentQueue,
+        *,
+        indexed_check: IndexedCheck | None = None,
+    ) -> None:
         secrets_path = Path(self._client_secrets_path).expanduser().resolve()
         if not secrets_path.exists():
             logger.error(
@@ -265,6 +271,7 @@ class GoogleCalendarSource(PythonSource):
                         new_token = await self._poll_calendar(
                             service, queue, cal_id, sync_token,
                             sync_tokens, seen_series,
+                            indexed_check=indexed_check,
                         )
                         if new_token:
                             sync_tokens[cal_id] = new_token
@@ -304,6 +311,8 @@ class GoogleCalendarSource(PythonSource):
         sync_token: str | None,
         sync_tokens: dict[str, str],
         seen_series: set[str] | None = None,
+        *,
+        indexed_check: IndexedCheck | None = None,
     ) -> str | None:
         """Fetch events for a single calendar.  Returns new sync token."""
         is_backfill = sync_token is None
@@ -357,9 +366,45 @@ class GoogleCalendarSource(PythonSource):
                 )
 
                 events = result.get("items", [])
+
+                # Phase 1 backstop: on backfill, batch-check Neo4j for the
+                # entire page so we can skip events whose source_id is
+                # already chunked (e.g. on a cold start with no cursor but
+                # an existing graph).
+                already_indexed_sids: set[str] = set()
+                if is_backfill and indexed_check is not None and events:
+                    candidate_sids: list[str] = []
+                    for ev in events:
+                        ev_id = ev.get("id")
+                        if ev_id:
+                            candidate_sids.append(f"gcal:{calendar_id}:{ev_id}")
+                    if candidate_sids:
+                        try:
+                            already_indexed_sids = await asyncio.to_thread(
+                                indexed_check, candidate_sids
+                            )
+                        except Exception:
+                            logger.warning(
+                                "Calendar indexed_check failed for %s; "
+                                "processing all events in this page",
+                                calendar_id,
+                                exc_info=True,
+                            )
+                            already_indexed_sids = set()
+
                 for event in events:
                     ingest = _build_ingest_event(event, calendar_id)
                     if ingest is not None:
+                        # Phase 1: skip events already chunked in Neo4j.
+                        if (
+                            is_backfill
+                            and ingest["source_id"] in already_indexed_sids
+                        ):
+                            INDEXED_PREFILTER_SKIPPED.labels(
+                                source_type="google_calendar"
+                            ).inc()
+                            total_skipped_processed += 1
+                            continue
                         # Skip events already in the queue.
                         if is_backfill and queue.is_enqueued(ingest["source_id"]):
                             total_skipped_processed += 1

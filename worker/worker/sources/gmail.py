@@ -32,6 +32,7 @@ from googleapiclient.errors import HttpError
 
 from worker.metrics import (
     GMAIL_POLL_DURATION,
+    INDEXED_PREFILTER_SKIPPED,
     SOURCE_WATCHER_EVENTS,
     WATCHER_ACTIVE,
     WATCHER_LAST_EVENT_TIMESTAMP,
@@ -42,7 +43,7 @@ from worker.metrics import (
 
 from worker.log_sanitizer import redact_home_path
 
-from .base import PythonSource
+from .base import IndexedCheck, PythonSource
 from .cursor import save_json_atomic
 from .gmail_auth import get_credentials
 
@@ -222,7 +223,12 @@ class GmailSource(PythonSource):
         if cursor:
             self._cursor_path = Path(cursor).expanduser().resolve()
 
-    async def start(self, queue: PersistentQueue) -> None:
+    async def start(
+        self,
+        queue: PersistentQueue,
+        *,
+        indexed_check: IndexedCheck | None = None,
+    ) -> None:
         if self._client_secrets_path is None:
             raise ValueError(
                 "GmailSource.start() called before configure() — "
@@ -258,7 +264,9 @@ class GmailSource(PythonSource):
                 self._max_initial_threads,
                 self._label_filter,
             )
-            cursor = await self._backfill(messages_api, queue, is_initial=True)
+            cursor = await self._backfill(
+                messages_api, queue, is_initial=True, indexed_check=indexed_check
+            )
 
         initial_sync_source_done()
 
@@ -270,7 +278,12 @@ class GmailSource(PythonSource):
                     if cursor is None:
                         # No valid cursor (e.g. history ID expired) — re-backfill.
                         logger.info("No cursor available — re-running backfill")
-                        cursor = await self._backfill(messages_api, queue, is_initial=False)
+                        cursor = await self._backfill(
+                            messages_api,
+                            queue,
+                            is_initial=False,
+                            indexed_check=indexed_check,
+                        )
                         # history_id saved via _ProgressTracker callbacks
                     else:
                         cursor = await self._poll_incremental(
@@ -319,12 +332,25 @@ class GmailSource(PythonSource):
         queue: asyncio.Queue[dict[str, Any]],
         *,
         is_initial: bool = True,
+        indexed_check: IndexedCheck | None = None,
     ) -> str | None:
         """Fetch up to max_initial_threads recent messages and return the
         latest historyId for subsequent incremental polling.
 
         Includes rate limiting (delay between pages) and retry with
         exponential backoff to avoid hitting Gmail API rate limits.
+
+        When *indexed_check* is provided, each page of message stubs is
+        first batched against Neo4j to skip messages whose ``gmail:{id}``
+        source_id is already chunked.  This avoids the per-message
+        ``messages.get(format="full")`` call entirely for items that have
+        already been processed — Gmail messages are content-immutable
+        once sent, so re-fetching them would only re-do the same work.
+
+        Tradeoff: label-only changes (archive, star, folder move) on
+        already-indexed messages are not picked up by this skip path.
+        That's intentional; if labels become important the right fix is
+        a separate label-sync pass, not re-running the full pipeline.
         """
         loop = asyncio.get_running_loop()
         fetched = 0
@@ -351,12 +377,33 @@ class GmailSource(PythonSource):
             if not msg_stubs:
                 break
 
+            # Phase 1 pre-filter: batch-check Neo4j for the entire page so
+            # we can skip the per-message GET call (the expensive one).
+            already_indexed_sids: set[str] = set()
+            if indexed_check is not None:
+                candidate_sids = [f"gmail:{stub['id']}" for stub in msg_stubs]
+                try:
+                    already_indexed_sids = await loop.run_in_executor(
+                        None, indexed_check, candidate_sids
+                    )
+                except Exception:
+                    logger.warning(
+                        "Gmail indexed_check failed; processing all messages "
+                        "in this page",
+                        exc_info=True,
+                    )
+                    already_indexed_sids = set()
+
             for stub in msg_stubs:
                 if fetched >= self._max_initial_threads:
                     break
                 if stub["id"] in seen_ids:
                     continue
                 seen_ids.add(stub["id"])
+                if f"gmail:{stub['id']}" in already_indexed_sids:
+                    INDEXED_PREFILTER_SKIPPED.labels(source_type="gmail").inc()
+                    fetched += 1
+                    continue
                 msg = await self._api_call_with_retry(
                     loop,
                     lambda mid=stub["id"]: messages_api.get(

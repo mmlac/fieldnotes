@@ -292,7 +292,7 @@ class TestRun:
         fake_source.name.return_value = "files"
 
         # Source pushes one event then the stop signal fires
-        async def fake_start(queue):
+        async def fake_start(queue, **_kwargs):
             await queue.put(
                 {
                     "source_type": "file",
@@ -336,7 +336,7 @@ class TestRun:
         fake_source = MagicMock()
         fake_source.name.return_value = "files"
 
-        async def fake_start(queue):
+        async def fake_start(queue, **_kwargs):
             await queue.put(
                 {
                     "source_type": "file",
@@ -388,7 +388,7 @@ class TestRun:
         fake_source = MagicMock()
         fake_source.name.return_value = "files"
 
-        async def fake_start(queue):
+        async def fake_start(queue, **_kwargs):
             await asyncio.sleep(999)  # run forever until cancelled
 
         fake_source.start = fake_start
@@ -418,7 +418,7 @@ class TestRun:
         fake_source = MagicMock()
         fake_source.name.return_value = "files"
 
-        async def fake_start(queue):
+        async def fake_start(queue, **_kwargs):
             await asyncio.sleep(999)
 
         fake_source.start = fake_start

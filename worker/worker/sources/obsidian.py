@@ -299,7 +299,7 @@ class ObsidianSource(PythonSource):
         if cats_key:
             self._categories_key = cats_key
 
-    async def start(self, queue: PersistentQueue) -> None:
+    async def start(self, queue: PersistentQueue, **_kwargs) -> None:
         loop = asyncio.get_running_loop()
         vaults = discover_vaults(self._vault_paths)
         OBSIDIAN_VAULTS_DISCOVERED.set(len(vaults))

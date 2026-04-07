@@ -158,6 +158,21 @@ ENTITIES_RESOLVED = Counter(
     registry=REGISTRY,
 )
 
+PIPELINE_SKIPPED = Counter(
+    "pipeline_skipped_total",
+    "Documents skipped before chunk/embed/extract work",
+    # reason: already_indexed | content_hash
+    ["source_type", "reason"],
+    registry=REGISTRY,
+)
+
+INDEXED_PREFILTER_SKIPPED = Counter(
+    "indexed_prefilter_skipped_total",
+    "Items skipped at the source-adapter layer before fetch/enqueue",
+    ["source_type"],
+    registry=REGISTRY,
+)
+
 # ---------------------------------------------------------------------------
 # Pipeline histograms
 # ---------------------------------------------------------------------------

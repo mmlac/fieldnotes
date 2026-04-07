@@ -40,6 +40,7 @@ if TYPE_CHECKING:
 import git
 
 from worker.metrics import (
+    INDEXED_PREFILTER_SKIPPED,
     SOURCE_WATCHER_EVENTS,
     WATCHER_ACTIVE,
     WATCHER_LAST_EVENT_TIMESTAMP,
@@ -49,7 +50,7 @@ from worker.metrics import (
 from worker.log_sanitizer import redact_home_path
 
 from ._handler import guess_mime, streaming_sha256
-from .base import PythonSource
+from .base import IndexedCheck, PythonSource
 from .cursor import save_json_atomic
 
 logger = logging.getLogger(__name__)
@@ -320,7 +321,12 @@ class RepositorySource(PythonSource):
         self._max_file_size = int(cfg.get("max_file_size", DEFAULT_MAX_FILE_SIZE))
         self._max_commits = int(cfg.get("max_commits", DEFAULT_MAX_COMMITS))
 
-    async def start(self, queue: PersistentQueue) -> None:
+    async def start(
+        self,
+        queue: PersistentQueue,
+        *,
+        indexed_check: IndexedCheck | None = None,
+    ) -> None:
         # Load cursors from queue DB (migrated from JSON file).
         raw_cursor = queue.load_cursor("repositories")
         cursors: dict[str, str] = {}
@@ -345,7 +351,9 @@ class RepositorySource(PythonSource):
             while True:
                 repos = _discover_repos(self._repo_roots)
                 for repo_path in repos:
-                    await self._scan_repo(repo_path, cursors, queue)
+                    await self._scan_repo(
+                        repo_path, cursors, queue, indexed_check=indexed_check
+                    )
                 if first_cycle:
                     initial_sync_source_done()
                     first_cycle = False
@@ -360,6 +368,8 @@ class RepositorySource(PythonSource):
         repo_path: Path,
         cursors: dict[str, str],
         queue: asyncio.Queue[dict[str, Any]],
+        *,
+        indexed_check: IndexedCheck | None = None,
     ) -> None:
         """Scan a single repo, emitting events for new/changed files."""
         repo_key = str(repo_path)
@@ -406,7 +416,8 @@ class RepositorySource(PythonSource):
 
         # Scan commits (initial: last N; incremental: since prev cursor)
         commit_events = await self._collect_commits(
-            repo, repo_path, repo_name, remote_url, prev_sha
+            repo, repo_path, repo_name, remote_url, prev_sha,
+            indexed_check=indexed_check,
         )
         events.extend(commit_events)
 
@@ -590,8 +601,17 @@ class RepositorySource(PythonSource):
         repo_name: str,
         remote_url: str | None,
         prev_sha: str | None,
+        *,
+        indexed_check: IndexedCheck | None = None,
     ) -> list[dict[str, Any]]:
-        """Collect events for recent git commits."""
+        """Collect events for recent git commits.
+
+        Commits are content-addressed by SHA, so when ``indexed_check`` is
+        provided we drop any commit whose ``commit:{repo_path}:{sha}``
+        source_id is already in Neo4j.  This avoids re-running the per-
+        commit diff and event-build work for commits we've already
+        indexed (e.g. on a cold start with no cursor).
+        """
         events: list[dict[str, Any]] = []
         loop = asyncio.get_running_loop()
 
@@ -621,7 +641,38 @@ class RepositorySource(PythonSource):
             logger.warning("Failed to enumerate commits in %s: %s", repo_name, exc)
             return events
 
+        # Phase 1 pre-filter: drop commits already chunked in Neo4j BEFORE
+        # building diffs and events for them.  Commit SHAs are content-
+        # addressed, so this is always safe.
+        already_indexed_shas: set[str] = set()
+        if indexed_check is not None and commits:
+            candidate_sids = [
+                f"commit:{repo_path}:{c.hexsha}" for c in commits
+            ]
+            try:
+                already_sids = await loop.run_in_executor(
+                    None, indexed_check, candidate_sids
+                )
+            except Exception:
+                logger.warning(
+                    "Repositories indexed_check failed for %s; processing all commits",
+                    repo_name,
+                    exc_info=True,
+                )
+                already_sids = set()
+            for sid in already_sids:
+                # sid is "commit:{repo_path}:{sha}"; extract the sha.
+                idx = sid.rfind(":")
+                if idx != -1:
+                    already_indexed_shas.add(sid[idx + 1 :])
+            if already_indexed_shas:
+                INDEXED_PREFILTER_SKIPPED.labels(
+                    source_type="repositories"
+                ).inc(len(already_indexed_shas))
+
         for commit_obj in commits:
+            if commit_obj.hexsha in already_indexed_shas:
+                continue
             # Get changed file paths from the commit's diff against its parent
             try:
                 changed = await loop.run_in_executor(

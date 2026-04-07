@@ -94,7 +94,7 @@ class TestRunDaemon:
         fake_source = MagicMock()
         fake_source.name.return_value = "files"
 
-        async def fake_start(queue):
+        async def fake_start(queue, **_kwargs):
             queue.enqueue(
                 {
                     "source_type": "file",
@@ -140,7 +140,7 @@ class TestRunDaemon:
         fake_source = MagicMock()
         fake_source.name.return_value = "files"
 
-        async def fake_start(queue):
+        async def fake_start(queue, **_kwargs):
             await asyncio.sleep(999)
 
         fake_source.start = fake_start
@@ -206,7 +206,7 @@ class TestRunDaemon:
         fake_source = MagicMock()
         fake_source.name.return_value = "files"
 
-        async def fake_start(queue):
+        async def fake_start(queue, **_kwargs):
             queue.enqueue(
                 {
                     "source_type": "file",

@@ -725,3 +725,171 @@ class TestBackfillRateLimiting:
         assert queue.qsize() == 5
         # Should have paused between pages
         assert BACKFILL_PAGE_DELAY in sleep_calls
+
+
+# ---------------------------------------------------------------------------
+# Phase 1 indexed_check pre-filter
+# ---------------------------------------------------------------------------
+
+
+def _make_persistent_queue_mock() -> MagicMock:
+    """Build a PersistentQueue-shaped mock the backfill loop can call into."""
+    from worker.queue import PersistentQueue
+
+    q = MagicMock(spec=PersistentQueue)
+    q.is_enqueued.return_value = False
+    q.enqueue.return_value = "row-id"
+    return q
+
+
+class TestBackfillIndexedCheck:
+    @pytest.mark.asyncio
+    async def test_skips_per_message_fetch_for_indexed_ids(self) -> None:
+        """Already-indexed messages must NOT trigger messages.get() calls."""
+        msgs = [_gmail_message(f"m-{i}") for i in range(5)]
+
+        api = MagicMock()
+        list_req = MagicMock()
+        list_req.execute.return_value = {
+            "messages": [{"id": m["id"]} for m in msgs],
+        }
+        api.list.return_value = list_req
+
+        get_calls: list[str] = []
+
+        def get_side_effect(**kwargs):
+            get_calls.append(kwargs["id"])
+            req = MagicMock()
+            req.execute.return_value = next(
+                m for m in msgs if m["id"] == kwargs["id"]
+            )
+            return req
+
+        api.get.side_effect = get_side_effect
+
+        # Mark messages 0, 2, 4 as already indexed.
+        already = {"gmail:m-0", "gmail:m-2", "gmail:m-4"}
+
+        def indexed_check(sids: list[str]) -> set[str]:
+            return {s for s in sids if s in already}
+
+        source = GmailSource()
+        source._max_initial_threads = 10
+        source._label_filter = "INBOX"
+
+        queue = _make_persistent_queue_mock()
+        result = await source._backfill(
+            api, queue, is_initial=True, indexed_check=indexed_check
+        )
+
+        # Only messages 1 and 3 should have hit messages.get()
+        assert sorted(get_calls) == ["m-1", "m-3"]
+        # And only 2 events should have been enqueued.
+        assert queue.enqueue.call_count == 2
+        # Cursor should still advance from the messages we DID fetch
+        # (max historyId = 100 in the helper).
+        assert result == "100"
+
+    @pytest.mark.asyncio
+    async def test_no_indexed_check_processes_all_messages(self) -> None:
+        """When indexed_check is None, behavior is unchanged."""
+        msgs = [_gmail_message(f"m-{i}") for i in range(3)]
+
+        api = MagicMock()
+        list_req = MagicMock()
+        list_req.execute.return_value = {
+            "messages": [{"id": m["id"]} for m in msgs],
+        }
+        api.list.return_value = list_req
+
+        get_calls: list[str] = []
+
+        def get_side_effect(**kwargs):
+            get_calls.append(kwargs["id"])
+            req = MagicMock()
+            req.execute.return_value = next(
+                m for m in msgs if m["id"] == kwargs["id"]
+            )
+            return req
+
+        api.get.side_effect = get_side_effect
+
+        source = GmailSource()
+        source._max_initial_threads = 10
+        source._label_filter = "INBOX"
+
+        queue = _make_persistent_queue_mock()
+        await source._backfill(api, queue, is_initial=True, indexed_check=None)
+
+        assert sorted(get_calls) == ["m-0", "m-1", "m-2"]
+        assert queue.enqueue.call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_indexed_check_failure_falls_back_to_full_processing(
+        self,
+    ) -> None:
+        """If indexed_check raises, the loop must process every message anyway."""
+        msgs = [_gmail_message(f"m-{i}") for i in range(2)]
+
+        api = MagicMock()
+        list_req = MagicMock()
+        list_req.execute.return_value = {
+            "messages": [{"id": m["id"]} for m in msgs],
+        }
+        api.list.return_value = list_req
+
+        def get_side_effect(**kwargs):
+            req = MagicMock()
+            req.execute.return_value = next(
+                m for m in msgs if m["id"] == kwargs["id"]
+            )
+            return req
+
+        api.get.side_effect = get_side_effect
+
+        def boom(_sids):
+            raise RuntimeError("neo4j down")
+
+        source = GmailSource()
+        source._max_initial_threads = 10
+        source._label_filter = "INBOX"
+
+        queue = _make_persistent_queue_mock()
+        await source._backfill(
+            api, queue, is_initial=True, indexed_check=boom
+        )
+
+        # Both messages should have been fetched despite the indexed_check failure.
+        assert queue.enqueue.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_all_indexed_skips_entire_page(self) -> None:
+        """If every message on a page is already indexed, no GETs happen."""
+        msgs = [_gmail_message(f"m-{i}") for i in range(4)]
+
+        api = MagicMock()
+        list_req = MagicMock()
+        list_req.execute.return_value = {
+            "messages": [{"id": m["id"]} for m in msgs],
+        }
+        api.list.return_value = list_req
+
+        api.get.side_effect = AssertionError(
+            "messages.get() should NOT be called when all messages are indexed"
+        )
+
+        def indexed_check(sids):
+            return set(sids)  # everything is indexed
+
+        source = GmailSource()
+        source._max_initial_threads = 10
+        source._label_filter = "INBOX"
+
+        queue = _make_persistent_queue_mock()
+        result = await source._backfill(
+            api, queue, is_initial=True, indexed_check=indexed_check
+        )
+
+        assert queue.enqueue.call_count == 0
+        # No messages were fetched, so no historyId was tracked.
+        assert result is None

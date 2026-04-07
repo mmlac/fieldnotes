@@ -16,6 +16,8 @@ import hashlib
 import logging
 from typing import Any
 
+from collections import defaultdict
+
 from worker.circuit_breaker import CircuitOpenError
 from worker.metrics import (
     CHUNKS_EMBEDDED,
@@ -24,6 +26,7 @@ from worker.metrics import (
     ENTITIES_EXTRACTED,
     ENTITIES_RESOLVED,
     PIPELINE_DURATION,
+    PIPELINE_SKIPPED,
     PIPELINE_TOTAL_DURATION,
     observe_duration,
 )
@@ -89,18 +92,91 @@ class Pipeline:
         self._vision_queue = vision_queue
         self._app_desc_cache = AppDescriptionCache()
 
-    def process(self, parsed_doc: ParsedDocument) -> None:
+    def process(
+        self,
+        parsed_doc: ParsedDocument,
+        *,
+        already_indexed: bool | None = None,
+        existing_hash: str | None = None,
+    ) -> None:
         """Process a single parsed document through the full pipeline.
 
         Parameters
         ----------
         parsed_doc:
             A normalised document from any adapter parser.
-        """
-        with observe_duration(PIPELINE_TOTAL_DURATION):
-            self._process_inner(parsed_doc)
+        already_indexed:
+            If True and ``operation == "created"``, skip the entire pipeline
+            because Neo4j already has chunks for this ``source_id``.  When
+            left at the default ``None``, the writer is queried directly
+            (one indexed lookup) so single-item callers from the consumer
+            loop also benefit from Phase 1 dedup — important for draining
+            an existing queue backlog without re-doing work.
+        existing_hash:
+            Previously stored ``content_hash`` for this source node, if any.
+            When set, ``_process_text`` will compare it against the SHA-256
+            of ``doc.text`` and short-circuit on a match.  When omitted,
+            ``process()`` performs its own per-doc lookup.
 
-    def _process_inner(self, parsed_doc: ParsedDocument) -> None:
+        For batch processing, prefer :meth:`process_batch` which pre-fetches
+        both values for the entire batch in bounded round-trips.
+        """
+        # Phase-1 skip: created docs whose source_id is already chunked.
+        # Modified/deleted ops always fall through (modified is handled by
+        # the content-hash check; deletions must reach the writer).
+        if already_indexed is None and parsed_doc.operation == "created":
+            try:
+                hit = self._writer.indexed_source_ids([parsed_doc.source_id])
+                already_indexed = parsed_doc.source_id in hit
+            except Exception:
+                logger.debug(
+                    "indexed_source_ids lookup failed for %s — processing anyway",
+                    parsed_doc.source_id,
+                    exc_info=True,
+                )
+                already_indexed = False
+
+        if already_indexed and parsed_doc.operation == "created":
+            PIPELINE_SKIPPED.labels(
+                source_type=parsed_doc.source_type, reason="already_indexed"
+            ).inc()
+            logger.debug(
+                "Skipping %s %s (already indexed)",
+                parsed_doc.source_type,
+                parsed_doc.source_id,
+            )
+            return
+
+        # Phase 2 single-doc fallback: look up content_hash if the caller
+        # didn't pre-fetch it.  Only for documents that have a label and
+        # text (otherwise there's no hash to compare against).
+        if (
+            existing_hash is None
+            and parsed_doc.text
+            and parsed_doc.node_label
+            and parsed_doc.operation != "deleted"
+        ):
+            try:
+                hashes = self._writer.get_content_hashes(
+                    {parsed_doc.node_label: [parsed_doc.source_id]}
+                )
+                existing_hash = hashes.get(parsed_doc.source_id)
+            except Exception:
+                logger.debug(
+                    "get_content_hashes lookup failed for %s — processing anyway",
+                    parsed_doc.source_id,
+                    exc_info=True,
+                )
+
+        with observe_duration(PIPELINE_TOTAL_DURATION):
+            self._process_inner(parsed_doc, existing_hash=existing_hash)
+
+    def _process_inner(
+        self,
+        parsed_doc: ParsedDocument,
+        *,
+        existing_hash: str | None = None,
+    ) -> None:
         """Inner process logic, wrapped by total duration timing."""
         # Enrich single app doc with LLM description if needed
         if (
@@ -151,7 +227,7 @@ class Pipeline:
 
         # Text pipeline: chunk → embed → extract → resolve → write
         if parsed_doc.text:
-            self._process_text(parsed_doc)
+            self._process_text(parsed_doc, existing_hash=existing_hash)
         else:
             # No text and no image — just write graph hints and source node
             with observe_duration(PIPELINE_DURATION, stage="write"):
@@ -182,11 +258,23 @@ class Pipeline:
                 exc_info=True,
             )
 
+        # Pre-fetch dedup state for the entire batch in bounded round-trips:
+        #   - indexed_source_ids → which created docs are already chunked
+        #   - get_content_hashes → previously stored hashes for modified docs
+        # See ``process()`` for the per-doc skip semantics.
+        already_indexed, existing_hashes = self._prefetch_dedup_state(docs)
+
         failed: list[ParsedDocument] = []
         circuit_deferred: list[ParsedDocument] = []
         for doc in docs:
             try:
-                self.process(doc)
+                # Pass explicit bool (not None) so process() doesn't redo
+                # the per-doc lookup we already batched above.
+                self.process(
+                    doc,
+                    already_indexed=(doc.source_id in already_indexed),
+                    existing_hash=existing_hashes.get(doc.source_id),
+                )
             except CircuitOpenError as exc:
                 logger.warning(
                     "Circuit breaker open (%s) — deferring %s %s for retry",
@@ -285,7 +373,70 @@ class Pipeline:
         """Release resources held by the writer."""
         self._writer.close()
 
-    def _process_text(self, doc: ParsedDocument) -> None:
+    # ------------------------------------------------------------------
+    # Dedup pre-fetch
+    # ------------------------------------------------------------------
+
+    def _prefetch_dedup_state(
+        self, docs: list[ParsedDocument]
+    ) -> tuple[set[str], dict[str, str]]:
+        """Return ``(already_indexed_source_ids, existing_content_hashes)``.
+
+        - ``already_indexed_source_ids`` is the subset of *created* docs
+          whose source_id already has chunks in Neo4j.  Their pipeline
+          run will short-circuit before any chunk/embed/extract work.
+        - ``existing_content_hashes`` is ``source_id → stored content_hash``
+          for non-skipped docs that have a node label.  Used by
+          ``_process_text`` to detect unchanged content and skip the
+          chunk → embed → extract path.
+
+        Failures in either lookup are non-fatal: the pipeline falls back
+        to processing every document, which is correct (just slower).
+        """
+        if not docs:
+            return set(), {}
+
+        already_indexed: set[str] = set()
+        existing_hashes: dict[str, str] = {}
+
+        try:
+            created_sids = [
+                d.source_id for d in docs if d.operation == "created"
+            ]
+            if created_sids:
+                already_indexed = self._writer.indexed_source_ids(created_sids)
+        except Exception:
+            logger.warning(
+                "indexed_source_ids pre-fetch failed; processing all docs",
+                exc_info=True,
+            )
+            already_indexed = set()
+
+        try:
+            grouped: dict[str, list[str]] = defaultdict(list)
+            for d in docs:
+                # Skip docs we'll already short-circuit on (no need to
+                # look up their hash).  Also skip docs without a label —
+                # they have no source node to query.
+                if d.operation == "created" and d.source_id in already_indexed:
+                    continue
+                if not d.node_label:
+                    continue
+                grouped[d.node_label].append(d.source_id)
+            if grouped:
+                existing_hashes = self._writer.get_content_hashes(grouped)
+        except Exception:
+            logger.warning(
+                "get_content_hashes pre-fetch failed; processing all docs",
+                exc_info=True,
+            )
+            existing_hashes = {}
+
+        return already_indexed, existing_hashes
+
+    def _process_text(
+        self, doc: ParsedDocument, *, existing_hash: str | None = None
+    ) -> None:
         """Run the full text pipeline for a document with text content."""
         # 0. Extract email addresses from text → Person MENTIONS hints
         email_hints = extract_email_person_hints(
@@ -293,6 +444,28 @@ class Pipeline:
         )
         if email_hints:
             doc.graph_hints.extend(email_hints)
+
+        # 0.5. Content-hash skip: if the canonical text matches what we
+        # previously indexed for this source_id, the chunks/embeddings/
+        # extracted entities are still valid.  Re-upsert the source node
+        # so any metadata-only changes (mtime, labels, etc.) land, but
+        # bypass the expensive chunk → embed → extract → resolve path.
+        content_hash = hashlib.sha256(doc.text.encode("utf-8")).hexdigest()
+        if existing_hash is not None and existing_hash == content_hash:
+            with observe_duration(PIPELINE_DURATION, stage="write"):
+                self._writer.write(WriteUnit(doc=doc, content_hash=content_hash))
+            PIPELINE_SKIPPED.labels(
+                source_type=doc.source_type, reason="content_hash"
+            ).inc()
+            DOCUMENTS_PROCESSED.labels(
+                source_type=doc.source_type, operation=doc.operation
+            ).inc()
+            logger.debug(
+                "Skipping %s %s (content_hash unchanged)",
+                doc.source_type,
+                doc.source_id,
+            )
+            return
 
         # 1. Chunk
         with observe_duration(PIPELINE_DURATION, stage="chunk"):
@@ -381,6 +554,7 @@ class Pipeline:
             vectors=vectors,
             entities=write_entities,
             triples=all_triples,
+            content_hash=content_hash,
         )
         with observe_duration(PIPELINE_DURATION, stage="write"):
             self._writer.write(unit)

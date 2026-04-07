@@ -1296,3 +1296,190 @@ class TestMarkVisionProcessed:
         assert "Image" in args[0]
         assert "vision_processed" in args[0]
         assert kwargs["sid"] == "images/photo.png"
+
+
+# ------------------------------------------------------------------
+# Dedup helpers (indexed_source_ids, get_content_hashes)
+# ------------------------------------------------------------------
+
+
+def _make_session(mock_neo4j) -> MagicMock:
+    """Wire mock_neo4j.session() to yield a fresh session MagicMock."""
+    session = MagicMock()
+    mock_neo4j.session.return_value.__enter__ = MagicMock(return_value=session)
+    mock_neo4j.session.return_value.__exit__ = MagicMock(return_value=False)
+    return session
+
+
+class TestIndexedSourceIds:
+    def test_empty_input_returns_empty_set_without_query(
+        self, writer, mock_neo4j, mock_qdrant
+    ):
+        session = _make_session(mock_neo4j)
+        # Reset call history from Writer construction so we can assert on
+        # the query path itself, not on schema setup queries.
+        session.run.reset_mock()
+        result = writer.indexed_source_ids([])
+        assert result == set()
+        session.run.assert_not_called()
+
+    def test_returns_only_chunked_source_ids(self, writer, mock_neo4j, mock_qdrant):
+        session = _make_session(mock_neo4j)
+        # Simulate Neo4j returning two of the three chunk:0 IDs (the third
+        # source has never been chunked, so it's omitted).
+        session.run.return_value = [
+            {"cid": "gmail:msg-1:chunk:0"},
+            {"cid": "gmail:msg-3:chunk:0"},
+        ]
+        result = writer.indexed_source_ids(
+            ["gmail:msg-1", "gmail:msg-2", "gmail:msg-3"]
+        )
+        assert result == {"gmail:msg-1", "gmail:msg-3"}
+
+        # Verify the query was issued with chunk:0 IDs.
+        called = [c for c in session.run.call_args_list if "Chunk" in c[0][0]]
+        assert len(called) == 1
+        cypher, kwargs = called[0][0][0], called[0][1]
+        assert "MATCH (c:Chunk {id: cid})" in cypher
+        assert kwargs["cids"] == [
+            "gmail:msg-1:chunk:0",
+            "gmail:msg-2:chunk:0",
+            "gmail:msg-3:chunk:0",
+        ]
+
+    def test_deduplicates_input(self, writer, mock_neo4j, mock_qdrant):
+        session = _make_session(mock_neo4j)
+        session.run.return_value = [{"cid": "gmail:dup:chunk:0"}]
+        writer.indexed_source_ids(["gmail:dup", "gmail:dup", "gmail:dup"])
+
+        called = [c for c in session.run.call_args_list if "Chunk" in c[0][0]]
+        kwargs = called[0][1]
+        # Should be deduplicated to a single chunk-id lookup
+        assert kwargs["cids"] == ["gmail:dup:chunk:0"]
+
+    def test_batches_large_input(self, writer, mock_neo4j, mock_qdrant):
+        session = _make_session(mock_neo4j)
+        session.run.return_value = []  # Nothing matches in any batch
+
+        sids = [f"gmail:msg-{i}" for i in range(2500)]
+        result = writer.indexed_source_ids(sids)
+
+        # 2500 IDs / 1000-per-batch → 3 query calls.  Filter out any
+        # incidental queries from Writer construction.
+        chunk_calls = [
+            c for c in session.run.call_args_list if "Chunk" in c[0][0]
+        ]
+        assert len(chunk_calls) == 3
+        assert result == set()
+
+    def test_handles_chunk_id_without_suffix(self, writer, mock_neo4j, mock_qdrant):
+        """Defensive: ignore Neo4j rows whose cid doesn't end in :chunk:0."""
+        session = _make_session(mock_neo4j)
+        session.run.return_value = [
+            {"cid": "gmail:msg-1:chunk:0"},
+            {"cid": "weird-row-no-suffix"},
+        ]
+        result = writer.indexed_source_ids(["gmail:msg-1"])
+        assert result == {"gmail:msg-1"}
+
+
+class TestGetContentHashes:
+    def test_empty_input_returns_empty_dict(self, writer, mock_neo4j, mock_qdrant):
+        session = _make_session(mock_neo4j)
+        session.run.reset_mock()
+        result = writer.get_content_hashes({})
+        assert result == {}
+        session.run.assert_not_called()
+
+    def test_returns_hashes_per_label(self, writer, mock_neo4j, mock_qdrant):
+        session = _make_session(mock_neo4j)
+        session.run.side_effect = [
+            [
+                {"sid": "gmail:msg-1", "hash": "abc"},
+                {"sid": "gmail:msg-2", "hash": "def"},
+            ],
+            [{"sid": "notes/foo.md", "hash": "deadbeef"}],
+        ]
+        result = writer.get_content_hashes(
+            {
+                "Email": ["gmail:msg-1", "gmail:msg-2", "gmail:msg-missing"],
+                "File": ["notes/foo.md"],
+            }
+        )
+        assert result == {
+            "gmail:msg-1": "abc",
+            "gmail:msg-2": "def",
+            "notes/foo.md": "deadbeef",
+        }
+
+        # Each label issues its own labelled query
+        cyphers = [c[0][0] for c in session.run.call_args_list if "MATCH" in c[0][0]]
+        assert any("`Email`" in c for c in cyphers)
+        assert any("`File`" in c for c in cyphers)
+
+    def test_skips_unsafe_labels(self, writer, mock_neo4j, mock_qdrant):
+        """Labels containing unsafe characters must be rejected, not interpolated."""
+        session = _make_session(mock_neo4j)
+        session.run.reset_mock()
+        result = writer.get_content_hashes(
+            {"Email`); DROP CONSTRAINT": ["gmail:msg-1"]}
+        )
+        assert result == {}
+        # No query should have been issued for the bad label.
+        assert all(
+            "DROP" not in (c[0][0] if c[0] else "")
+            for c in session.run.call_args_list
+        )
+
+    def test_skips_empty_groups(self, writer, mock_neo4j, mock_qdrant):
+        session = _make_session(mock_neo4j)
+        session.run.reset_mock()
+        result = writer.get_content_hashes({"Email": [], "": ["x"]})
+        assert result == {}
+        session.run.assert_not_called()
+
+    def test_deduplicates_within_label(self, writer, mock_neo4j, mock_qdrant):
+        session = _make_session(mock_neo4j)
+        session.run.return_value = [{"sid": "gmail:dup", "hash": "abc"}]
+        writer.get_content_hashes({"Email": ["gmail:dup", "gmail:dup"]})
+
+        match_calls = [
+            c for c in session.run.call_args_list if "MATCH (n:" in c[0][0]
+        ]
+        kwargs = match_calls[0][1]
+        assert kwargs["sids"] == ["gmail:dup"]
+
+
+# ------------------------------------------------------------------
+# WriteUnit content_hash → source-node persistence
+# ------------------------------------------------------------------
+
+
+class TestWriteContentHash:
+    def test_content_hash_set_on_source_node_when_provided(self):
+        tx = MagicMock()
+        doc = _doc()
+        _upsert_source_node(tx, doc, content_hash="deadbeef")
+        args, kwargs = tx.run.call_args
+        assert kwargs["content_hash"] == "deadbeef"
+        assert "content_hash" in args[0]
+
+    def test_content_hash_omitted_when_none(self):
+        tx = MagicMock()
+        doc = _doc()
+        _upsert_source_node(tx, doc, content_hash=None)
+        _, kwargs = tx.run.call_args
+        assert "content_hash" not in kwargs
+
+    def test_write_unit_propagates_hash_to_source_node(self):
+        """End-to-end: WriteUnit.content_hash flows through _write_neo4j_tx."""
+        doc = _doc()
+        unit = _unit(doc=doc, content_hash="abc123")
+        tx = MagicMock()
+        Writer._write_neo4j_tx(tx, unit)
+
+        # Find the source-node MERGE call and verify content_hash was set.
+        source_call = next(
+            c for c in tx.run.call_args_list if "MERGE (s:File" in c[0][0]
+        )
+        assert source_call[1]["content_hash"] == "abc123"

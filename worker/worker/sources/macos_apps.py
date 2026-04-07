@@ -197,7 +197,7 @@ class MacOSAppsSource(PythonSource):
         if state:
             self._state_path = Path(state).expanduser().resolve()
 
-    async def start(self, queue: PersistentQueue) -> None:
+    async def start(self, queue: PersistentQueue, **_kwargs) -> None:
         if not self._enabled:
             logger.info("macOS apps source skipped (disabled)")
             initial_sync_source_done()

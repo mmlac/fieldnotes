@@ -277,7 +277,7 @@ class HomebrewSource(PythonSource):
 
         self._include_system = bool(cfg.get("include_system", False))
 
-    async def start(self, queue: PersistentQueue) -> None:
+    async def start(self, queue: PersistentQueue, **_kwargs) -> None:
         brew_path = _find_brew()
         if brew_path is None:
             logger.info("Homebrew not found — homebrew source skipped")
