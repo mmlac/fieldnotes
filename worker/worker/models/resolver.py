@@ -53,6 +53,22 @@ logger = logging.getLogger(__name__)
 _llm_breaker_lock = threading.Lock()
 
 
+def _is_client_error(exc: BaseException) -> bool:
+    """Return True for HTTP 4xx errors that indicate bad input, not a broken service.
+
+    Client errors should NOT trip the circuit breaker — the service is
+    healthy, the request is malformed (e.g. input exceeds context length).
+    """
+    try:
+        import httpx
+
+        if isinstance(exc, httpx.HTTPStatusError):
+            return 400 <= exc.response.status_code < 500
+    except ImportError:
+        pass
+    return False
+
+
 def _llm_breaker(provider_type: str) -> CircuitBreaker:
     """Get or create a circuit breaker for the given LLM provider type."""
     name = f"llm:{provider_type}"
@@ -163,7 +179,8 @@ class ResolvedModel:
                 task=task,
                 error_type=type(exc).__name__,
             ).inc()
-            breaker.record_failure()
+            if not _is_client_error(exc):
+                breaker.record_failure()
             raise
         elapsed = time.monotonic() - start
         LLM_REQUEST_DURATION.labels(model=self.model, task=task).observe(elapsed)
@@ -218,7 +235,8 @@ class ResolvedModel:
                 task=task,
                 error_type=type(exc).__name__,
             ).inc()
-            breaker.record_failure()
+            if not _is_client_error(exc):
+                breaker.record_failure()
             raise
 
     def rerank(
@@ -248,7 +266,8 @@ class ResolvedModel:
                 task=task,
                 error_type=type(exc).__name__,
             ).inc()
-            breaker.record_failure()
+            if not _is_client_error(exc):
+                breaker.record_failure()
             raise
         elapsed = time.monotonic() - start
         LLM_REQUEST_DURATION.labels(model=self.model, task=task).observe(elapsed)
@@ -278,7 +297,8 @@ class ResolvedModel:
                 task=task,
                 error_type=type(exc).__name__,
             ).inc()
-            breaker.record_failure()
+            if not _is_client_error(exc):
+                breaker.record_failure()
             raise
         elapsed = time.monotonic() - start
         EMBEDDING_DURATION.labels(model=self.model).observe(elapsed)
