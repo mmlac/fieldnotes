@@ -7,8 +7,21 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from worker.cli import main, _build_parser, _run_search
+from worker.config import RerankerConfig
 from worker.query.graph import GraphQueryResult
 from worker.query.vector import VectorQueryResult, VectorResult
+
+
+def _mock_cfg() -> MagicMock:
+    """Return a mock Config whose reranker section is a real (disabled) instance.
+
+    Tests that don't care about reranking should disable it explicitly so
+    ``_run_search`` short-circuits to the no-reranker path instead of
+    trying to construct a CrossEncoderReranker from MagicMock fields.
+    """
+    cfg = MagicMock()
+    cfg.reranker = RerankerConfig(enabled=False)
+    return cfg
 
 
 # ------------------------------------------------------------------
@@ -129,7 +142,7 @@ class TestRunSearch:
         mock_vq_cls: MagicMock,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
-        mock_load.return_value = MagicMock()
+        mock_load.return_value = _mock_cfg()
         mock_gq_cls.return_value = _mock_graph_querier(
             GraphQueryResult(
                 question="test",
@@ -172,7 +185,7 @@ class TestRunSearch:
         mock_vq_cls: MagicMock,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
-        mock_load.return_value = MagicMock()
+        mock_load.return_value = _mock_cfg()
         mock_gq_cls.return_value = _mock_graph_querier(
             GraphQueryResult(question="q", cypher="")
         )
@@ -195,7 +208,7 @@ class TestRunSearch:
         mock_vq_cls: MagicMock,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
-        mock_load.return_value = MagicMock()
+        mock_load.return_value = _mock_cfg()
         mock_gq_cls.return_value = _mock_graph_querier(
             GraphQueryResult(question="q", cypher="", error="neo4j down")
         )
@@ -231,7 +244,7 @@ class TestRunSearch:
         mock_gq_cls: MagicMock,
         mock_vq_cls: MagicMock,
     ) -> None:
-        mock_load.return_value = MagicMock()
+        mock_load.return_value = _mock_cfg()
         gq = _mock_graph_querier(GraphQueryResult(question="q", cypher=""))
         vq = _mock_vector_querier(VectorQueryResult(question="q"))
         mock_gq_cls.return_value = gq
@@ -255,7 +268,7 @@ class TestMainSearch:
         mock_gq_cls: MagicMock,
         mock_vq_cls: MagicMock,
     ) -> None:
-        mock_load.return_value = MagicMock()
+        mock_load.return_value = _mock_cfg()
         gq = _mock_graph_querier(GraphQueryResult(question="q", cypher=""))
         vq = _mock_vector_querier(VectorQueryResult(question="q"))
         mock_gq_cls.return_value = gq

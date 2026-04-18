@@ -221,6 +221,40 @@ class ResolvedModel:
             breaker.record_failure()
             raise
 
+    def rerank(
+        self, query: str, passages: list[str], *, task: str = "rerank"
+    ) -> list[float]:
+        """Score (query, passage) pairs with circuit breaker + metrics.
+
+        Returns one float per passage in input order; higher = more
+        relevant.  No token budget or rate-limit checks (the cross-encoder
+        runs in-process and doesn't speak to a paid API), but the circuit
+        breaker still applies so a wedged model can't take down the
+        request path indefinitely.
+        """
+        breaker = _llm_breaker(self.provider.provider_type)
+        if not breaker.allow_request():
+            CIRCUIT_BREAKER_REJECTIONS.labels(service=breaker.name).inc()
+            raise CircuitOpenError(breaker.name)
+
+        start = time.monotonic()
+        try:
+            scores = self.provider.rerank(self.model, query, passages)
+        except Exception as exc:
+            elapsed = time.monotonic() - start
+            LLM_REQUEST_DURATION.labels(model=self.model, task=task).observe(elapsed)
+            LLM_ERRORS.labels(
+                model=self.model,
+                task=task,
+                error_type=type(exc).__name__,
+            ).inc()
+            breaker.record_failure()
+            raise
+        elapsed = time.monotonic() - start
+        LLM_REQUEST_DURATION.labels(model=self.model, task=task).observe(elapsed)
+        breaker.record_success()
+        return scores
+
     def embed(self, req: EmbedRequest, *, task: str = "embed") -> EmbedResponse:
         """Run an embedding call with latency, token, error, and circuit breaker tracking."""
         breaker = _llm_breaker(self.provider.provider_type)

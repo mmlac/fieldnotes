@@ -85,6 +85,9 @@ def _prepare_context(
     graph_querier: GraphQuerier,
     vector_querier: VectorQuerier,
     session: _Session | None = None,
+    reranker=None,
+    rerank_top_k_pre: int = 50,
+    rerank_top_k_post: int = 20,
 ) -> _PreparedContext:
     """Run hybrid retrieval and build the RAG prompt."""
     verbose = session.verbose if session else False
@@ -129,13 +132,20 @@ def _prepare_context(
                 question=search_query, cypher="", error=str(exc)
             )
 
+        vector_top_k = rerank_top_k_pre if reranker is not None else 20
         try:
-            vector_result = vector_querier.query(search_query, top_k=20)
+            vector_result = vector_querier.query(search_query, top_k=vector_top_k)
         except Exception as exc:
             logger.debug("Vector query failed: %s", exc)
             vector_result = VectorQueryResult(question=search_query, error=str(exc))
 
-        hybrid = merge(search_query, graph_result, vector_result)
+        hybrid = merge(
+            search_query,
+            graph_result,
+            vector_result,
+            reranker=reranker,
+            top_k_post=rerank_top_k_post if reranker is not None else None,
+        )
 
     # Show progress tree with source breakdown.
     display_progress(
@@ -287,6 +297,9 @@ def _synthesize(
     graph_querier: GraphQuerier,
     vector_querier: VectorQuerier,
     session: _Session | None = None,
+    reranker=None,
+    rerank_top_k_pre: int = 50,
+    rerank_top_k_post: int = 20,
 ) -> str:
     """Run hybrid retrieval + LLM synthesis (non-streaming). Returns formatted answer text."""
     ctx = _prepare_context(
@@ -295,6 +308,9 @@ def _synthesize(
         graph_querier=graph_querier,
         vector_querier=vector_querier,
         session=session,
+        reranker=reranker,
+        rerank_top_k_pre=rerank_top_k_pre,
+        rerank_top_k_post=rerank_top_k_post,
     )
 
     if ctx.empty:
@@ -350,6 +366,9 @@ def _synthesize_stream(
     graph_querier: GraphQuerier,
     vector_querier: VectorQuerier,
     session: _Session | None = None,
+    reranker=None,
+    rerank_top_k_pre: int = 50,
+    rerank_top_k_post: int = 20,
 ) -> str:
     """Run hybrid retrieval + streaming LLM synthesis. Returns the raw answer text."""
     from worker.cli.stream import render_stream
@@ -360,6 +379,9 @@ def _synthesize_stream(
         graph_querier=graph_querier,
         vector_querier=vector_querier,
         session=session,
+        reranker=reranker,
+        rerank_top_k_pre=rerank_top_k_pre,
+        rerank_top_k_post=rerank_top_k_post,
     )
 
     if ctx.empty:
@@ -424,10 +446,15 @@ def _run_repl(
         )
         return 1
 
+    from worker.query.reranker import build_reranker
+
     cfg = load_config(config_path)
     registry = ModelRegistry(cfg)
     graph_querier = GraphQuerier(registry, cfg.neo4j)
     vector_querier = VectorQuerier(registry, cfg.qdrant)
+    reranker = build_reranker(cfg.reranker, registry)
+    rerank_top_k_pre = cfg.reranker.top_k_pre
+    rerank_top_k_post = cfg.reranker.top_k_post
 
     session = _Session()
 
@@ -561,6 +588,9 @@ def _run_repl(
                         graph_querier=graph_querier,
                         vector_querier=vector_querier,
                         session=session,
+                        reranker=reranker,
+                        rerank_top_k_pre=rerank_top_k_pre,
+                        rerank_top_k_post=rerank_top_k_post,
                     )
                     print()  # blank line after
                 else:
@@ -570,6 +600,9 @@ def _run_repl(
                         graph_querier=graph_querier,
                         vector_querier=vector_querier,
                         session=session,
+                        reranker=reranker,
+                        rerank_top_k_pre=rerank_top_k_pre,
+                        rerank_top_k_post=rerank_top_k_post,
                     )
                     print(f"\n{answer}\n")
             except KeyboardInterrupt:
@@ -614,10 +647,15 @@ def run_ask(
         )
 
     # One-shot mode.
+    from worker.query.reranker import build_reranker
+
     cfg = load_config(config_path)
     registry = ModelRegistry(cfg)
     graph_querier = GraphQuerier(registry, cfg.neo4j)
     vector_querier = VectorQuerier(registry, cfg.qdrant)
+    reranker = build_reranker(cfg.reranker, registry)
+    rerank_top_k_pre = cfg.reranker.top_k_pre
+    rerank_top_k_post = cfg.reranker.top_k_post
 
     # One-shot conversations are also persisted.
     session = _Session(verbose=verbose)
@@ -630,6 +668,9 @@ def run_ask(
                 registry=registry,
                 graph_querier=graph_querier,
                 vector_querier=vector_querier,
+                reranker=reranker,
+                rerank_top_k_pre=rerank_top_k_pre,
+                rerank_top_k_post=rerank_top_k_post,
             )
 
         if stream:
@@ -639,6 +680,9 @@ def run_ask(
                 graph_querier=graph_querier,
                 vector_querier=vector_querier,
                 session=session,
+                reranker=reranker,
+                rerank_top_k_pre=rerank_top_k_pre,
+                rerank_top_k_post=rerank_top_k_post,
             )
             print()  # trailing newline
             return 0
@@ -649,6 +693,9 @@ def run_ask(
                 graph_querier=graph_querier,
                 vector_querier=vector_querier,
                 session=session,
+                reranker=reranker,
+                rerank_top_k_pre=rerank_top_k_pre,
+                rerank_top_k_post=rerank_top_k_post,
             )
             print(answer)
             return 0
@@ -682,6 +729,9 @@ def _run_json(
     registry: ModelRegistry,
     graph_querier: GraphQuerier,
     vector_querier: VectorQuerier,
+    reranker=None,
+    rerank_top_k_pre: int = 50,
+    rerank_top_k_post: int = 20,
 ) -> int:
     """Run a question and output structured JSON."""
     from worker.cli.stream import render_json
@@ -693,6 +743,9 @@ def _run_json(
         registry=registry,
         graph_querier=graph_querier,
         vector_querier=vector_querier,
+        reranker=reranker,
+        rerank_top_k_pre=rerank_top_k_pre,
+        rerank_top_k_post=rerank_top_k_post,
     )
 
     if ctx.empty:

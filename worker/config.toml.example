@@ -56,6 +56,20 @@ query = "local_chat"              # NL → Cypher translation
 vision = "local_chat"             # image analysis
 clustering = "local_chat"         # topic naming
 completion = "local_chat"         # ask tool synthesis
+rerank = "bge_reranker"           # second-stage cross-encoder for hybrid search
+
+# --- Reranker provider + model ---
+# Local in-process cross-encoder via sentence-transformers.  Lazy-loads
+# the model on first use; pays roughly 1.5–2 GB RAM once warm.
+
+[modelproviders.local]
+type = "sentence_transformers"
+device = "auto"                   # auto | cpu | cuda | mps
+cache_dir = "~/.fieldnotes/data/models"
+
+[models.bge_reranker]
+provider = "local"
+model = "BAAI/bge-reranker-v2-m3"
 
 # --- Sources ---
 
@@ -109,3 +123,12 @@ push_interval = 15
 # enabled = false
 # port = 9100
 # bind = "127.0.0.1"
+
+# --- Reranker ---
+
+[reranker]
+enabled = true
+top_k_pre = 50          # candidates pulled from vector search before rerank
+top_k_post = 10         # results kept after rerank
+score_threshold = 0.0   # drop candidates below this score
+batch_size = 32         # cross-encoder batch size

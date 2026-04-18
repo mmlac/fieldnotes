@@ -92,3 +92,13 @@ class ModelProvider(ABC):
     def embed(self, model: str, req: EmbedRequest) -> EmbedResponse:
         """Run a batch embedding call. Not all providers support this."""
         raise NotImplementedError(f"{self.provider_type} does not support embedding")
+
+    def rerank(
+        self, model: str, query: str, passages: list[str]
+    ) -> list[float]:
+        """Score (query, passage) pairs and return one float per passage.
+
+        Higher = more relevant.  Used by the cross-encoder reranker
+        backend; LLM/embedding providers do not implement this.
+        """
+        raise NotImplementedError(f"{self.provider_type} does not support reranking")

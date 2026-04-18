@@ -55,3 +55,29 @@ concurrency = 2
 [mcp]
 enabled = true
 port = 3456
+
+# --- Reranker ---
+# Second-stage cross-encoder that re-scores hybrid search candidates
+# before they reach the LLM (or you).  Big precision win on `ask` and
+# `search`; runs locally via sentence-transformers.  Set enabled = false
+# to skip reranking entirely (saves ~1.5 GB RAM and the first-call model
+# download).
+
+[reranker]
+enabled = true
+top_k_pre = 50          # candidates pulled from vector search before rerank
+top_k_post = 10         # results kept after rerank
+score_threshold = 0.0   # drop candidates below this score
+batch_size = 32         # cross-encoder batch size
+
+[modelproviders.local]
+type = "sentence_transformers"
+device = "auto"                   # auto | cpu | cuda | mps
+cache_dir = "~/.fieldnotes/data/models"
+
+[models.bge_reranker]
+provider = "local"
+model = "BAAI/bge-reranker-v2-m3"
+
+[models.roles]
+rerank = "bge_reranker"

@@ -253,6 +253,27 @@ LLM_ERRORS = Counter(
     registry=REGISTRY,
 )
 
+RERANKER_DURATION_SECONDS = Histogram(
+    "reranker_duration_seconds",
+    "End-to-end duration of a single rerank call (all batches)",
+    ["backend"],
+    buckets=DURATION_BUCKETS,
+    registry=REGISTRY,
+)
+
+RERANKER_REORDER_DISTANCE = Histogram(
+    "reranker_reorder_distance",
+    "Original index of the post-rerank top-1 (0 = rerank agreed with vector search)",
+    buckets=(0, 1, 2, 3, 5, 10, 20, 50, 100),
+    registry=REGISTRY,
+)
+
+RERANKER_DROPPED_BELOW_THRESHOLD = Counter(
+    "reranker_dropped_below_threshold_total",
+    "Candidates dropped because their rerank score was below the configured threshold",
+    registry=REGISTRY,
+)
+
 # ---------------------------------------------------------------------------
 # Operational gauges / counters
 # ---------------------------------------------------------------------------

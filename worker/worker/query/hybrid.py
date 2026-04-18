@@ -12,6 +12,11 @@ import logging
 from dataclasses import dataclass, field
 
 from worker.query.graph import GraphQueryResult
+from worker.query.reranker import (
+    NullReranker,
+    Reranker,
+    candidates_from_vector_results,
+)
 from worker.query.vector import VectorQueryResult, VectorResult
 
 logger = logging.getLogger(__name__)
@@ -94,12 +99,16 @@ def merge(
     question: str,
     graph: GraphQueryResult,
     vector: VectorQueryResult,
+    *,
+    reranker: Reranker | None = None,
+    top_k_post: int | None = None,
 ) -> HybridResult:
     """Merge graph and vector results with dedup by source_id.
 
     Graph results are ranked first (higher precision). Vector results
     fill gaps (higher recall) after removing duplicates already covered
-    by graph results.
+    by graph results.  When *reranker* is provided, the deduped vector
+    list is re-scored and trimmed to *top_k_post*.
 
     Parameters
     ----------
@@ -109,6 +118,14 @@ def merge(
         Result from :class:`GraphQuerier.query`.
     vector:
         Result from :class:`VectorQuerier.query`.
+    reranker:
+        Optional second-stage reranker.  When omitted the vector list is
+        returned in original (embedding-cosine) order.  Graph results
+        are never reranked — they're the precision lane.
+    top_k_post:
+        How many vector results to keep after reranking.  Ignored when
+        *reranker* is None or :class:`NullReranker`.  Defaults to the
+        full deduped list.
 
     Returns
     -------
@@ -129,10 +146,18 @@ def merge(
         r for r in vector.results if r.source_id not in graph_source_ids
     ]
 
+    pre_rerank_count = len(deduped_vector)
+    if reranker is not None and not isinstance(reranker, NullReranker) and deduped_vector:
+        candidates = candidates_from_vector_results(deduped_vector)
+        keep_n = top_k_post if top_k_post is not None else len(candidates)
+        reranked = reranker.rerank(question, candidates, keep_n)
+        deduped_vector = [c.payload for c in reranked]
+
     logger.info(
-        "Hybrid merge: %d graph rows, %d vector results (%d after dedup)",
+        "Hybrid merge: %d graph rows, %d vector results (%d after dedup, %d after rerank)",
         len(graph.raw_results),
         len(vector.results),
+        pre_rerank_count,
         len(deduped_vector),
     )
 

@@ -168,6 +168,22 @@ class MetricsConfig:
 
 
 @dataclass
+class RerankerConfig:
+    """Parsed ``[reranker]`` section.
+
+    Controls the optional second-stage reranker that re-scores hybrid
+    search candidates with a cross-encoder before they reach the LLM
+    or the user.  The model itself is bound via ``[models.roles] rerank``.
+    """
+
+    enabled: bool = True
+    top_k_pre: int = 50
+    top_k_post: int = 10
+    score_threshold: float = 0.0
+    batch_size: int = 32
+
+
+@dataclass
 class RateLimitConfig:
     """Parsed ``[rate_limits]`` section.
 
@@ -194,6 +210,7 @@ class Config:
     health: HealthConfig = field(default_factory=HealthConfig)
     metrics: MetricsConfig = field(default_factory=MetricsConfig)
     rate_limits: RateLimitConfig = field(default_factory=RateLimitConfig)
+    reranker: RerankerConfig = field(default_factory=RerankerConfig)
 
     # Expected embedding dimension used by the clustering pipeline.
     _EXPECTED_VECTOR_SIZE = 768
@@ -553,6 +570,41 @@ def _parse(raw: dict[str, Any]) -> Config:
                 "max_concurrency",
                 cfg.rate_limits.max_concurrency,
             ),
+        )
+
+    # [reranker]
+    if "reranker" in raw:
+        rr = raw["reranker"]
+        if "enabled" in rr:
+            _check_type("reranker", "enabled", rr["enabled"], bool)
+        for k in ("top_k_pre", "top_k_post", "batch_size"):
+            if k in rr:
+                _check_type("reranker", k, rr[k], int)
+                if rr[k] < 1:
+                    raise ValueError(f"[reranker] {k} must be >= 1, got {rr[k]}")
+        if "score_threshold" in rr:
+            if not isinstance(rr["score_threshold"], (int, float)):
+                raise TypeError(
+                    f"[reranker] score_threshold: expected float, "
+                    f"got {type(rr['score_threshold']).__name__}"
+                )
+        if (
+            "top_k_pre" in rr
+            and "top_k_post" in rr
+            and rr["top_k_post"] > rr["top_k_pre"]
+        ):
+            raise ValueError(
+                f"[reranker] top_k_post ({rr['top_k_post']}) cannot exceed "
+                f"top_k_pre ({rr['top_k_pre']})"
+            )
+        cfg.reranker = RerankerConfig(
+            enabled=rr.get("enabled", cfg.reranker.enabled),
+            top_k_pre=rr.get("top_k_pre", cfg.reranker.top_k_pre),
+            top_k_post=rr.get("top_k_post", cfg.reranker.top_k_post),
+            score_threshold=float(
+                rr.get("score_threshold", cfg.reranker.score_threshold)
+            ),
+            batch_size=rr.get("batch_size", cfg.reranker.batch_size),
         )
 
     return cfg

@@ -51,6 +51,19 @@ def _build_parser() -> argparse.ArgumentParser:
         default=10,
         help="Max vector results (default: 10)",
     )
+    search_p.add_argument(
+        "--no-rerank",
+        dest="rerank",
+        action="store_false",
+        default=True,
+        help="Disable the second-stage reranker for this query",
+    )
+    search_p.add_argument(
+        "--rerank-top-k",
+        type=int,
+        default=None,
+        help="Override [reranker] top_k_pre — candidates pulled before reranking",
+    )
 
     # ── serve ───────────────────────────────────────────────────────
     serve_p = sub.add_parser("serve", help="Run fieldnotes as a server")
@@ -457,18 +470,37 @@ def _run_search(
     *,
     config_path: Path | None,
     top_k: int,
+    rerank: bool = True,
+    rerank_top_k_pre: int | None = None,
 ) -> int:
     """Execute hybrid search and print results. Returns exit code."""
+    from worker.query.reranker import build_reranker
+
     cfg = load_config(config_path)
     registry = ModelRegistry(cfg)
 
     graph_querier = GraphQuerier(registry, cfg.neo4j)
     vector_querier = VectorQuerier(registry, cfg.qdrant)
 
+    rerank_cfg = cfg.reranker
+    use_rerank = rerank and rerank_cfg.enabled
+    reranker = build_reranker(rerank_cfg, registry) if use_rerank else None
+    vector_top_k = (
+        rerank_top_k_pre
+        if rerank_top_k_pre is not None
+        else (rerank_cfg.top_k_pre if use_rerank else top_k)
+    )
+
     try:
         graph_result = graph_querier.query(query)
-        vector_result = vector_querier.query(query, top_k=top_k)
-        hybrid = merge(query, graph_result, vector_result)
+        vector_result = vector_querier.query(query, top_k=vector_top_k)
+        hybrid = merge(
+            query,
+            graph_result,
+            vector_result,
+            reranker=reranker,
+            top_k_post=top_k if use_rerank else None,
+        )
 
         if hybrid.errors:
             for err in hybrid.errors:
@@ -675,6 +707,8 @@ def main(argv: list[str] | None = None) -> int:
                 query,
                 config_path=args.config,
                 top_k=args.top_k,
+                rerank=args.rerank,
+                rerank_top_k_pre=args.rerank_top_k,
             )
         except Exception as exc:
             print(f"error: {exc}", file=sys.stderr)

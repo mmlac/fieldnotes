@@ -200,7 +200,43 @@ def doctor(config_path: Path | None = None) -> int:
         if not found_any:
             _ok(f"{name} configured")
 
-    # ── 7. Tools ─────────────────────────────────────────────────────
+    # ── 7. Reranker ──────────────────────────────────────────────────
+    print("\nReranker")
+    if not cfg.reranker.enabled:
+        _ok("Reranker disabled (set [reranker] enabled = true to enable)")
+    elif "rerank" not in cfg.roles.mapping:
+        _warn(
+            "Reranker enabled but no model bound to the 'rerank' role — "
+            "vector results will not be reranked"
+        )
+    else:
+        rerank_alias = cfg.roles.mapping["rerank"]
+        try:
+            from worker.models.resolver import ModelRegistry
+
+            registry = ModelRegistry(cfg)
+            model = registry.for_role("rerank")
+            try:
+                # Smoke test: one tiny pair.  This forces the cross-encoder to
+                # download (if missing) and run a single inference; for an
+                # LLM-backed provider this raises NotImplementedError, which
+                # we surface as a configuration error.
+                model.rerank("ping", ["pong"])
+                _ok(
+                    f"Reranker model {rerank_alias!r} ({model.model}) loads and "
+                    f"scores a smoke pair"
+                )
+            except NotImplementedError:
+                _fail(
+                    f"Reranker model {rerank_alias!r} → provider "
+                    f"{model.provider.provider_type!r} does not implement rerank()"
+                )
+                errors += 1
+        except Exception as exc:
+            _fail(f"Reranker smoke test failed: {exc}")
+            errors += 1
+
+    # ── 8. Tools ─────────────────────────────────────────────────────
     print("\nTools")
     if shutil.which("ollama"):
         _ok("ollama binary on PATH")

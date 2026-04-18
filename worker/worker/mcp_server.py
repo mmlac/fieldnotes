@@ -93,6 +93,14 @@ TOOLS: list[Tool] = [
                     ),
                     "enum": ["file", "email", "obsidian", "repositories"],
                 },
+                "rerank": {
+                    "type": "boolean",
+                    "description": (
+                        "Apply the second-stage cross-encoder reranker to vector "
+                        "results (default: true if configured)."
+                    ),
+                    "default": True,
+                },
             },
             "required": ["query"],
         },
@@ -117,6 +125,14 @@ TOOLS: list[Tool] = [
                     "type": "string",
                     "description": "Optional filter to restrict context sources",
                     "enum": ["file", "email", "obsidian", "repositories"],
+                },
+                "rerank": {
+                    "type": "boolean",
+                    "description": (
+                        "Apply the second-stage cross-encoder reranker to retrieved "
+                        "context (default: true if configured)."
+                    ),
+                    "default": True,
                 },
             },
             "required": ["question"],
@@ -391,6 +407,7 @@ class FieldnotesServer:
         self._registry: ModelRegistry | None = None
         self._graph_querier: GraphQuerier | None = None
         self._vector_querier: VectorQuerier | None = None
+        self._reranker = None
         self._executor: concurrent.futures.ThreadPoolExecutor | None = None
 
         # Register handlers.
@@ -406,6 +423,8 @@ class FieldnotesServer:
         cleans up already-opened connections (e.g. Neo4j) instead of leaking
         them.
         """
+        from worker.query.reranker import build_reranker
+
         self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=10)
         self._registry = ModelRegistry(self._cfg)
         try:
@@ -419,6 +438,7 @@ class FieldnotesServer:
         except Exception:
             self._registry = None
             raise
+        self._reranker = build_reranker(self._cfg.reranker, self._registry)
         logger.info("Fieldnotes MCP server: connections initialised")
 
     def _disconnect(self) -> None:
@@ -490,6 +510,13 @@ class FieldnotesServer:
                     text=f"error: 'source_type' must be one of {sorted(self._VALID_SOURCE_TYPES)}",
                 )
             ]
+        rerank_arg = arguments.get("rerank", True)
+        use_rerank = (
+            bool(rerank_arg)
+            and self._cfg.reranker.enabled
+            and self._reranker is not None
+        )
+        vector_top_k = self._cfg.reranker.top_k_pre if use_rerank else top_k
 
         if self._graph_querier is None or self._vector_querier is None:
             raise RuntimeError("Server not initialised — call _connect() first")
@@ -512,7 +539,7 @@ class FieldnotesServer:
         vector_future = loop.run_in_executor(
             self._executor,
             lambda: self._vector_querier.query(
-                query, top_k=top_k, source_type=source_type
+                query, top_k=vector_top_k, source_type=source_type
             ),
         )
 
@@ -530,7 +557,16 @@ class FieldnotesServer:
             logger.exception("Vector query raised", exc_info=vector_result)
             vector_result = VectorQueryResult(question=query, error=str(vector_result))
 
-        hybrid = merge(query, graph_result, vector_result)
+        hybrid = await loop.run_in_executor(
+            self._executor,
+            lambda: merge(
+                query,
+                graph_result,
+                vector_result,
+                reranker=self._reranker if use_rerank else None,
+                top_k_post=top_k if use_rerank else None,
+            ),
+        )
 
         # Build structured response with [Graph context], [Semantic context],
         # [Answer], and source_ids sections.
@@ -593,6 +629,14 @@ class FieldnotesServer:
                     text=f"error: 'source_type' must be one of {sorted(self._VALID_SOURCE_TYPES)}",
                 )
             ]
+        rerank_arg = arguments.get("rerank", True)
+        use_rerank = (
+            bool(rerank_arg)
+            and self._cfg.reranker.enabled
+            and self._reranker is not None
+        )
+        vector_top_k = self._cfg.reranker.top_k_pre if use_rerank else 20
+        rerank_post = self._cfg.reranker.top_k_post
 
         if self._graph_querier is None or self._vector_querier is None:
             raise RuntimeError("Server not initialised — call _connect() first")
@@ -627,7 +671,7 @@ class FieldnotesServer:
         vector_future = loop.run_in_executor(
             self._executor,
             lambda: self._vector_querier.query(
-                question, top_k=20, source_type=source_type
+                question, top_k=vector_top_k, source_type=source_type
             ),
         )
 
@@ -646,7 +690,16 @@ class FieldnotesServer:
                 question=question, error=str(vector_result)
             )
 
-        hybrid = merge(question, graph_result, vector_result)
+        hybrid = await loop.run_in_executor(
+            self._executor,
+            lambda: merge(
+                question,
+                graph_result,
+                vector_result,
+                reranker=self._reranker if use_rerank else None,
+                top_k_post=rerank_post if use_rerank else None,
+            ),
+        )
 
         # --- 2. Build RAG prompt and call LLM ---
         context_text = hybrid.context
