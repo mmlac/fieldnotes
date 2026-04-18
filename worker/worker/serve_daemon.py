@@ -46,6 +46,7 @@ async def _run_daemon(cfg: Config, *, progress_enabled: bool = False) -> None:
         initial_sync_all_sources_done,
         initial_sync_register_source,
     )
+    from worker.circuit_breaker import CircuitOpenError, State, get_breaker
     from worker.models.resolver import ModelRegistry
     from worker.pipeline import Pipeline
     from worker.pipeline.progress import (
@@ -256,6 +257,35 @@ async def _run_daemon(cfg: Config, *, progress_enabled: bool = False) -> None:
                     # Interrupted mid-document — item stays 'processing',
                     # recover() will reclaim it on next startup.
                     break
+            except CircuitOpenError as exc:
+                # Circuit breaker is open — put the item back as pending
+                # (without incrementing attempts) and sleep until recovery.
+                # This prevents burning through the queue and permanently
+                # failing items that would succeed once the service recovers.
+                logger.warning(
+                    "Circuit breaker open (%s) — returning %s %s to queue, "
+                    "pausing processing",
+                    exc.breaker_name,
+                    source_type,
+                    source_id,
+                )
+                with queue._lock:
+                    queue._conn.execute(
+                        "UPDATE queue SET status = 'pending' WHERE id = ?",
+                        (queue_id,),
+                    )
+                breaker = get_breaker(exc.breaker_name)
+                if breaker and breaker.state == State.OPEN:
+                    remaining = breaker.recovery_timeout - (
+                        time.monotonic() - breaker._opened_at
+                    )
+                    wait = max(1.0, min(remaining, 30.0))
+                else:
+                    wait = 10.0
+                logger.info(
+                    "Sleeping %.0fs for circuit breaker recovery", wait
+                )
+                await asyncio.sleep(wait)
             except Exception:
                 logger.exception(
                     "Failed to process event %s %s (%s)",
