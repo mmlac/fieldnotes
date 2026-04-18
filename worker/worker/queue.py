@@ -454,6 +454,50 @@ class PersistentQueue:
             for r in rows
         ]
 
+    def iter_actionable(
+        self,
+        statuses: tuple[str, ...] = ("pending", "failed"),
+    ) -> list[tuple[str, str, dict[str, Any]]]:
+        """Return ``(queue_id, blob_path, event)`` for items in *statuses*.
+
+        Used by ``retag`` — the caller inspects events, then calls
+        ``update_payload`` or ``remove`` for each.  Items currently
+        ``'processing'`` are excluded by default.
+        """
+        placeholders = ",".join("?" for _ in statuses)
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT id, payload, blob_path FROM queue "
+                f"WHERE status IN ({placeholders}) "
+                f"ORDER BY enqueued_at ASC",
+                statuses,
+            ).fetchall()
+        result: list[tuple[str, str, dict[str, Any]]] = []
+        for queue_id, payload_json, blob_path in rows:
+            event = json.loads(payload_json)
+            result.append((queue_id, blob_path or "", event))
+        return result
+
+    def update_payload(self, queue_id: str, event: dict[str, Any]) -> None:
+        """Overwrite the payload for an existing queue item."""
+        payload = json.dumps(event, default=str)
+        with self._lock:
+            self._conn.execute(
+                "UPDATE queue SET payload = ? WHERE id = ?",
+                (payload, queue_id),
+            )
+
+    def remove(self, queue_id: str) -> None:
+        """Delete a single queue item and its blob."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT blob_path FROM queue WHERE id = ?", (queue_id,)
+            ).fetchone()
+            self._conn.execute("DELETE FROM queue WHERE id = ?", (queue_id,))
+        if row and row[0]:
+            with contextlib.suppress(OSError):
+                os.unlink(row[0])
+
     def retry_failed(self) -> int:
         """Reset all ``'failed'`` items to ``'pending'``."""
         with self._lock:

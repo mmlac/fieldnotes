@@ -88,6 +88,32 @@ class ObsidianParser(BaseParser):
                 )
             ]
 
+        # Index-only files: emit metadata with filename, no content parsing.
+        if meta.get("index_only"):
+            import os
+
+            name = os.path.basename(source_id)
+            ext = os.path.splitext(source_id)[1]
+            node_props: dict[str, Any] = {"path": source_id, "name": name, "ext": ext}
+            if size := meta.get("size_bytes"):
+                node_props["size_bytes"] = size
+            if "source_modified_at" in event:
+                node_props["modified_at"] = event["source_modified_at"]
+            desc_text = f"File: {name}"
+            directory = os.path.dirname(source_id)
+            if directory:
+                desc_text += f" in {directory}/"
+            return [
+                ParsedDocument(
+                    source_type=self.source_type,
+                    source_id=source_id,
+                    operation=operation,
+                    text=desc_text,
+                    node_label="File",
+                    node_props=node_props,
+                )
+            ]
+
         # --- Parse frontmatter ------------------------------------------------
         post = frontmatter.loads(text)
         fm: dict[str, Any] = dict(post.metadata)

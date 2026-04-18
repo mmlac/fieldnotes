@@ -442,6 +442,16 @@ def _build_parser() -> argparse.ArgumentParser:
 
     queue_sub.add_parser("migrate", help="Import old cursor JSON files into queue DB")
 
+    retag_p = queue_sub.add_parser(
+        "retag",
+        help="Re-evaluate queued items against current config patterns",
+    )
+    retag_p.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show what would change without modifying the queue",
+    )
+
     # ── topics ──────────────────────────────────────────────────────
     topics_p = sub.add_parser("topics", help="Browse and inspect topics")
     topics_p.add_argument(
@@ -774,6 +784,7 @@ def main(argv: list[str] | None = None) -> int:
             run_queue_list,
             run_queue_migrate,
             run_queue_purge,
+            run_queue_retag,
             run_queue_retry,
             run_queue_summary,
         )
@@ -806,6 +817,11 @@ def main(argv: list[str] | None = None) -> int:
                 )
             if args.queue_command == "migrate":
                 return run_queue_migrate(config_path=args.config)
+            if args.queue_command == "retag":
+                return run_queue_retag(
+                    config_path=args.config,
+                    dry_run=args.dry_run,
+                )
             # No subcommand — show summary
             return run_queue_summary(
                 config_path=args.config,

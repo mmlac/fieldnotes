@@ -21,14 +21,17 @@ vector_size = 768
 
 [sources.files]
 watch_paths = ["~/Documents"]
+# index_only_patterns = ["*.iso", "*.dmg"]  # index filename only, skip content
 
 [sources.obsidian]
 vault_path = "~/obsidian-vault"
+# index_only_patterns = ["attachments/"]    # index filename only, skip content
 
 [sources.repositories]
 repo_roots = []
 include_patterns = ["README*", "CHANGELOG*", "CONTRIBUTING*", "docs/**/*.md", "*.toml", "ADR/**/*.md"]
 exclude_patterns = ["node_modules/", ".git/", "vendor/", "target/", "__pycache__/"]
+# index_only_patterns = ["*.lock"]          # index filename only, skip content
 poll_interval_seconds = 300
 max_file_size = 104857600
 

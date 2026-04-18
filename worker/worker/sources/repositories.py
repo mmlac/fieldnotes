@@ -175,6 +175,8 @@ def _build_event(
     remote_url: str | None,
     operation: str,
     max_file_size: int,
+    *,
+    index_only: bool = False,
 ) -> dict[str, Any] | None:
     """Build an IngestEvent dict for a single repository file."""
     rel_path = str(file_path.relative_to(repo_path))
@@ -186,6 +188,8 @@ def _build_event(
         "remote_url": remote_url,
         "relative_path": rel_path,
     }
+    if index_only:
+        meta["index_only"] = True
 
     event: dict[str, Any] = {
         "id": str(uuid.uuid4()),
@@ -203,29 +207,33 @@ def _build_event(
             event["source_modified_at"] = datetime.fromtimestamp(
                 stat.st_mtime, tz=timezone.utc
             ).isoformat()
-            result = streaming_sha256(file_path, max_file_size)
-            if result is None:
-                logger.warning(
-                    "Skipping %s — exceeds max_file_size (%d bytes)",
-                    redact_home_path(str(file_path)),
-                    max_file_size,
-                )
-                return None
-            digest, size = result
-            meta["sha256"] = digest
-            meta["size_bytes"] = size
 
-            if event["mime_type"].startswith("text/"):
-                try:
-                    event["text"] = file_path.read_text(
-                        encoding="utf-8", errors="replace"
-                    )
-                except OSError:
+            if index_only:
+                meta["size_bytes"] = stat.st_size
+            else:
+                result = streaming_sha256(file_path, max_file_size)
+                if result is None:
                     logger.warning(
-                        "Failed to read text content from %s",
+                        "Skipping %s — exceeds max_file_size (%d bytes)",
                         redact_home_path(str(file_path)),
+                        max_file_size,
                     )
-                    event["text"] = ""
+                    return None
+                digest, size = result
+                meta["sha256"] = digest
+                meta["size_bytes"] = size
+
+                if event["mime_type"].startswith("text/"):
+                    try:
+                        event["text"] = file_path.read_text(
+                            encoding="utf-8", errors="replace"
+                        )
+                    except OSError:
+                        logger.warning(
+                            "Failed to read text content from %s",
+                            redact_home_path(str(file_path)),
+                        )
+                        event["text"] = ""
         except OSError:
             logger.warning(
                 "Failed to stat %s, emitting without content hash",
@@ -293,6 +301,7 @@ class RepositorySource(PythonSource):
         self._poll_interval: int = DEFAULT_POLL_INTERVAL
         self._include_patterns: list[str] = list(DEFAULT_INCLUDE_PATTERNS)
         self._exclude_patterns: list[str] = list(DEFAULT_EXCLUDE_PATTERNS)
+        self._index_only_patterns: list[str] = []
         self._cursor_path: Path = DEFAULT_CURSOR_PATH
         self._max_file_size: int = DEFAULT_MAX_FILE_SIZE
         self._max_commits: int = DEFAULT_MAX_COMMITS
@@ -313,6 +322,8 @@ class RepositorySource(PythonSource):
             self._include_patterns = list(cfg["include_patterns"])
         if "exclude_patterns" in cfg:
             self._exclude_patterns = list(cfg["exclude_patterns"])
+        if "index_only_patterns" in cfg:
+            self._index_only_patterns = list(cfg["index_only_patterns"])
 
         cursor = cfg.get("cursor_path")
         if cursor:
@@ -496,6 +507,7 @@ class RepositorySource(PythonSource):
                 remote_url,
                 "created",
                 self._max_file_size,
+                index_only=self._matches_index_only(rel_path),
             )
             if event is not None:
                 events.append(event)
@@ -573,6 +585,7 @@ class RepositorySource(PythonSource):
                 remote_url,
                 operation,
                 self._max_file_size,
+                index_only=self._matches_index_only(rel_path),
             )
             if event is not None:
                 events.append(event)
@@ -715,3 +728,9 @@ class RepositorySource(PythonSource):
     def _matches_exclude(self, rel_path: str) -> bool:
         """Check if rel_path matches any exclude pattern."""
         return _matches_any(rel_path, self._exclude_patterns)
+
+    def _matches_index_only(self, rel_path: str) -> bool:
+        """Check if rel_path matches any index_only pattern."""
+        return bool(self._index_only_patterns) and _matches_any(
+            rel_path, self._index_only_patterns
+        )

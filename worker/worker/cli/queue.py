@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 from worker.config import load_config
 from worker.queue import PersistentQueue
@@ -176,4 +178,193 @@ def run_queue_migrate(*, config_path: Path | None = None) -> int:
         print(f"Migrated {count} cursor file(s) into queue database.")
     else:
         print("No cursor files to migrate (already migrated or none found).")
+    return 0
+
+
+# ------------------------------------------------------------------
+# retag
+# ------------------------------------------------------------------
+
+
+def _matches_any_pattern(path: str, patterns: list[str]) -> bool:
+    """Check if *path* matches any glob pattern (full path, basename, or component)."""
+    p = Path(path)
+    for pattern in patterns:
+        if fnmatch.fnmatch(path, pattern) or fnmatch.fnmatch(p.name, pattern):
+            return True
+        if any(fnmatch.fnmatch(part, pattern) for part in p.parts):
+            return True
+    return False
+
+
+# Source types whose queued events carry a file path that can be
+# re-evaluated against exclude / index_only patterns.
+_RETAGGABLE_SOURCES = frozenset({"files", "obsidian", "repositories"})
+
+
+def _resolve_file_path(event: dict[str, Any]) -> str | None:
+    """Extract the matchable file path from an event, per source_type."""
+    source_type = event.get("source_type", "")
+    if source_type not in _RETAGGABLE_SOURCES:
+        return None
+    if source_type == "repositories":
+        # Repositories use relative_path for pattern matching.
+        # Skip commit events — only file events are retaggable.
+        source_id = event.get("source_id", "")
+        if source_id.startswith("commit:"):
+            return None
+        return event.get("meta", {}).get("relative_path")
+    # files and obsidian use source_id (absolute path)
+    return event.get("source_id")
+
+
+def _load_source_patterns(
+    cfg: Any,
+) -> dict[str, dict[str, list[str]]]:
+    """Load exclude_patterns and index_only_patterns from source configs.
+
+    Returns ``{source_type: {"exclude": [...], "index_only": [...], "include": [...]}}``.
+    """
+    result: dict[str, dict[str, list[str]]] = {}
+    for name, source_cfg in cfg.sources.items():
+        s = source_cfg.settings
+        result[name] = {
+            "exclude": s.get("exclude_patterns", []),
+            "index_only": s.get("index_only_patterns", []),
+            "include": s.get("include_patterns", []),
+        }
+    return result
+
+
+def _evaluate_event(
+    event: dict[str, Any],
+    patterns: dict[str, dict[str, list[str]]],
+) -> str:
+    """Re-evaluate a queued event against current config patterns.
+
+    Returns one of:
+      - ``"exclude"``    — file now matches exclude_patterns, should be removed
+      - ``"index_only"`` — file now matches index_only_patterns
+      - ``"normal"``     — file should be fully processed
+    """
+    source_type = event.get("source_type", "")
+    file_path = _resolve_file_path(event)
+    if not file_path:
+        return "normal"
+
+    source_patterns = patterns.get(source_type, {})
+    exclude = source_patterns.get("exclude", [])
+    index_only = source_patterns.get("index_only", [])
+
+    if exclude and _matches_any_pattern(file_path, exclude):
+        return "exclude"
+    if index_only and _matches_any_pattern(file_path, index_only):
+        return "index_only"
+    return "normal"
+
+
+def run_queue_retag(
+    *,
+    config_path: Path | None = None,
+    dry_run: bool = False,
+) -> int:
+    """Re-evaluate queued items against current config patterns.
+
+    For each pending/failed item:
+      - Now excluded → removed from queue
+      - Now matches index_only_patterns → flag set, content stripped
+      - Was index_only but no longer matches → flag cleared
+    """
+    cfg = load_config(config_path)
+    patterns = _load_source_patterns(cfg)
+    q = _open_queue(config_path)
+
+    try:
+        items = q.iter_actionable()
+    except Exception as exc:
+        q.close()
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    removed = 0
+    tagged_index_only = 0
+    cleared_index_only = 0
+    skipped = 0
+
+    try:
+        for queue_id, blob_path, event in items:
+            source_type = event.get("source_type", "")
+            file_path = _resolve_file_path(event)
+
+            # Skip non-file sources (commits, apps, etc.)
+            if source_type not in patterns or not file_path:
+                skipped += 1
+                continue
+
+            verdict = _evaluate_event(event, patterns)
+            meta = event.get("meta", {})
+            was_index_only = meta.get("index_only", False)
+
+            if verdict == "exclude":
+                if dry_run:
+                    print(f"  would remove  {source_type}  {file_path}")
+                else:
+                    q.remove(queue_id)
+                removed += 1
+
+            elif verdict == "index_only" and not was_index_only:
+                # Tag as index_only and strip content from payload
+                meta["index_only"] = True
+                event["meta"] = meta
+                event.pop("text", None)
+                event.pop("raw_bytes", None)
+                if dry_run:
+                    print(f"  would tag     {source_type}  {file_path}")
+                else:
+                    q.update_payload(queue_id, event)
+                    # Also remove the blob if content was stored on disk
+                    if blob_path:
+                        import contextlib
+                        import os
+
+                        with contextlib.suppress(OSError):
+                            os.unlink(blob_path)
+                        q._conn.execute(
+                            "UPDATE queue SET blob_path = NULL WHERE id = ?",
+                            (queue_id,),
+                        )
+                tagged_index_only += 1
+
+            elif verdict == "normal" and was_index_only:
+                # Was index_only but no longer matches — clear the flag.
+                # Content is gone; file will need a re-scan to get full
+                # indexing (source will re-emit on next cycle).
+                meta.pop("index_only", None)
+                event["meta"] = meta
+                if dry_run:
+                    print(f"  would untag   {source_type}  {file_path}")
+                else:
+                    q.update_payload(queue_id, event)
+                cleared_index_only += 1
+
+            else:
+                skipped += 1
+    finally:
+        q.close()
+
+    # Summary
+    prefix = "[dry run] " if dry_run else ""
+    changes = removed + tagged_index_only + cleared_index_only
+    if changes == 0:
+        print(f"{prefix}No changes — all queued items match current config.")
+    else:
+        parts = []
+        if removed:
+            parts.append(f"{removed} removed (now excluded)")
+        if tagged_index_only:
+            parts.append(f"{tagged_index_only} tagged index-only")
+        if cleared_index_only:
+            parts.append(f"{cleared_index_only} cleared index-only (content needs re-scan)")
+        print(f"{prefix}Retagged: {', '.join(parts)}.")
+
     return 0

@@ -74,6 +74,7 @@ class FileSource(PythonSource):
         self._watch_paths: list[Path] = []
         self._include_extensions: set[str] | None = None
         self._exclude_patterns: list[str] = []
+        self._index_only_patterns: list[str] = []
         self._recursive: bool = True
         self._max_file_size: int = DEFAULT_MAX_FILE_SIZE
 
@@ -99,6 +100,7 @@ class FileSource(PythonSource):
             }
 
         self._exclude_patterns = cfg.get("exclude_patterns", [])
+        self._index_only_patterns = cfg.get("index_only_patterns", [])
         self._recursive = cfg.get("recursive", True)
         self._max_file_size = cfg.get("max_file_size", DEFAULT_MAX_FILE_SIZE)
 
@@ -115,6 +117,18 @@ class FileSource(PythonSource):
             # Check if any parent directory component matches the pattern,
             # so excluding "Photos Library.photoslibrary" skips all files
             # inside that directory.
+            if any(fnmatch.fnmatch(part, pattern) for part in p.parts):
+                return True
+        return False
+
+    def _is_index_only(self, path: str) -> bool:
+        """Check if *path* matches any ``index_only_patterns``."""
+        if not self._index_only_patterns:
+            return False
+        p = Path(path)
+        for pattern in self._index_only_patterns:
+            if fnmatch.fnmatch(path, pattern) or fnmatch.fnmatch(p.name, pattern):
+                return True
             if any(fnmatch.fnmatch(part, pattern) for part in p.parts):
                 return True
         return False
@@ -206,6 +220,15 @@ class FileSource(PythonSource):
                         continue
                     if self._should_skip(abs_path):
                         continue
+                    if self._is_index_only(abs_path):
+                        # Index metadata only — no content hash, no body.
+                        stat = file_path.stat()
+                        current[abs_path] = FileEntry(
+                            sha256="",
+                            mtime_ns=stat.st_mtime_ns,
+                            size=stat.st_size,
+                        )
+                        continue
                     result = _read_file_atomic(file_path, self._max_file_size)
                     if result is None:
                         # File exceeds max_file_size — index metadata only
@@ -234,6 +257,7 @@ class FileSource(PythonSource):
     ) -> dict[str, Any]:
         """Build an IngestEvent dict for a file discovered during initial scan."""
         now = datetime.now(timezone.utc).isoformat()
+        index_only = self._is_index_only(file_path)
         ingest: dict[str, Any] = {
             "id": str(uuid.uuid4()),
             "source_type": "files",
@@ -243,6 +267,8 @@ class FileSource(PythonSource):
             "meta": {},
             "enqueued_at": now,
         }
+        if index_only:
+            ingest["meta"]["index_only"] = True
 
         if operation != "deleted" and entry is not None:
             ingest["source_modified_at"] = datetime.fromtimestamp(
@@ -251,19 +277,20 @@ class FileSource(PythonSource):
             ingest["meta"]["sha256"] = entry.sha256
             ingest["meta"]["size_bytes"] = entry.size
 
-            p = Path(file_path)
-            mime = ingest["mime_type"]
-            if p.is_file():
-                try:
-                    result = _read_file_atomic(p, self._max_file_size)
-                    if result is not None:
-                        data, _ = result
-                        if mime.startswith("text/"):
-                            ingest["text"] = data.decode("utf-8", errors="replace")
-                        elif mime.startswith("image/") or mime == "application/pdf":
-                            ingest["raw_bytes"] = data
-                except OSError:
-                    pass
+            if not index_only:
+                p = Path(file_path)
+                mime = ingest["mime_type"]
+                if p.is_file():
+                    try:
+                        result = _read_file_atomic(p, self._max_file_size)
+                        if result is not None:
+                            data, _ = result
+                            if mime.startswith("text/"):
+                                ingest["text"] = data.decode("utf-8", errors="replace")
+                            elif mime.startswith("image/") or mime == "application/pdf":
+                                ingest["raw_bytes"] = data
+                    except OSError:
+                        pass
         else:
             ingest["source_modified_at"] = now
 
@@ -353,6 +380,7 @@ class FileSource(PythonSource):
             exclude_patterns=self._exclude_patterns,
             max_file_size=self._max_file_size,
             cursor_key="files",
+            index_only_patterns=self._index_only_patterns,
         )
 
         # Give the handler the post-scan state (not the stale stored

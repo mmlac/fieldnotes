@@ -83,6 +83,22 @@ def discover_vaults(search_paths: list[Path]) -> list[Path]:
     return vaults
 
 
+def _is_index_only_scan(
+    path: Path,
+    index_only_patterns: list[str],
+) -> bool:
+    """Check if *path* matches any ``index_only_patterns`` during scan."""
+    if not index_only_patterns:
+        return False
+    path_str = str(path)
+    for pattern in index_only_patterns:
+        if fnmatch(path_str, pattern) or fnmatch(path.name, pattern):
+            return True
+        if any(fnmatch(part, pattern) for part in path.parts):
+            return True
+    return False
+
+
 def _should_skip_scan(
     path: Path,
     vault_path: Path,
@@ -115,9 +131,11 @@ def _scan_vault(
     include_extensions: set[str] | None,
     exclude_patterns: list[str],
     max_file_size: int,
+    index_only_patterns: list[str] | None = None,
 ) -> dict[str, FileEntry]:
     """Walk a vault directory and build a cursor of file entries."""
     entries: dict[str, FileEntry] = {}
+    _io_patterns = index_only_patterns or []
     for root, dirs, files in os.walk(vault_path):
         root_path = Path(root)
         # Prune .obsidian directory from walk
@@ -132,6 +150,14 @@ def _scan_vault(
             ):
                 continue
             try:
+                if _is_index_only_scan(fpath, _io_patterns):
+                    stat = fpath.stat()
+                    entries[str(fpath)] = FileEntry(
+                        sha256="",
+                        mtime_ns=stat.st_mtime_ns,
+                        size=stat.st_size,
+                    )
+                    continue
                 result = _read_file_atomic(fpath, max_file_size)
                 if result is None:
                     logger.debug("Skipping %s — exceeds max_file_size", fpath)
@@ -155,6 +181,7 @@ def _build_scan_event(
     now: str,
     *,
     categories_key: str = "categories",
+    index_only: bool = False,
 ) -> dict[str, Any]:
     """Build a single IngestEvent dict for a scan result."""
     try:
@@ -168,6 +195,8 @@ def _build_scan_event(
         "relative_path": relative_path,
         "categories_key": categories_key,
     }
+    if index_only:
+        meta["index_only"] = True
 
     ingest: dict[str, Any] = {
         "id": str(uuid.uuid4()),
@@ -186,13 +215,14 @@ def _build_scan_event(
         meta["sha256"] = entry.sha256
         meta["size_bytes"] = entry.size
 
-        # Read text content for text MIME types
-        p = Path(file_path)
-        if ingest["mime_type"].startswith("text/") and p.is_file():
-            try:
-                ingest["text"] = p.read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                pass
+        # Read text content for text MIME types (skip for index-only files)
+        if not index_only:
+            p = Path(file_path)
+            if ingest["mime_type"].startswith("text/") and p.is_file():
+                try:
+                    ingest["text"] = p.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    pass
     else:
         ingest["source_modified_at"] = now
 
@@ -216,6 +246,7 @@ class _VaultHandler(BaseHandler):
         max_file_size: int = DEFAULT_MAX_FILE_SIZE,
         categories_key: str = "categories",
         cursor_key: str | None = None,
+        index_only_patterns: list[str] | None = None,
     ) -> None:
         super().__init__(
             queue=queue,
@@ -224,6 +255,7 @@ class _VaultHandler(BaseHandler):
             exclude_patterns=exclude_patterns,
             max_file_size=max_file_size,
             cursor_key=cursor_key,
+            index_only_patterns=index_only_patterns,
         )
         self._vault_path = vault_path
         self._vault_name = vault_name
@@ -264,6 +296,7 @@ class ObsidianSource(PythonSource):
         self._vault_paths: list[Path] = []
         self._include_extensions: set[str] | None = None
         self._exclude_patterns: list[str] = []
+        self._index_only_patterns: list[str] = []
         self._recursive: bool = True
         self._max_file_size: int = DEFAULT_MAX_FILE_SIZE
         self._categories_key: str = "categories"
@@ -292,6 +325,7 @@ class ObsidianSource(PythonSource):
             }
 
         self._exclude_patterns = cfg.get("exclude_patterns", [])
+        self._index_only_patterns = cfg.get("index_only_patterns", [])
         self._recursive = cfg.get("recursive", True)
         self._max_file_size = cfg.get("max_file_size", DEFAULT_MAX_FILE_SIZE)
 
@@ -329,6 +363,7 @@ class ObsidianSource(PythonSource):
                 self._include_extensions,
                 self._exclude_patterns,
                 self._max_file_size,
+                index_only_patterns=self._index_only_patterns,
             )
             current_cursor.update(vault_entries)
 
@@ -351,6 +386,9 @@ class ObsidianSource(PythonSource):
                     file_path, "created", vault_entries[file_path],
                     vault, vault_name, now,
                     categories_key=self._categories_key,
+                    index_only=_is_index_only_scan(
+                        Path(file_path), self._index_only_patterns
+                    ),
                 )
                 queue.enqueue(event)
 
@@ -359,6 +397,9 @@ class ObsidianSource(PythonSource):
                     file_path, "modified", vault_entries[file_path],
                     vault, vault_name, now,
                     categories_key=self._categories_key,
+                    index_only=_is_index_only_scan(
+                        Path(file_path), self._index_only_patterns
+                    ),
                 )
                 queue.enqueue(event)
 
@@ -475,6 +516,7 @@ class ObsidianSource(PythonSource):
                 max_file_size=self._max_file_size,
                 categories_key=self._categories_key,
                 cursor_key="obsidian",
+                index_only_patterns=self._index_only_patterns,
             )
             # Seed handler with the just-scanned current state so that
             # _save_checkpoint (called on cancel or interval) persists the

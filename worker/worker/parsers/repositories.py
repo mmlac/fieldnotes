@@ -177,18 +177,6 @@ class RepositoryParser(BaseParser):
         remote_url: str | None = meta.get("remote_url")
         relative_path: str = meta.get("relative_path", "")
 
-        # Skip binary files — text content will be absent for non-text mime types
-        text: str = event.get("text", "")
-        mime_type: str = event.get("mime_type", "text/plain")
-        if not text and not mime_type.startswith("text/"):
-            logger.warning(
-                "Skipping binary file %s in repo %s (mime: %s)",
-                relative_path,
-                repo_name,
-                mime_type,
-            )
-            return []
-
         # File node properties
         node_props: dict[str, Any] = {
             "path": relative_path,
@@ -218,6 +206,45 @@ class RepositoryParser(BaseParser):
                 object_merge_key="source_id",
             ),
         ]
+
+        # Index-only files: emit metadata with graph hints, no text content.
+        if meta.get("index_only"):
+            if size := meta.get("size_bytes"):
+                node_props["size_bytes"] = size
+            name = node_props["name"]
+            ext = node_props["ext"]
+            text = f"File: {name}" if name else f"File: {relative_path}"
+            if ext:
+                text += f" ({ext.lstrip('.')})"
+            return [
+                ParsedDocument(
+                    source_type=self.source_type,
+                    source_id=source_id,
+                    operation=operation,
+                    text=text,
+                    mime_type=event.get("mime_type", "application/octet-stream"),
+                    node_label="File",
+                    node_props=node_props,
+                    graph_hints=graph_hints,
+                    source_metadata={
+                        "repo_name": repo_name,
+                        "repo_path": repo_path,
+                        "relative_path": relative_path,
+                    },
+                )
+            ]
+
+        # Skip binary files — text content will be absent for non-text mime types
+        text: str = event.get("text", "")
+        mime_type: str = event.get("mime_type", "text/plain")
+        if not text and not mime_type.startswith("text/"):
+            logger.warning(
+                "Skipping binary file %s in repo %s (mime: %s)",
+                relative_path,
+                repo_name,
+                mime_type,
+            )
+            return []
 
         # Check if this is a manifest file → extract dependencies
         filename = relative_path.rsplit("/", 1)[-1] if relative_path else ""

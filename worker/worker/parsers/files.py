@@ -89,6 +89,10 @@ class FileParser(BaseParser):
         source_id = event.get("source_id", "")
         operation = event.get("operation", "modified")
 
+        # Files matching index_only_patterns are indexed by metadata only.
+        if event.get("meta", {}).get("index_only"):
+            return self._parse_metadata(event, mime, source_id, operation)
+
         if mime.startswith("text/"):
             return self._parse_text(event, mime, source_id, operation)
         elif mime == "application/pdf":

@@ -63,7 +63,7 @@ Source Event (file / email / commit / task / app)
 
 Images follow a parallel path through a vision model that extracts descriptions, OCR text, and entities before rejoining the main pipeline at the embedding stage.
 
-Files that can't be parsed for content (e.g. `.3mf`, `.psd`, `.mp4`) are still indexed as metadata-only records — the filename, extension, path, and a human-readable description are embedded so they're discoverable via semantic search.
+Files that can't be parsed for content (e.g. `.3mf`, `.psd`, `.mp4`) are still indexed as metadata-only records — the filename, extension, path, and a human-readable description are embedded so they're discoverable via semantic search. You can also force this behavior for specific files or directories using `index_only_patterns` in any source config — matching files are indexed by filename only, without reading their content.
 
 Topic discovery runs on a schedule (default: weekly) or on demand via `fieldnotes cluster`, using UMAP dimensionality reduction and HDBSCAN clustering over the full vector corpus, with an LLM naming each discovered cluster.
 
@@ -239,7 +239,37 @@ query = "local_chat"              # NL → Cypher translation
 vision = "local_chat"             # image analysis
 clustering = "local_chat"         # topic naming
 completion = "local_chat"         # ask tool synthesis
+rerank = "bge_reranker"           # second-stage cross-encoder (see [reranker])
 ```
+
+#### Reranker
+
+Fieldnotes supports an optional second-stage **cross-encoder reranker** that re-scores hybrid search candidates before they reach the LLM or the user. This is a significant precision improvement for `search` and `ask` — the cross-encoder can distinguish fine-grained relevance that bi-encoder embeddings miss.
+
+The default model (`BAAI/bge-reranker-v2-m3`) runs locally via the `sentence_transformers` provider. It lazy-loads on first use (~1.5 GB RAM, no daemon-startup cost) and falls back gracefully to the original ranking if the model fails.
+
+```toml
+# Provider for local in-process models
+[modelproviders.local]
+type = "sentence_transformers"
+device = "auto"                   # auto | cpu | cuda | mps
+cache_dir = "~/.fieldnotes/data/models"
+
+# Cross-encoder model
+[models.bge_reranker]
+provider = "local"
+model = "BAAI/bge-reranker-v2-m3"
+
+# Reranker tuning
+[reranker]
+enabled = true                    # set false to skip reranking entirely
+top_k_pre = 50                    # candidates pulled from vector search
+top_k_post = 10                   # results kept after reranking
+score_threshold = 0.0             # drop candidates below this score
+batch_size = 32                   # cross-encoder batch size
+```
+
+Only vector search results are reranked — graph results pass through as the precision lane. The reranker is wired into CLI search (`--no-rerank`, `--rerank-top-k`), interactive ask, and the MCP `search`/`ask` tools (`rerank` parameter).
 
 ### Sources
 
@@ -255,11 +285,13 @@ include_extensions = [                   # optional filter — omit to allow all
   ".webp", ".bmp", ".tiff", ".heic",
 ]
 exclude_patterns = ["node_modules/"]
+index_only_patterns = ["*.iso", "*.dmg"] # index filename only, skip content
 recursive = true
 max_file_size = 104857600               # 100 MB
 
 [sources.obsidian]
 vault_paths = ["~/obsidian-vault"]
+# index_only_patterns = ["attachments/"] # index filename only, skip content
 
 [sources.gmail]
 poll_interval_seconds = 300
@@ -301,9 +333,11 @@ Google Calendar uses the same OAuth credentials file and Google Cloud project as
 > **Tip:** The same `credentials.json` file works for both Gmail and Google Calendar — they share the OAuth client, but each source has its own token file and consent flow.
 
 ```toml
+[sources.repositories]
 repo_roots = ["~/projects"]
 include_patterns = ["README*", "CHANGELOG*", "CONTRIBUTING*", "docs/**/*.md", "*.toml", "ADR/**/*.md"]
 exclude_patterns = ["node_modules/", ".git/", "vendor/", "target/", "__pycache__/"]
+index_only_patterns = ["*.lock"]         # index filename only, skip content
 poll_interval_seconds = 300
 max_file_size = 104857600
 ```
@@ -360,6 +394,13 @@ bind = "127.0.0.1"
 requests_per_minute = 0          # per-provider rate limit (0 = unlimited)
 daily_token_budget = 0           # total tokens/day across all LLM calls (0 = unlimited)
 max_concurrency = 0              # max parallel LLM calls (0 = unlimited)
+
+[reranker]
+enabled = true                   # second-stage cross-encoder (see Reranker section above)
+top_k_pre = 50                   # candidates from vector search
+top_k_post = 10                  # results kept after reranking
+score_threshold = 0.0            # drop candidates below this score
+batch_size = 32                  # cross-encoder batch size
 ```
 
 ### Environment Variables
@@ -654,7 +695,7 @@ fieldnotes [-c CONFIG] [-v] <command>
 
 **`down [--compose-file PATH]`** — Tear down Docker infrastructure (`docker compose down`). Containers and networks are removed; data volumes under `~/.fieldnotes/data/` are preserved.
 
-**`search <query> [-k N]`** — Hybrid search combining graph traversal and vector similarity. Returns ranked results with source metadata.
+**`search <query> [-k N] [--no-rerank] [--rerank-top-k N]`** — Hybrid search combining graph traversal and vector similarity. Returns ranked results with source metadata. Results are reranked by a cross-encoder by default (see [Reranker](#reranker)); use `--no-rerank` to disable or `--rerank-top-k` to control how many candidates survive reranking.
 
 **`ask [question]`** — Interactive Q&A against the knowledge graph. Retrieves context via hybrid search and synthesizes an answer with an LLM.
   - With no argument, starts a REPL with conversation history, streaming output, and question reformulation for follow-ups.
@@ -691,7 +732,7 @@ fieldnotes [-c CONFIG] [-v] <command>
   - `--summarize` — Generate an LLM-powered summary paragraph of the activity.
   - `--json` — Structured JSON output.
 
-**`serve --daemon`** — Run the ingest pipeline as a long-running background service. Prints a startup summary showing configured sources, model providers, and role assignments.
+**`serve --daemon [--progress | --no-progress]`** — Run the ingest pipeline as a long-running background service. Prints a startup summary showing configured sources, model providers, and role assignments. When connected to a TTY, shows live progress bars for queue depth and per-file pipeline stage (auto-detected; override with `--progress` / `--no-progress`).
 
 **`serve --mcp`** — Run only the MCP server (stdio transport, for Claude Desktop).
 
@@ -794,8 +835,8 @@ Fieldnotes exposes tools over the [Model Context Protocol](https://modelcontextp
 
 | Tool | Description |
 |---|---|
-| `search(query, top_k?, source_type?)` | Hybrid graph + vector search with optional source filtering |
-| `ask(question, source_type?)` | RAG + LLM synthesis — retrieves context and generates an answer |
+| `search(query, top_k?, source_type?, rerank?)` | Hybrid graph + vector search with optional source filtering and cross-encoder reranking |
+| `ask(question, source_type?, rerank?)` | RAG + LLM synthesis — retrieves context and generates an answer |
 | `timeline(since?, until?, source_type?, limit?)` | Chronological activity feed across all sources within a time range |
 | `suggest_connections(source_id?, source_type?, threshold?, limit?, cross_source?)` | Find semantically similar but unlinked documents across the knowledge graph |
 | `digest(since?, summarize?)` | Aggregate activity summary with per-source counts, highlights, and new connections |
@@ -828,7 +869,7 @@ This registers fieldnotes as an MCP server in Claude Desktop's configuration. Af
 
 ### Pipeline Stages
 
-1. **Parser** — Source-specific adapter extracts text, metadata, and graph hints (pre-known entities/edges) from raw content. Files with unsupported MIME types get a metadata-only record (filename, extension, path, size) with a human-readable description so they remain discoverable via search.
+1. **Parser** — Source-specific adapter extracts text, metadata, and graph hints (pre-known entities/edges) from raw content. Files with unsupported MIME types — or those matching `index_only_patterns` — get a metadata-only record (filename, extension, path, size) with a human-readable description so they remain discoverable via search.
 2. **Chunker** — Sentence-aware splitter produces ~512-token chunks with 64-token overlap. Short chunks are merged to avoid fragmentation.
 3. **Embedder** — Generates 768-dim vectors via the `embed` role model. Batches 64 texts per call.
 4. **Extractor** — LLM extracts named entities (typed: Person, Technology, etc.) and relationship triples from each chunk. Falls back to `extract_fallback` role on JSON parse errors.
@@ -995,6 +1036,7 @@ worker/
 │   ├── extractor.py        # LLM entity/triple extraction
 │   ├── resolver.py         # Entity deduplication
 │   ├── writer.py           # Neo4j + Qdrant persistence + entity reconciliation
+│   ├── progress.py         # Live Rich progress bars for daemon ingest
 │   ├── vision.py           # Image analysis
 │   └── app_describer.py    # LLM app descriptions
 ├── clustering/             # Topic discovery
@@ -1006,9 +1048,10 @@ worker/
 │   ├── graph.py            # NL → Cypher (LangChain)
 │   ├── vector.py           # Qdrant similarity search
 │   ├── hybrid.py           # Result merging
+│   ├── reranker.py         # Cross-encoder reranking (sentence-transformers)
 │   └── topics.py           # Topic browsing
 ├── models/                 # LLM provider abstraction
-│   ├── providers/          # Ollama, OpenAI, Anthropic
+│   ├── providers/          # Ollama, OpenAI, Anthropic, sentence-transformers
 │   └── resolver.py         # Role-based model resolution
 ├── service/                # System service management
 │   ├── launchd.py          # macOS

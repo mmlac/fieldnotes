@@ -96,7 +96,7 @@ class TestExtractExifGpsWithPiexif:
         assert abs(result.latitude - 37.775) < 0.001
         assert result.longitude is not None
         assert abs(result.longitude - (-122.4194)) < 0.01
-        assert result.exif_date == "2024:06:15 14:30:00"
+        assert result.exif_date == "2024-06-15T14:30:00"
 
     def test_gps_south_east(self):
         # Sydney: 33°52'10"S, 151°12'30"E
@@ -119,7 +119,7 @@ class TestExtractExifGpsWithPiexif:
         result = extract_exif_gps(image_bytes)
         assert result.latitude is None
         assert result.longitude is None
-        assert result.exif_date == "2023:12:25 08:00:00"
+        assert result.exif_date == "2023-12-25T08:00:00"
 
     def test_gps_only_no_date(self):
         image_bytes = _make_jpeg_with_exif(

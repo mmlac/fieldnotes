@@ -159,6 +159,7 @@ class BaseHandler(FileSystemEventHandler):
         exclude_patterns: list[str],
         max_file_size: int = DEFAULT_MAX_FILE_SIZE,
         cursor_key: str | None = None,
+        index_only_patterns: list[str] | None = None,
     ) -> None:
         self._queue = queue
         self._loop = loop
@@ -166,6 +167,7 @@ class BaseHandler(FileSystemEventHandler):
         self._exclude_patterns = exclude_patterns
         self._max_file_size = max_file_size
         self._cursor_key = cursor_key
+        self._index_only_patterns = index_only_patterns or []
         self._cursor: dict[str, FileEntry] = {}
         self._cursor_lock = threading.Lock()
         # Dedup window state — guarded by _dedup_lock since watchdog
@@ -240,6 +242,23 @@ class BaseHandler(FileSystemEventHandler):
                 return True
         return False
 
+    def _is_index_only(self, path: str) -> bool:
+        """Check if *path* matches any ``index_only_patterns``.
+
+        Matching files are indexed by filename/metadata only — their content
+        is not read or embedded.  Uses the same matching rules as
+        ``_should_skip`` (full path, basename, and directory components).
+        """
+        if not self._index_only_patterns:
+            return False
+        p = Path(path)
+        for pattern in self._index_only_patterns:
+            if fnmatch.fnmatch(path, pattern) or fnmatch.fnmatch(p.name, pattern):
+                return True
+            if any(fnmatch.fnmatch(part, pattern) for part in p.parts):
+                return True
+        return False
+
     # -- Event mapping ------------------------------------------------------
 
     @staticmethod
@@ -270,8 +289,12 @@ class BaseHandler(FileSystemEventHandler):
         if self._should_skip(src_path):
             return None
 
+        index_only = self._is_index_only(src_path)
+
         now = datetime.now(timezone.utc).isoformat()
         meta = self._extra_meta(src_path)
+        if index_only:
+            meta["index_only"] = True
         ingest: dict[str, Any] = {
             "id": str(uuid.uuid4()),
             "source_type": self._source_type,
@@ -284,6 +307,18 @@ class BaseHandler(FileSystemEventHandler):
 
         p = Path(src_path)
         if op != "deleted" and p.is_file():
+            if index_only:
+                # Index by filename/metadata only — skip content.
+                try:
+                    stat = p.stat()
+                    ingest["source_modified_at"] = datetime.fromtimestamp(
+                        stat.st_mtime_ns / 1e9, tz=timezone.utc
+                    ).isoformat()
+                    ingest["meta"]["size_bytes"] = stat.st_size
+                except OSError:
+                    ingest["source_modified_at"] = now
+                return ingest
+
             try:
                 result = _read_file_atomic(p, self._max_file_size)
                 if result is None:
