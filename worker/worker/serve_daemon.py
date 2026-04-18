@@ -376,6 +376,46 @@ def run_daemon(
                 sys.exit(1)
             time.sleep(2**attempt)
 
+    # Wait for Ollama readiness (if configured) — same retry pattern as
+    # Neo4j / Qdrant above.  Without this, the first batch of queue items
+    # fails and trips the circuit breaker for 120 seconds.
+    for name, provider in cfg.providers.items():
+        if provider.type != "ollama":
+            continue
+        base_url = provider.settings.get(
+            "base_url", "http://localhost:11434"
+        )
+        logger.info("Waiting for Ollama (%s) at %s ...", name, base_url)
+        for attempt in range(1, max_retries + 1):
+            try:
+                import urllib.request
+
+                req = urllib.request.Request(
+                    f"{base_url}/api/tags", method="GET"
+                )
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    if resp.status == 200:
+                        logger.info("Ollama (%s) ready", name)
+                        break
+                    raise ConnectionError(f"HTTP {resp.status}")
+            except Exception as exc:
+                if attempt == max_retries:
+                    logger.error(
+                        "Ollama (%s) not reachable after %d attempts: %s",
+                        name,
+                        max_retries,
+                        exc,
+                    )
+                    sys.exit(1)
+                logger.debug(
+                    "Ollama (%s) attempt %d/%d failed: %s",
+                    name,
+                    attempt,
+                    max_retries,
+                    exc,
+                )
+                time.sleep(2**attempt)
+
     try:
         asyncio.run(_run_daemon(cfg, progress_enabled=progress_enabled))
     except KeyboardInterrupt:
