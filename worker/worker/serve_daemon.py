@@ -35,7 +35,7 @@ from worker.main import (
 logger = logging.getLogger(__name__)
 
 
-async def _run_daemon(cfg: Config) -> None:
+async def _run_daemon(cfg: Config, *, progress_enabled: bool = False) -> None:
     """Run the ingest pipeline as a background service."""
     from worker.clustering.scheduler import clustering_loop
     from worker.metrics import (
@@ -48,6 +48,11 @@ async def _run_daemon(cfg: Config) -> None:
     )
     from worker.models.resolver import ModelRegistry
     from worker.pipeline import Pipeline
+    from worker.pipeline.progress import (
+        NullProgressReporter,
+        ProgressReporter,
+        RichProgressReporter,
+    )
     from worker.pipeline.writer import Writer
     from worker.parsers.registry import get as get_parser
 
@@ -57,7 +62,10 @@ async def _run_daemon(cfg: Config) -> None:
 
     registry = ModelRegistry(cfg)
     writer = Writer(neo4j_cfg=cfg.neo4j, qdrant_cfg=cfg.qdrant)
-    pipeline = Pipeline(registry=registry, writer=writer)
+    progress: ProgressReporter = (
+        RichProgressReporter() if progress_enabled else NullProgressReporter()
+    )
+    pipeline = Pipeline(registry=registry, writer=writer, progress=progress)
 
     sources = _build_sources(cfg)
     if not sources:
@@ -204,7 +212,9 @@ async def _run_daemon(cfg: Config) -> None:
         _last_depth_log = 0.0
 
         while not stop_event.is_set():
-            QUEUE_DEPTH.set(queue.depth())
+            depth_now = queue.depth()
+            QUEUE_DEPTH.set(depth_now)
+            progress.queue_depth(depth_now)
             event = await loop.run_in_executor(None, queue.claim)
             if event is None:
                 # Queue empty — ETA is 0 by definition.
@@ -303,18 +313,38 @@ async def _run_daemon(cfg: Config) -> None:
             )
         pipeline.close()
         queue.close()
+        progress.stop()
         logger.info("Daemon shutdown complete")
 
 
 _LOG_FILE = Path.home() / ".fieldnotes" / "data" / "daemon.log"
 
 
-def run_daemon(config_path: Path | None = None) -> None:
+def _resolve_progress_enabled(progress: bool | None) -> bool:
+    """Decide whether the live Rich progress display should be active.
+
+    ``True``/``False`` from the caller is honoured verbatim so users can
+    force-enable progress in piped contexts (e.g. tmux) or suppress it
+    in interactive ones.  When unspecified, fall back to TTY detection
+    on stderr — matching the channel the progress display writes to.
+    """
+    if progress is not None:
+        return progress
+    return sys.stderr.isatty()
+
+
+def run_daemon(
+    config_path: Path | None = None,
+    *,
+    progress: bool | None = None,
+) -> None:
     """Entry point for ``fieldnotes serve --daemon``."""
     cfg = load_config(config_path)
     _setup_logging(cfg.core.log_level, log_file=_LOG_FILE)
 
     logger.info("fieldnotes daemon starting")
+
+    progress_enabled = _resolve_progress_enabled(progress)
 
     from worker.metrics import init_metrics
 
@@ -347,6 +377,6 @@ def run_daemon(config_path: Path | None = None) -> None:
             time.sleep(2**attempt)
 
     try:
-        asyncio.run(_run_daemon(cfg))
+        asyncio.run(_run_daemon(cfg, progress_enabled=progress_enabled))
     except KeyboardInterrupt:
         logger.info("Interrupted")

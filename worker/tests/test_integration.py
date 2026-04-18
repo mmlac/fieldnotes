@@ -85,7 +85,7 @@ class TestEndToEndTextPipeline:
         mock_embed.side_effect = fake_embed
 
         # 3. Mock extraction — return one entity per chunk
-        def fake_extract(chunks, reg):
+        def fake_extract(chunks, reg, **kw):
             return [
                 ExtractionResult(
                     entities=[{"name": "Fox", "type": "Animal", "confidence": 0.9}],
@@ -215,7 +215,7 @@ class TestEndToEndGraphHints:
         pipeline = Pipeline(registry=registry, writer=writer)
 
         mock_embed.side_effect = lambda texts, reg: [(t, [0.1] * 768) for t in texts]
-        mock_extract.side_effect = lambda chunks, reg: [
+        mock_extract.side_effect = lambda chunks, reg, **kw: [
             ExtractionResult(entities=[], triples=[]) for _ in chunks
         ]
         mock_resolve.return_value = ResolutionResult(entities=[])
@@ -357,7 +357,7 @@ class TestEndToEndVision:
         mock_embed.side_effect = fake_embed
 
         # 4. Mock extraction (for text doc)
-        mock_extract.side_effect = lambda chunks, reg: [
+        mock_extract.side_effect = lambda chunks, reg, **kw: [
             ExtractionResult(entities=[], triples=[]) for _ in chunks
         ]
 

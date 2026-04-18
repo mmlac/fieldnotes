@@ -15,7 +15,7 @@ import json
 import os
 import logging
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 from worker.models.base import CompletionRequest
 from worker.models.resolver import ModelRegistry, ResolvedModel
@@ -229,6 +229,8 @@ def extract_chunk(
 def extract_chunks(
     chunks: list[Chunk],
     registry: ModelRegistry,
+    *,
+    on_chunk: Callable[[], None] | None = None,
 ) -> list[ExtractionResult]:
     """Extract entities and triples from all chunks.
 
@@ -238,6 +240,11 @@ def extract_chunks(
         Text chunks to process.
     registry:
         Model registry for resolving role models.
+    on_chunk:
+        Optional callback invoked once per chunk after the LLM call
+        completes (success or failure).  Used by the live progress
+        reporter to advance per-file bars during the per-chunk loop —
+        the dominant per-document latency contributor.
 
     Returns
     -------
@@ -255,7 +262,15 @@ def extract_chunks(
     except KeyError:
         pass
 
-    return [extract_chunk(c, model, fallback_model) for c in chunks]
+    results: list[ExtractionResult] = []
+    for chunk in chunks:
+        try:
+            result = extract_chunk(chunk, model, fallback_model)
+        finally:
+            if on_chunk is not None:
+                on_chunk()
+        results.append(result)
+    return results
 
 
 def _call_and_parse(model: ResolvedModel, req: CompletionRequest) -> ExtractionResult:

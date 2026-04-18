@@ -143,7 +143,7 @@ class TestGmailEndToEnd:
 
         # 3. Mock pipeline stages
         mock_embed.side_effect = lambda texts, reg: [(t, [0.1] * 768) for t in texts]
-        mock_extract.side_effect = lambda chunks, reg: [
+        mock_extract.side_effect = lambda chunks, reg, **kw: [
             ExtractionResult(
                 entities=[{"name": "API", "type": "Technology", "confidence": 0.9}],
                 triples=[],
@@ -250,7 +250,7 @@ class TestGmailEndToEnd:
         pipeline = Pipeline(registry=registry, writer=writer)
 
         mock_embed.side_effect = lambda texts, reg: [(t, [0.1] * 768) for t in texts]
-        mock_extract.side_effect = lambda chunks, reg: [
+        mock_extract.side_effect = lambda chunks, reg, **kw: [
             ExtractionResult(entities=[], triples=[]) for _ in chunks
         ]
         mock_resolve.return_value = ResolutionResult(entities=[])
@@ -345,7 +345,7 @@ class TestGmailEndToEnd:
         pipeline = Pipeline(registry=registry, writer=writer)
 
         mock_embed.side_effect = lambda texts, reg: [(t, [0.1] * 768) for t in texts]
-        mock_extract.side_effect = lambda chunks, reg: [
+        mock_extract.side_effect = lambda chunks, reg, **kw: [
             ExtractionResult(entities=[], triples=[]) for _ in chunks
         ]
         mock_resolve.return_value = ResolutionResult(entities=[])
@@ -402,7 +402,7 @@ class TestGmailEndToEnd:
             return [(t, [0.1] * 768) for t in texts]
 
         mock_embed.side_effect = embed_side_effect
-        mock_extract.side_effect = lambda chunks, reg: [
+        mock_extract.side_effect = lambda chunks, reg, **kw: [
             ExtractionResult(entities=[], triples=[]) for _ in chunks
         ]
         mock_resolve.return_value = ResolutionResult(entities=[])

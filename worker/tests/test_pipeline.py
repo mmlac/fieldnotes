@@ -180,7 +180,10 @@ class TestTextPipeline:
         # Verify stage calls
         mock_chunk.assert_called_once_with(doc.text)
         mock_embed.assert_called_once_with(["Hello world."], registry)
-        mock_extract.assert_called_once_with(chunks, registry)
+        mock_extract.assert_called_once()
+        extract_args, extract_kwargs = mock_extract.call_args
+        assert extract_args == (chunks, registry)
+        assert "on_chunk" in extract_kwargs and callable(extract_kwargs["on_chunk"])
         mock_resolve.assert_called_once()
 
         # Verify writer called with correct WriteUnit

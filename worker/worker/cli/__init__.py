@@ -64,6 +64,20 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Run ingest pipeline and MCP server as a background daemon",
     )
+    serve_progress = serve_p.add_mutually_exclusive_group()
+    serve_progress.add_argument(
+        "--progress",
+        dest="progress",
+        action="store_true",
+        default=None,
+        help="Force the live progress display on (default: auto-detect TTY)",
+    )
+    serve_progress.add_argument(
+        "--no-progress",
+        dest="progress",
+        action="store_false",
+        help="Disable the live progress display",
+    )
 
     # ── service ────────────────────────────────────────────────────
     service_p = sub.add_parser(
@@ -555,7 +569,7 @@ def main(argv: list[str] | None = None) -> int:
             from worker.serve_daemon import run_daemon
 
             try:
-                run_daemon(config_path=args.config)
+                run_daemon(config_path=args.config, progress=args.progress)
                 return 0
             except Exception as exc:
                 print(f"error: {exc}", file=sys.stderr)

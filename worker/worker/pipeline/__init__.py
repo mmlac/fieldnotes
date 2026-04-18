@@ -57,6 +57,7 @@ from worker.pipeline.app_describer import (
     AppInfo,
     describe_apps,
 )
+from worker.pipeline.progress import NullProgressReporter, ProgressReporter
 from worker.pipeline.vision_queue import VisionQueue, VisionResult as VisionQueueResult
 from worker.pipeline.writer import WriteUnit, Writer
 
@@ -86,11 +87,13 @@ class Pipeline:
         registry: ModelRegistry,
         writer: Writer,
         vision_queue: VisionQueue | None = None,
+        progress: ProgressReporter | None = None,
     ) -> None:
         self._registry = registry
         self._writer = writer
         self._vision_queue = vision_queue
         self._app_desc_cache = AppDescriptionCache()
+        self._progress: ProgressReporter = progress or NullProgressReporter()
 
     def process(
         self,
@@ -486,91 +489,108 @@ class Pipeline:
 
         chunk_texts = [c.text for c in chunks]
 
-        # 2. Embed
-        with observe_duration(PIPELINE_DURATION, stage="embed"):
-            embedded = embed_chunks(chunk_texts, self._registry)
-        vectors = [vec for _, vec in embedded]
+        progress_label = doc.node_props.get("path") or doc.source_id
+        self._progress.start_file(
+            doc.source_id, str(progress_label), total_chunks=len(chunks)
+        )
+        try:
+            # 2. Embed
+            self._progress.set_stage(doc.source_id, "embed")
+            with observe_duration(PIPELINE_DURATION, stage="embed"):
+                embedded = embed_chunks(chunk_texts, self._registry)
+            vectors = [vec for _, vec in embedded]
 
-        if len(vectors) != len(chunks):
-            DOCUMENTS_FAILED.labels(source_type=doc.source_type, stage="embed").inc()
-            raise RuntimeError(
-                f"Embedding returned {len(vectors)} vectors for {len(chunks)} chunks "
-                f"(doc {doc.source_id}) — refusing to proceed with mismatched data"
-            )
-
-        CHUNKS_EMBEDDED.inc(len(chunks))
-
-        # 3. Extract entities and triples
-        with observe_duration(PIPELINE_DURATION, stage="extract"):
-            extraction_results = extract_chunks(chunks, self._registry)
-
-        # Check for extraction failures
-        failed_count = sum(1 for r in extraction_results if r.failed)
-        if failed_count:
-            logger.warning(
-                "Extraction failed for %d/%d chunks in %s %s",
-                failed_count,
-                len(extraction_results),
-                doc.source_type,
-                doc.source_id,
-            )
-            if failed_count == len(extraction_results):
+            if len(vectors) != len(chunks):
                 DOCUMENTS_FAILED.labels(
-                    source_type=doc.source_type, stage="extract"
+                    source_type=doc.source_type, stage="embed"
                 ).inc()
                 raise RuntimeError(
-                    f"All {failed_count} extraction chunks failed for "
-                    f"{doc.source_type} {doc.source_id}"
+                    f"Embedding returned {len(vectors)} vectors for {len(chunks)} chunks "
+                    f"(doc {doc.source_id}) — refusing to proceed with mismatched data"
                 )
 
-        # Flatten all entities and triples across chunks (skip failed)
-        all_entities: list[dict[str, Any]] = []
-        all_triples: list[dict[str, str]] = []
-        for result in extraction_results:
-            if not result.failed:
-                all_entities.extend(result.entities)
-                all_triples.extend(result.triples)
+            CHUNKS_EMBEDDED.inc(len(chunks))
 
-        ENTITIES_EXTRACTED.inc(len(all_entities))
+            # 3. Extract entities and triples
+            self._progress.set_stage(doc.source_id, "extract")
+            with observe_duration(PIPELINE_DURATION, stage="extract"):
+                extraction_results = extract_chunks(
+                    chunks,
+                    self._registry,
+                    on_chunk=lambda sid=doc.source_id: self._progress.advance(sid),
+                )
 
-        # 4. Resolve entities against existing entities in Neo4j
-        # Use full-text index pre-filtering to avoid loading all entities
-        with observe_duration(PIPELINE_DURATION, stage="resolve"):
-            entity_names = [e["name"] for e in all_entities]
-            existing = self._writer.fetch_candidate_entities(entity_names)
-            resolved = resolve_entities_from_registry(
-                all_entities, existing, self._registry
+            # Check for extraction failures
+            failed_count = sum(1 for r in extraction_results if r.failed)
+            if failed_count:
+                logger.warning(
+                    "Extraction failed for %d/%d chunks in %s %s",
+                    failed_count,
+                    len(extraction_results),
+                    doc.source_type,
+                    doc.source_id,
+                )
+                if failed_count == len(extraction_results):
+                    DOCUMENTS_FAILED.labels(
+                        source_type=doc.source_type, stage="extract"
+                    ).inc()
+                    raise RuntimeError(
+                        f"All {failed_count} extraction chunks failed for "
+                        f"{doc.source_type} {doc.source_id}"
+                    )
+
+            # Flatten all entities and triples across chunks (skip failed)
+            all_entities: list[dict[str, Any]] = []
+            all_triples: list[dict[str, str]] = []
+            for result in extraction_results:
+                if not result.failed:
+                    all_entities.extend(result.entities)
+                    all_triples.extend(result.triples)
+
+            ENTITIES_EXTRACTED.inc(len(all_entities))
+
+            # 4. Resolve entities against existing entities in Neo4j
+            # Use full-text index pre-filtering to avoid loading all entities
+            self._progress.set_stage(doc.source_id, "resolve")
+            with observe_duration(PIPELINE_DURATION, stage="resolve"):
+                entity_names = [e["name"] for e in all_entities]
+                existing = self._writer.fetch_candidate_entities(entity_names)
+                resolved = resolve_entities_from_registry(
+                    all_entities, existing, self._registry
+                )
+
+            # Build final entity list from resolved results
+            write_entities = _resolved_to_entity_dicts(resolved)
+            resolved_count = sum(1 for e in resolved.entities if e.merged_into)
+            ENTITIES_RESOLVED.inc(resolved_count)
+
+            # 5. Write everything to Neo4j + Qdrant
+            unit = WriteUnit(
+                doc=doc,
+                chunks=chunks,
+                vectors=vectors,
+                entities=write_entities,
+                triples=all_triples,
+                content_hash=content_hash,
             )
+            self._progress.set_stage(doc.source_id, "write")
+            with observe_duration(PIPELINE_DURATION, stage="write"):
+                self._writer.write(unit)
 
-        # Build final entity list from resolved results
-        write_entities = _resolved_to_entity_dicts(resolved)
-        resolved_count = sum(1 for e in resolved.entities if e.merged_into)
-        ENTITIES_RESOLVED.inc(resolved_count)
+            DOCUMENTS_PROCESSED.labels(
+                source_type=doc.source_type, operation=doc.operation
+            ).inc()
 
-        # 5. Write everything to Neo4j + Qdrant
-        unit = WriteUnit(
-            doc=doc,
-            chunks=chunks,
-            vectors=vectors,
-            entities=write_entities,
-            triples=all_triples,
-            content_hash=content_hash,
-        )
-        with observe_duration(PIPELINE_DURATION, stage="write"):
-            self._writer.write(unit)
-
-        DOCUMENTS_PROCESSED.labels(
-            source_type=doc.source_type, operation=doc.operation
-        ).inc()
-
-        logger.info(
-            "Processed %s %s: %d chunks, %d entities, %d triples",
-            doc.source_type,
-            doc.source_id,
-            len(chunks),
-            len(write_entities),
-            len(all_triples),
-        )
+            logger.info(
+                "Processed %s %s: %d chunks, %d entities, %d triples",
+                doc.source_type,
+                doc.source_id,
+                len(chunks),
+                len(write_entities),
+                len(all_triples),
+            )
+        finally:
+            self._progress.finish_file(doc.source_id)
 
     # ------------------------------------------------------------------
     # App description enrichment
