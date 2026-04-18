@@ -16,6 +16,29 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_BATCH_SIZE = 64
 
+# Safety limit for text sent to the embedding API.  nomic-embed-text has a
+# 2048-token context window; at ~4 chars per subword token that's ~8192 chars.
+# We truncate at 8000 to leave margin.  This only fires for edge cases —
+# the chunker already targets ~512 whitespace tokens (~2000 chars).
+_MAX_EMBED_CHARS = 8000
+
+
+def _truncate_for_embed(text: str, max_chars: int = _MAX_EMBED_CHARS) -> str:
+    """Truncate *text* to *max_chars* at a word boundary if it exceeds the limit."""
+    if len(text) <= max_chars:
+        return text
+    # Cut at the last whitespace before the limit to avoid splitting a word.
+    truncated = text[:max_chars]
+    last_space = truncated.rfind(" ")
+    if last_space > max_chars // 2:
+        truncated = truncated[:last_space]
+    logger.warning(
+        "Truncated chunk from %d to %d chars for embedding (context limit)",
+        len(text),
+        len(truncated),
+    )
+    return truncated
+
 
 def embed_chunks(
     chunks: list[str],
@@ -51,7 +74,7 @@ def embed_chunks(
     results: list[tuple[str, list[float]]] = []
 
     for start in range(0, len(chunks), batch_size):
-        batch = chunks[start : start + batch_size]
+        batch = [_truncate_for_embed(c) for c in chunks[start : start + batch_size]]
         resp = model.embed(EmbedRequest(texts=batch))
 
         if len(resp.vectors) != len(batch):
