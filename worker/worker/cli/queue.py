@@ -43,11 +43,15 @@ def _format_item(item: dict) -> str:
     if len(source_id) > 50:
         source_id = source_id[:47] + "..."
 
+    flags = ""
+    if item.get("index_only"):
+        flags = " \033[35m[index-only]\033[0m"
+
     line = (
         f"  {color}{item['status']:<11}{reset} "
         f"\033[36m{item['source_type']:<14}\033[0m "
         f"\033[1m{source_id}\033[0m "
-        f"({item['operation']})"
+        f"({item['operation']}){flags}"
     )
     if item.get("error"):
         err = item["error"]

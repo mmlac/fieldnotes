@@ -430,7 +430,7 @@ class PersistentQueue:
         direction = "ASC" if order == "asc" else "DESC"
         sql = (
             f"SELECT id, source_type, source_id, operation, status, "
-            f"enqueued_at, started_at, attempts, error "
+            f"enqueued_at, started_at, attempts, error, payload "
             f"FROM queue {where} ORDER BY enqueued_at {direction} "
             f"LIMIT ? OFFSET ?"
         )
@@ -439,8 +439,9 @@ class PersistentQueue:
         with self._lock:
             rows = self._conn.execute(sql, params).fetchall()
 
-        return [
-            {
+        items: list[dict[str, Any]] = []
+        for r in rows:
+            item: dict[str, Any] = {
                 "id": r[0],
                 "source_type": r[1],
                 "source_id": r[2],
@@ -451,8 +452,16 @@ class PersistentQueue:
                 "attempts": r[7],
                 "error": r[8],
             }
-            for r in rows
-        ]
+            # Extract flags from payload for display purposes.
+            if r[9]:
+                try:
+                    meta = json.loads(r[9]).get("meta", {})
+                    if meta.get("index_only"):
+                        item["index_only"] = True
+                except (json.JSONDecodeError, AttributeError):
+                    pass
+            items.append(item)
+        return items
 
     def iter_actionable(
         self,
