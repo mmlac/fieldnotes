@@ -456,13 +456,14 @@ class PersistentQueue:
 
     def iter_actionable(
         self,
-        statuses: tuple[str, ...] = ("pending", "failed"),
+        statuses: tuple[str, ...] = ("pending", "processing", "failed"),
     ) -> list[tuple[str, str, dict[str, Any]]]:
         """Return ``(queue_id, blob_path, event)`` for items in *statuses*.
 
         Used by ``retag`` — the caller inspects events, then calls
-        ``update_payload`` or ``remove`` for each.  Items currently
-        ``'processing'`` are excluded by default.
+        ``update_payload`` or ``remove`` for each.  Includes
+        ``'processing'`` items so stuck or in-flight items with stale
+        tags are also re-evaluated.
         """
         placeholders = ",".join("?" for _ in statuses)
         with self._lock:
