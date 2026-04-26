@@ -38,18 +38,29 @@ _CITATION_RE = re.compile(r"\[([^\]]{4,80})\]")
 
 def source_id_to_url(source_id: str) -> str | None:
     """Convert a source_id to a clickable URL, or *None* if not possible."""
-    if source_id.startswith("gmail:"):
-        msg_id = source_id.removeprefix("gmail:")
-        return f"https://mail.google.com/mail/u/0/#all/{msg_id}"
+    if source_id.startswith("gmail://"):
+        # gmail://{account}/message/{message_id}.  Google's webmail
+        # routes by account index (u/0, u/1, ...) — we don't know that
+        # mapping here, so default to u/0; the message anchor still
+        # navigates correctly once the right account tab is open.
+        rest = source_id.removeprefix("gmail://")
+        parts = rest.split("/")
+        if len(parts) >= 3 and parts[1] == "message":
+            msg_id = parts[2]
+            return f"https://mail.google.com/mail/u/0/#all/{msg_id}"
 
-    if source_id.startswith("gcal:"):
-        # gcal:<calendar_id>:<event_id>  →  Google Calendar event URL
-        parts = source_id.split(":", 2)
-        if len(parts) == 3:
-            _, cal_id, event_id = parts
-            # Google encodes eid as base64(event_id + " " + calendar_id)
+    if source_id.startswith("google-calendar://"):
+        # google-calendar://{account}/event/{event_id}.  Google encodes
+        # eid as base64("{event_id} {calendar_id}") — without the cal_id
+        # in the URI we use {account}/primary as a best-guess anchor;
+        # the link still resolves to the right event once Google
+        # disambiguates by signed-in account.
+        rest = source_id.removeprefix("google-calendar://")
+        parts = rest.split("/")
+        if len(parts) >= 3 and parts[1] == "event":
+            account, _, event_id = parts[0], parts[1], parts[2]
             eid = base64.b64encode(
-                f"{event_id} {cal_id}".encode()
+                f"{event_id} {account}/primary".encode()
             ).decode().rstrip("=")
             return f"https://www.google.com/calendar/event?eid={eid}"
 

@@ -99,7 +99,7 @@ class TestGmailEndToEnd:
 
         # 1. Build an IngestEvent from a mock Gmail API message
         msg = _make_gmail_message()
-        event = _build_ingest_event(msg)
+        event = _build_ingest_event(msg, account="personal")
 
         # Inject email body text (source would fetch this separately)
         event["text"] = (
@@ -115,7 +115,7 @@ class TestGmailEndToEnd:
 
         # Verify parser output
         assert doc.source_type == "gmail"
-        assert doc.source_id == "gmail:msg-001"
+        assert doc.source_id == "gmail://personal/message/msg-001"
         assert doc.operation == "created"
         assert doc.node_label == "Email"
         assert doc.node_props["message_id"] == "msg-001"
@@ -137,9 +137,9 @@ class TestGmailEndToEnd:
         assert "person:carol@example.com" in recipient_ids
 
         assert len(part_of_hints) == 1
-        assert part_of_hints[0].object_id == "gmail-thread:thread-100"
+        assert part_of_hints[0].object_id == "gmail://personal/thread/thread-100"
         assert part_of_hints[0].object_label == "Thread"
-        assert part_of_hints[0].object_merge_key == "thread_id"
+        assert part_of_hints[0].object_merge_key == "source_id"
 
         # 3. Mock pipeline stages
         mock_embed.side_effect = lambda texts, reg: [(t, [0.1] * 768) for t in texts]
@@ -169,7 +169,7 @@ class TestGmailEndToEnd:
         unit: WriteUnit = writer.write.call_args[0][0]
 
         # Email node
-        assert unit.doc.source_id == "gmail:msg-001"
+        assert unit.doc.source_id == "gmail://personal/message/msg-001"
         assert unit.doc.node_label == "Email"
         assert unit.doc.source_type == "gmail"
 
@@ -189,7 +189,7 @@ class TestGmailEndToEnd:
     def test_gmail_html_body_stripped(self) -> None:
         """HTML email bodies are stripped to plain text before pipeline."""
         msg = _make_gmail_message()
-        event = _build_ingest_event(msg)
+        event = _build_ingest_event(msg, account="personal")
         event["text"] = (
             "<html><body>"
             "<p>Hi team,</p>"
@@ -216,7 +216,7 @@ class TestGmailEndToEnd:
         pipeline = Pipeline(registry=registry, writer=writer)
 
         msg = _make_gmail_message()
-        event = _build_ingest_event(msg)
+        event = _build_ingest_event(msg, account="personal")
         event["operation"] = "deleted"
 
         parser = GmailParser()
@@ -264,7 +264,7 @@ class TestGmailEndToEnd:
                 thread_id="thread-shared",
                 subject="Discussion",
             )
-            event = _build_ingest_event(msg)
+            event = _build_ingest_event(msg, account="personal")
             event["text"] = f"Message body for {msg_id}. " * 20
 
             docs = parser.parse(event)
@@ -277,8 +277,8 @@ class TestGmailEndToEnd:
             unit: WriteUnit = call[0][0]
             part_of = [h for h in unit.doc.graph_hints if h.predicate == "PART_OF"]
             assert len(part_of) == 1
-            assert part_of[0].object_id == "gmail-thread:thread-shared"
-            assert part_of[0].object_merge_key == "thread_id"
+            assert part_of[0].object_id == "gmail://personal/thread/thread-shared"
+            assert part_of[0].object_merge_key == "source_id"
             assert part_of[0].object_props["thread_id"] == "thread-shared"
 
     def test_gmail_source_build_ingest_event(self) -> None:
@@ -290,10 +290,10 @@ class TestGmailEndToEnd:
             sender="Dan <dan@company.com>",
             to="eve@company.com",
         )
-        event = _build_ingest_event(msg)
+        event = _build_ingest_event(msg, account="personal")
 
         assert event["source_type"] == "gmail"
-        assert event["source_id"] == "gmail:msg-xyz"
+        assert event["source_id"] == "gmail://personal/message/msg-xyz"
         assert event["operation"] == "created"
         assert event["mime_type"] == "message/rfc822"
         assert event["meta"]["message_id"] == "msg-xyz"
@@ -363,7 +363,7 @@ class TestGmailEndToEnd:
                 sender="Alice <alice@example.com>",
                 to="bob@example.com",
             )
-            event = _build_ingest_event(msg)
+            event = _build_ingest_event(msg, account="personal")
             event["text"] = f"Content of {subject}. " * 20
             docs = parser.parse(event)
             pipeline.process(docs[0])
@@ -413,7 +413,7 @@ class TestGmailEndToEnd:
         docs = []
         for msg_id in ("msg-fail", "msg-ok"):
             msg = _make_gmail_message(msg_id=msg_id)
-            event = _build_ingest_event(msg)
+            event = _build_ingest_event(msg, account="personal")
             event["text"] = f"Email body for {msg_id}. " * 20
             docs.extend(parser.parse(event))
 
@@ -421,8 +421,8 @@ class TestGmailEndToEnd:
 
         # First doc failed, second succeeded
         assert len(failed) == 1
-        assert failed[0].source_id == "gmail:msg-fail"
+        assert failed[0].source_id == "gmail://personal/message/msg-fail"
         assert any(
-            call[0][0].doc.source_id == "gmail:msg-ok"
+            call[0][0].doc.source_id == "gmail://personal/message/msg-ok"
             for call in writer.write.call_args_list
         )

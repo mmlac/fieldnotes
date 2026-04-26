@@ -6,6 +6,7 @@ from worker.parsers.gmail import GmailParser, _parse_email_address, _strip_html
 def _make_event(
     text: str = "",
     mime_type: str = "message/rfc822",
+    account: str = "personal",
     **overrides,
 ) -> dict:
     meta = overrides.pop("meta", {})
@@ -16,11 +17,12 @@ def _make_event(
         "date": "Tue, 11 Mar 2026 12:00:00 +0000",
         "sender_email": "Alice <alice@example.com>",
         "recipients": ["Bob <bob@example.com>", "carol@example.com"],
+        "account": account,
     }
     base_meta.update(meta)
     base = {
         "source_type": "gmail",
-        "source_id": "gmail:msg-123",
+        "source_id": f"gmail://{base_meta['account']}/message/{base_meta['message_id']}",
         "operation": "created",
         "text": text,
         "mime_type": mime_type,
@@ -83,7 +85,7 @@ class TestGmailParser:
         assert len(docs) == 1
         doc = docs[0]
         assert doc.source_type == "gmail"
-        assert doc.source_id == "gmail:msg-123"
+        assert doc.source_id == "gmail://personal/message/msg-123"
         assert doc.operation == "created"
         assert doc.text == "Hello from the email body"
         assert doc.node_label == "Email"
@@ -94,12 +96,14 @@ class TestGmailParser:
         assert doc.node_props["message_id"] == "msg-123"
         assert doc.node_props["subject"] == "Test Subject"
         assert doc.node_props["date"] == "Tue, 11 Mar 2026 12:00:00 +0000"
+        assert doc.node_props["account"] == "personal"
 
     def test_source_metadata(self):
         docs = self.parser.parse(_make_event("body"))
         doc = docs[0]
         assert doc.source_metadata["source_type"] == "email"
         assert doc.source_metadata["thread_id"] == "thread-456"
+        assert doc.source_metadata["account"] == "personal"
 
     def test_sender_sent_hint(self):
         docs = self.parser.parse(_make_event("body"))
@@ -108,10 +112,11 @@ class TestGmailParser:
         h = sent_hints[0]
         assert h.subject_id == "person:alice@example.com"
         assert h.subject_label == "Person"
-        assert h.object_id == "gmail:msg-123"
+        assert h.object_id == "gmail://personal/message/msg-123"
         assert h.object_label == "Email"
         assert h.subject_props == {"email": "alice@example.com"}
         assert h.subject_merge_key == "email"
+        assert h.edge_props == {"account": "personal"}
         assert h.confidence == 1.0
 
     def test_recipient_to_hints(self):
@@ -122,10 +127,11 @@ class TestGmailParser:
         assert "person:bob@example.com" in recipient_ids
         assert "person:carol@example.com" in recipient_ids
         for h in to_hints:
-            assert h.subject_id == "gmail:msg-123"
+            assert h.subject_id == "gmail://personal/message/msg-123"
             assert h.subject_label == "Email"
             assert h.object_label == "Person"
             assert h.object_merge_key == "email"
+            assert h.edge_props == {"account": "personal"}
             assert h.confidence == 1.0
 
     def test_thread_part_of_hint(self):
@@ -133,12 +139,17 @@ class TestGmailParser:
         part_of = [h for h in docs[0].graph_hints if h.predicate == "PART_OF"]
         assert len(part_of) == 1
         h = part_of[0]
-        assert h.subject_id == "gmail:msg-123"
+        assert h.subject_id == "gmail://personal/message/msg-123"
         assert h.subject_label == "Email"
-        assert h.object_id == "gmail-thread:thread-456"
+        assert h.object_id == "gmail://personal/thread/thread-456"
         assert h.object_label == "Thread"
-        assert h.object_merge_key == "thread_id"
-        assert h.object_props == {"thread_id": "thread-456", "subject": "Test Subject"}
+        assert h.object_merge_key == "source_id"
+        assert h.object_props == {
+            "thread_id": "thread-456",
+            "subject": "Test Subject",
+            "account": "personal",
+        }
+        assert h.edge_props == {"account": "personal"}
         assert h.confidence == 1.0
 
     def test_no_thread_hint_when_thread_id_empty(self):
@@ -189,7 +200,7 @@ class TestGmailParser:
         """Parser should handle missing meta fields gracefully."""
         event = {
             "source_type": "gmail",
-            "source_id": "gmail:bare",
+            "source_id": "gmail:///message/bare",
             "operation": "created",
             "text": "body",
             "mime_type": "text/plain",
@@ -205,3 +216,88 @@ class TestGmailParser:
 
         parser = get("gmail")
         assert isinstance(parser, GmailParser)
+
+
+class TestCrossAccount:
+    """Cross-account invariants required by the multi-account schema."""
+
+    def setup_method(self):
+        self.parser = GmailParser()
+
+    def test_same_thread_id_two_accounts_yields_distinct_thread_nodes(self):
+        """Same thread_id seen on two accounts MUST produce two distinct
+        Thread nodes — Gmail thread IDs are scoped to a mailbox."""
+        event_personal = _make_event(
+            "body",
+            account="personal",
+            meta={"thread_id": "shared-tid", "message_id": "m1"},
+        )
+        event_work = _make_event(
+            "body",
+            account="work",
+            meta={"thread_id": "shared-tid", "message_id": "m2"},
+        )
+        thread_personal = next(
+            h for h in self.parser.parse(event_personal)[0].graph_hints
+            if h.predicate == "PART_OF"
+        )
+        thread_work = next(
+            h for h in self.parser.parse(event_work)[0].graph_hints
+            if h.predicate == "PART_OF"
+        )
+
+        assert thread_personal.object_id == "gmail://personal/thread/shared-tid"
+        assert thread_work.object_id == "gmail://work/thread/shared-tid"
+        assert thread_personal.object_id != thread_work.object_id
+        # Both must merge on source_id (the URI), NOT thread_id, so the
+        # writer doesn't collapse them.
+        assert thread_personal.object_merge_key == "source_id"
+        assert thread_work.object_merge_key == "source_id"
+
+    def test_same_email_address_two_accounts_yields_one_person_node(self):
+        """alice@example.com seen by both accounts MUST produce one Person
+        node (email-keyed merge bridges accounts)."""
+        event_personal = _make_event(
+            "body",
+            account="personal",
+            meta={"sender_email": "Alice <alice@example.com>"},
+        )
+        event_work = _make_event(
+            "body",
+            account="work",
+            meta={"sender_email": "Alice <alice@example.com>"},
+        )
+        sent_personal = next(
+            h for h in self.parser.parse(event_personal)[0].graph_hints
+            if h.predicate == "SENT"
+        )
+        sent_work = next(
+            h for h in self.parser.parse(event_work)[0].graph_hints
+            if h.predicate == "SENT"
+        )
+
+        # Same Person: same email, same merge key.
+        assert sent_personal.subject_id == sent_work.subject_id
+        assert sent_personal.subject_merge_key == "email"
+        assert sent_work.subject_merge_key == "email"
+        # But the edges are stamped with different accounts.
+        assert sent_personal.edge_props["account"] == "personal"
+        assert sent_work.edge_props["account"] == "work"
+
+    def test_account_appears_as_metadata_not_in_person_merge_key(self):
+        """Sender display name + account must not bleed into the Person
+        merge key — that is reserved for email."""
+        event = _make_event(
+            "body",
+            account="work",
+            meta={"sender_email": "Markus <markus@example.com>"},
+        )
+        sent = next(
+            h for h in self.parser.parse(event)[0].graph_hints
+            if h.predicate == "SENT"
+        )
+        assert sent.subject_merge_key == "email"
+        assert sent.subject_props == {"email": "markus@example.com"}
+        # account lives on the edge, not the Person identity.
+        assert "account" not in sent.subject_props
+        assert sent.edge_props == {"account": "work"}

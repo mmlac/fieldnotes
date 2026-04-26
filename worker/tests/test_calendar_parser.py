@@ -5,12 +5,14 @@ from worker.parsers.calendar import GoogleCalendarParser, _strip_html
 
 def _make_event(
     text: str = "Team standup\n\nLocation: Conference Room A\n\nDaily sync meeting",
+    account: str = "personal",
     **overrides,
 ) -> dict:
     meta = overrides.pop("meta", {})
     base_meta = {
         "event_id": "evt-123",
-        "calendar_id": "primary",
+        "calendar_id": f"{account}/primary",
+        "account": account,
         "summary": "Team standup",
         "description": "Daily sync meeting",
         "location": "Conference Room A",
@@ -46,7 +48,9 @@ def _make_event(
     base_meta.update(meta)
     base = {
         "source_type": "google_calendar",
-        "source_id": "gcal:primary:evt-123",
+        "source_id": (
+            f"google-calendar://{base_meta['account']}/event/{base_meta['event_id']}"
+        ),
         "operation": "created",
         "text": text,
         "mime_type": "text/plain",
@@ -83,7 +87,7 @@ class TestGoogleCalendarParser:
         assert len(docs) == 1
         doc = docs[0]
         assert doc.source_type == "google_calendar"
-        assert doc.source_id == "gcal:primary:evt-123"
+        assert doc.source_id == "google-calendar://personal/event/evt-123"
         assert doc.operation == "created"
         assert doc.node_label == "CalendarEvent"
 
@@ -95,14 +99,17 @@ class TestGoogleCalendarParser:
         assert props["end_time"] == "2026-03-21T09:30:00-07:00"
         assert props["location"] == "Conference Room A"
         assert props["status"] == "confirmed"
+        assert props["account"] == "personal"
+        assert props["calendar_id"] == "personal/primary"
         assert "html_link" in props
 
     def test_source_metadata(self):
         docs = self.parser.parse(_make_event())
         meta = docs[0].source_metadata
         assert meta["source_type"] == "calendar"
-        assert meta["calendar_id"] == "primary"
+        assert meta["calendar_id"] == "personal/primary"
         assert meta["start_time"] == "2026-03-21T09:00:00-07:00"
+        assert meta["account"] == "personal"
 
     def test_organizer_hint_non_recurring(self):
         """Non-recurring events attach person hints to CalendarEvent."""
@@ -112,13 +119,14 @@ class TestGoogleCalendarParser:
         ]
         assert len(org_hints) == 1
         h = org_hints[0]
-        assert h.subject_id == "gcal:primary:evt-123"
+        assert h.subject_id == "google-calendar://personal/event/evt-123"
         assert h.subject_label == "CalendarEvent"
         assert h.object_id == "person:alice@example.com"
         assert h.object_label == "Person"
         assert h.object_props["email"] == "alice@example.com"
         assert h.object_props["name"] == "Alice Smith"
         assert h.object_merge_key == "email"
+        assert h.edge_props == {"account": "personal"}
         assert h.confidence == 1.0
 
     def test_recurring_creates_series_node(self):
@@ -130,13 +138,15 @@ class TestGoogleCalendarParser:
         ]
         assert len(instance_hints) == 1
         h = instance_hints[0]
-        assert h.subject_id == "gcal:primary:evt-123"
+        assert h.subject_id == "google-calendar://personal/event/evt-123"
         assert h.subject_label == "CalendarEvent"
-        assert h.object_id == "series-abc"
+        assert h.object_id == "google-calendar://personal/series/series-abc"
         assert h.object_label == "CalendarSeries"
-        assert h.object_merge_key == "series_id"
+        assert h.object_merge_key == "source_id"
         assert h.object_props["series_id"] == "series-abc"
         assert h.object_props["summary"] == "Team standup"
+        assert h.object_props["account"] == "personal"
+        assert h.edge_props == {"account": "personal"}
 
     def test_recurring_person_hints_on_series(self):
         """Recurring events attach person hints to CalendarSeries, not instance."""
@@ -147,9 +157,9 @@ class TestGoogleCalendarParser:
         ]
         assert len(org_hints) == 1
         h = org_hints[0]
-        assert h.subject_id == "series-abc"
+        assert h.subject_id == "google-calendar://personal/series/series-abc"
         assert h.subject_label == "CalendarSeries"
-        assert h.subject_merge_key == "series_id"
+        assert h.subject_merge_key == "source_id"
         assert h.object_props["email"] == "alice@example.com"
 
         att_hints = [
@@ -157,7 +167,7 @@ class TestGoogleCalendarParser:
         ]
         for ah in att_hints:
             assert ah.subject_label == "CalendarSeries"
-            assert ah.subject_merge_key == "series_id"
+            assert ah.subject_merge_key == "source_id"
 
     def test_attendee_hints_exclude_self(self):
         """The 'self' attendee (me@example.com) should not generate a hint."""
@@ -178,12 +188,13 @@ class TestGoogleCalendarParser:
             h for h in docs[0].graph_hints if h.predicate == "ATTENDED_BY"
         ]
         bob_hint = next(h for h in att_hints if "bob" in h.object_id)
-        assert bob_hint.subject_id == "gcal:primary:evt-123"
+        assert bob_hint.subject_id == "google-calendar://personal/event/evt-123"
         assert bob_hint.subject_label == "CalendarEvent"
         assert bob_hint.object_label == "Person"
         assert bob_hint.object_props["email"] == "bob@example.com"
         assert bob_hint.object_props["name"] == "Bob Jones"
         assert bob_hint.object_merge_key == "email"
+        assert bob_hint.edge_props == {"account": "personal"}
 
     def test_cross_source_person_linking_with_gmail(self):
         """Calendar attendees use the SAME Person merge key (email) as Gmail.
@@ -222,6 +233,7 @@ class TestGoogleCalendarParser:
         ]
         assert len(created_hints) == 1
         assert created_hints[0].object_id == "person:delegate@example.com"
+        assert created_hints[0].edge_props == {"account": "personal"}
 
     def test_deleted_operation(self):
         docs = self.parser.parse(_make_event(operation="deleted"))
@@ -250,7 +262,7 @@ class TestGoogleCalendarParser:
         """Parser should handle missing meta fields gracefully."""
         event = {
             "source_type": "google_calendar",
-            "source_id": "gcal:primary:bare",
+            "source_id": "google-calendar:///event/bare",
             "operation": "created",
             "text": "minimal event",
             "mime_type": "text/plain",
@@ -289,3 +301,117 @@ class TestGoogleCalendarParser:
 
         parser = get("google_calendar")
         assert isinstance(parser, GoogleCalendarParser)
+
+
+class TestCrossAccount:
+    """Cross-account invariants required by the multi-account schema."""
+
+    def setup_method(self):
+        self.parser = GoogleCalendarParser()
+
+    def test_same_event_id_two_accounts_yields_distinct_event_nodes(self):
+        """Same event_id on 'primary' in two accounts MUST produce two
+        distinct CalendarEvent nodes — Google reuses event IDs."""
+        event_personal = _make_event(
+            account="personal",
+            meta={"event_id": "shared-eid"},
+        )
+        event_work = _make_event(
+            account="work",
+            meta={"event_id": "shared-eid"},
+        )
+        doc_personal = self.parser.parse(event_personal)[0]
+        doc_work = self.parser.parse(event_work)[0]
+
+        assert doc_personal.source_id == "google-calendar://personal/event/shared-eid"
+        assert doc_work.source_id == "google-calendar://work/event/shared-eid"
+        assert doc_personal.source_id != doc_work.source_id
+
+    def test_same_attendee_email_two_accounts_yields_one_person_node(self):
+        """bob@example.com attending in both accounts MUST produce one
+        Person node (email-keyed merge bridges accounts)."""
+        event_personal = _make_event(
+            account="personal",
+            meta={
+                "attendees": [
+                    {
+                        "email": "Bob@Example.COM",
+                        "name": "Bob",
+                        "self": False,
+                    }
+                ]
+            },
+        )
+        event_work = _make_event(
+            account="work",
+            meta={
+                "attendees": [
+                    {
+                        "email": "bob@example.com",
+                        "name": "Bob",
+                        "self": False,
+                    }
+                ]
+            },
+        )
+        att_personal = next(
+            h for h in self.parser.parse(event_personal)[0].graph_hints
+            if h.predicate == "ATTENDED_BY"
+        )
+        att_work = next(
+            h for h in self.parser.parse(event_work)[0].graph_hints
+            if h.predicate == "ATTENDED_BY"
+        )
+
+        # Canonicalized through canonicalize_email() and merging on email.
+        assert att_personal.object_id == "person:bob@example.com"
+        assert att_work.object_id == "person:bob@example.com"
+        assert att_personal.object_merge_key == "email"
+        assert att_work.object_merge_key == "email"
+        # Edges are scoped to their respective accounts.
+        assert att_personal.edge_props["account"] == "personal"
+        assert att_work.edge_props["account"] == "work"
+
+    def test_attendee_without_email_uses_account_scoped_fallback_id(self):
+        """Display-name-only attendees fall back to an account+event scoped
+        Person ID so the same display name in two accounts does NOT
+        accidentally collapse before the email is known."""
+        event_personal = _make_event(
+            account="personal",
+            meta={
+                "event_id": "evt-A",
+                "attendees": [
+                    {"name": "John Doe", "self": False},
+                ],
+            },
+        )
+        event_work = _make_event(
+            account="work",
+            meta={
+                "event_id": "evt-B",
+                "attendees": [
+                    {"name": "John Doe", "self": False},
+                ],
+            },
+        )
+        att_personal = next(
+            h for h in self.parser.parse(event_personal)[0].graph_hints
+            if h.predicate == "ATTENDED_BY"
+        )
+        att_work = next(
+            h for h in self.parser.parse(event_work)[0].graph_hints
+            if h.predicate == "ATTENDED_BY"
+        )
+
+        assert att_personal.object_id == (
+            "google-calendar://personal/event/evt-A/attendee/0"
+        )
+        assert att_work.object_id == (
+            "google-calendar://work/event/evt-B/attendee/0"
+        )
+        assert att_personal.object_id != att_work.object_id
+        assert att_personal.object_merge_key == "source_id"
+        assert att_work.object_merge_key == "source_id"
+        # Account stamped on the Person node so reconcile can walk it.
+        assert att_personal.object_props["account"] == "personal"
+        assert att_work.object_props["account"] == "work"

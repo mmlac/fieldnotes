@@ -82,6 +82,9 @@ class GraphHint:
     object_label: str
     subject_props: dict[str, Any] = field(default_factory=dict)
     object_props: dict[str, Any] = field(default_factory=dict)
+    # Properties stamped onto the relationship itself (e.g. ``account``)
+    # so callers can query "edges scoped to a particular Gmail account".
+    edge_props: dict[str, Any] = field(default_factory=dict)
     confidence: float = 1.0  # 1.0 = certain (derived from structure, not LLM)
     # Merge keys: which property to MERGE on for each node.
     # Default "source_id" works for most nodes; email nodes use "email",

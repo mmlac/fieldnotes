@@ -420,7 +420,7 @@ class TestObsidianParser:
         # Gmail email from the same person
         gmail_event = {
             "source_type": "gmail",
-            "source_id": "gmail:msg-1",
+            "source_id": "gmail://personal/message/msg-1",
             "operation": "created",
             "text": "Hello",
             "meta": {"sender_email": "alice@example.com", "recipients": []},

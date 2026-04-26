@@ -61,6 +61,8 @@ class GoogleCalendarParser(BaseParser):
                 )
             ]
 
+        account: str = meta.get("account", "")
+        event_id: str = meta.get("event_id", "")
         summary: str = meta.get("summary", "(No title)")
         description: str = meta.get("description", "")
         location: str = meta.get("location", "")
@@ -74,6 +76,10 @@ class GoogleCalendarParser(BaseParser):
         html_link: str = meta.get("html_link", "")
         recurring_event_id: str = meta.get("recurring_event_id", "")
         status: str = meta.get("status", "confirmed")
+
+        # All edges leaving this CalendarEvent/Series carry the account so
+        # the graph can answer "show me attendees of work-only events".
+        edge_props: dict[str, Any] = {"account": account} if account else {}
 
         # --- Clean description (may contain HTML) ---
         body = event.get("text", "")
@@ -90,6 +96,8 @@ class GoogleCalendarParser(BaseParser):
             "end_time": end_time,
             "status": status,
         }
+        if account:
+            node_props["account"] = account
         if location:
             node_props["location"] = location
         if html_link:
@@ -106,10 +114,17 @@ class GoogleCalendarParser(BaseParser):
         # person relationships to the series instead of each instance.
         # This prevents N×M edge explosion (N instances × M attendees).
         if recurring_event_id:
+            # CalendarSeries node is account-namespaced for the same reason
+            # CalendarEvent is: Google reuses series IDs across calendars.
+            series_uri = (
+                f"google-calendar://{account}/series/{recurring_event_id}"
+            )
             series_props: dict[str, Any] = {
                 "series_id": recurring_event_id,
                 "summary": summary,
             }
+            if account:
+                series_props["account"] = account
             if calendar_id:
                 series_props["calendar_id"] = calendar_id
 
@@ -119,10 +134,11 @@ class GoogleCalendarParser(BaseParser):
                     subject_id=source_id,
                     subject_label="CalendarEvent",
                     predicate="INSTANCE_OF",
-                    object_id=recurring_event_id,
+                    object_id=series_uri,
                     object_label="CalendarSeries",
                     object_props=series_props,
-                    object_merge_key="series_id",
+                    object_merge_key="source_id",
+                    edge_props=edge_props,
                     confidence=1.0,
                 )
             )
@@ -130,15 +146,17 @@ class GoogleCalendarParser(BaseParser):
         # Determine the anchor node for person relationships:
         # series node for recurring events, event node otherwise.
         if recurring_event_id:
-            person_anchor_id = recurring_event_id
+            person_anchor_id = series_uri
             person_anchor_label = "CalendarSeries"
-            person_anchor_merge_key = "series_id"
+            person_anchor_merge_key = "source_id"
         else:
             person_anchor_id = source_id
             person_anchor_label = "CalendarEvent"
             person_anchor_merge_key = "source_id"
 
-        # ORGANIZED_BY: anchor → Person (organizer)
+        # ORGANIZED_BY: anchor → Person (organizer).  Person merges on
+        # email so cross-account organizers (alice@... seen by both work
+        # and personal calendars) collapse into one node.
         if organizer_email:
             norm_org = canonicalize_email(organizer_email)
             org_props: dict[str, Any] = {"email": norm_org}
@@ -154,6 +172,7 @@ class GoogleCalendarParser(BaseParser):
                     object_label="Person",
                     object_props=org_props,
                     object_merge_key="email",
+                    edge_props=edge_props,
                     confidence=1.0,
                 )
             )
@@ -168,15 +187,33 @@ class GoogleCalendarParser(BaseParser):
             )
             attendees = attendees[:_MAX_ATTENDEES]
 
-        for att in attendees:
-            att_email = att.get("email", "")
-            if not att_email or att.get("self", False):
+        for idx, att in enumerate(attendees):
+            if att.get("self", False):
                 continue
-            norm_att = canonicalize_email(att_email)
-            att_props: dict[str, Any] = {"email": norm_att}
+            att_email = att.get("email", "")
             att_name = att.get("name", "")
-            if att_name:
-                att_props["name"] = att_name
+
+            if att_email:
+                # Email known: Person merges on email across accounts.
+                norm_att = canonicalize_email(att_email)
+                att_props: dict[str, Any] = {"email": norm_att}
+                if att_name:
+                    att_props["name"] = att_name
+                obj_id = f"person:{norm_att}"
+                obj_merge_key = "email"
+            else:
+                # Email unknown (display-name-only attendee).  Fall back to
+                # an account+event-scoped Person ID so the same display name
+                # in two accounts produces two Person nodes — they merge
+                # later via reconcile once the email becomes known.
+                if not att_name:
+                    continue
+                obj_id = (
+                    f"google-calendar://{account}/event/{event_id}"
+                    f"/attendee/{idx}"
+                )
+                att_props = {"name": att_name, "account": account}
+                obj_merge_key = "source_id"
 
             graph_hints.append(
                 GraphHint(
@@ -184,10 +221,11 @@ class GoogleCalendarParser(BaseParser):
                     subject_label=person_anchor_label,
                     subject_merge_key=person_anchor_merge_key,
                     predicate="ATTENDED_BY",
-                    object_id=f"person:{norm_att}",
+                    object_id=obj_id,
                     object_label="Person",
                     object_props=att_props,
-                    object_merge_key="email",
+                    object_merge_key=obj_merge_key,
+                    edge_props=edge_props,
                     confidence=1.0,
                 )
             )
@@ -205,6 +243,7 @@ class GoogleCalendarParser(BaseParser):
                     object_label="Person",
                     object_props={"email": norm_creator},
                     object_merge_key="email",
+                    edge_props=edge_props,
                     confidence=1.0,
                 )
             )
@@ -223,6 +262,7 @@ class GoogleCalendarParser(BaseParser):
                     "source_type": "calendar",
                     "calendar_id": calendar_id,
                     "start_time": start_time,
+                    "account": account,
                 },
             )
         ]

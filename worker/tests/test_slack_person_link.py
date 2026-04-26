@@ -27,7 +27,7 @@ from worker.parsers.slack import SlackParser
 def _gmail_event_from_alice() -> dict:
     return {
         "source_type": "gmail",
-        "source_id": "gmail:msg-1",
+        "source_id": "gmail://personal/message/msg-1",
         "operation": "created",
         "text": "Hello from Alice",
         "mime_type": "message/rfc822",

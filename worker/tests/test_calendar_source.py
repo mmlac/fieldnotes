@@ -165,25 +165,26 @@ class TestEventTimeHelpers:
 class TestBuildIngestEvent:
     def test_basic_event(self) -> None:
         event = _calendar_event()
-        result = _build_ingest_event(event, "primary")
+        result = _build_ingest_event(event, "primary", account="personal")
         assert result is not None
         assert result["source_type"] == "google_calendar"
-        assert result["source_id"] == "gcal:primary:evt-1"
+        assert result["source_id"] == "google-calendar://personal/event/evt-1"
         assert result["operation"] == "created"
         assert "Team Meeting" in result["text"]
 
     def test_cancelled_event_is_delete(self) -> None:
         event = _calendar_event(status="cancelled")
-        result = _build_ingest_event(event, "primary")
+        result = _build_ingest_event(event, "primary", account="personal")
         assert result is not None
         assert result["operation"] == "deleted"
 
     def test_meta_fields(self) -> None:
         event = _calendar_event()
-        result = _build_ingest_event(event, "primary")
+        result = _build_ingest_event(event, "primary", account="personal")
         meta = result["meta"]
         assert meta["event_id"] == "evt-1"
         assert meta["calendar_id"] == "primary"
+        assert meta["account"] == "personal"
         assert meta["summary"] == "Team Meeting"
         assert meta["location"] == "Room A"
         assert meta["organizer_email"] == "alice@example.com"
@@ -203,8 +204,8 @@ class TestBuildIngestEvent:
 
     def test_all_day_event(self) -> None:
         event = _all_day_event()
-        result = _build_ingest_event(event, "work")
-        assert result["source_id"] == "gcal:work:evt-ad"
+        result = _build_ingest_event(event, "work/primary", account="work")
+        assert result["source_id"] == "google-calendar://work/event/evt-ad"
         assert result["meta"]["start_time"] == "2026-03-21"
 
     def test_body_includes_location_and_attendees(self) -> None:
@@ -310,9 +311,9 @@ class TestGoogleCalendarSource:
         assert queue.qsize() > 0
         event = queue.get_nowait()
         assert event["source_type"] == "google_calendar"
-        # source_id uses synthetic ``{account}/{calendar_id}`` so two
-        # accounts each polling 'primary' don't collide.
-        assert event["source_id"] == "gcal:default/primary:evt-1"
+        # Document URI is account-namespaced so two accounts each polling
+        # 'primary' don't collide.
+        assert event["source_id"] == "google-calendar://default/event/evt-1"
         assert event["meta"]["account"] == "default"
         assert event["meta"]["calendar_id"] == "default/primary"
         # orderBy must NOT be set during backfill — it causes the
@@ -526,8 +527,8 @@ class TestMultiAccount:
         ev_a = queue_a.get_nowait()
         ev_b = queue_b.get_nowait()
 
-        assert ev_a["source_id"] == "gcal:home/primary:evt-A"
-        assert ev_b["source_id"] == "gcal:work/primary:evt-B"
+        assert ev_a["source_id"] == "google-calendar://home/event/evt-A"
+        assert ev_b["source_id"] == "google-calendar://work/event/evt-B"
         assert ev_a["meta"]["calendar_id"] == "home/primary"
         assert ev_b["meta"]["calendar_id"] == "work/primary"
         assert ev_a["meta"]["account"] == "home"

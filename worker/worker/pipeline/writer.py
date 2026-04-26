@@ -1822,14 +1822,22 @@ def _write_graph_hint(tx: Any, hint: GraphHint) -> None:
     )
 
     # --- Relationship edge (tagged hint=true for cleanup on modification) ---
+    edge_set_parts = ["r.hint = true"]
+    edge_params: dict[str, Any] = {
+        "s_merge": subj_merge_val,
+        "o_merge": obj_merge_val,
+    }
+    for k, v in hint.edge_props.items():
+        _validate_cypher_identifier(k, "hint edge_props key")
+        edge_set_parts.append(f"r.{k} = $r_{k}")
+        edge_params[f"r_{k}"] = v
     tx.run(
         f"MATCH (s:{subject_label} {{{subj_merge_key}: $s_merge}}) "
         f"MATCH (o:{object_label} {{{obj_merge_key}: $o_merge}}) "
         f"MERGE (s)-[r:{predicate}]->(o) "
         f"ON CREATE SET r.created_at = datetime() "
-        f"SET r.hint = true",
-        s_merge=subj_merge_val,
-        o_merge=obj_merge_val,
+        f"SET {', '.join(edge_set_parts)}",
+        **edge_params,
     )
 
 

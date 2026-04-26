@@ -69,12 +69,17 @@ class GmailParser(BaseParser):
                 )
             ]
 
+        account: str = meta.get("account", "")
         message_id: str = meta.get("message_id", "")
         thread_id: str = meta.get("thread_id", "")
         subject: str = meta.get("subject", "")
         date: str = meta.get("date", "")
         sender_raw: str = meta.get("sender_email", "")
         recipients_raw: list[str] = meta.get("recipients", [])
+
+        # All edges leaving this Email carry the account so the graph can
+        # answer "show me only personal-account SENT_BY edges for Bob".
+        edge_props: dict[str, Any] = {"account": account} if account else {}
 
         # --- Strip HTML from body ---------------------------------------------
         body: str = event.get("text", "")
@@ -95,13 +100,16 @@ class GmailParser(BaseParser):
             "message_id": message_id,
             "subject": subject,
             "date": date,
+            "account": account,
         }
 
         # --- GraphHints: Person ↔ Email ↔ Thread relationships -----------------
         graph_hints: list[GraphHint] = []
         sender_addr = _parse_email_address(sender_raw)
 
-        # SENT: Person → Email (sender sent this email)
+        # SENT: Person → Email (sender sent this email).  Person merges
+        # on email so cross-account Persons (alice@... seen by both work
+        # and personal Gmail accounts) collapse into a single node.
         if sender_addr:
             norm_sender = canonicalize_email(sender_addr)
             graph_hints.append(
@@ -113,6 +121,7 @@ class GmailParser(BaseParser):
                     object_label="Email",
                     subject_props={"email": norm_sender},
                     subject_merge_key="email",
+                    edge_props=edge_props,
                     confidence=1.0,
                 )
             )
@@ -140,21 +149,30 @@ class GmailParser(BaseParser):
                     object_label="Person",
                     object_props={"email": norm_recip},
                     object_merge_key="email",
+                    edge_props=edge_props,
                     confidence=1.0,
                 )
             )
 
-        # PART_OF: Email → Thread
+        # PART_OF: Email → Thread.  Thread node is account-namespaced
+        # because Gmail thread IDs are scoped to a mailbox — the same
+        # thread_id in two accounts is two unrelated conversations.
         if thread_id:
+            thread_uri = f"gmail://{account}/thread/{thread_id}"
             graph_hints.append(
                 GraphHint(
                     subject_id=source_id,
                     subject_label="Email",
                     predicate="PART_OF",
-                    object_id=f"gmail-thread:{thread_id}",
+                    object_id=thread_uri,
                     object_label="Thread",
-                    object_props={"thread_id": thread_id, "subject": subject},
-                    object_merge_key="thread_id",
+                    object_props={
+                        "thread_id": thread_id,
+                        "subject": subject,
+                        "account": account,
+                    },
+                    object_merge_key="source_id",
+                    edge_props=edge_props,
                     confidence=1.0,
                 )
             )
@@ -171,6 +189,7 @@ class GmailParser(BaseParser):
                 source_metadata={
                     "source_type": "email",
                     "thread_id": thread_id,
+                    "account": account,
                 },
             )
         ]

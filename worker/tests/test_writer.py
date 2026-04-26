@@ -1064,7 +1064,7 @@ class TestEmailGraphHints:
             subject_id="person:alice@example.com",
             subject_label="Person",
             predicate="SENT",
-            object_id="gmail:msg-123",
+            object_id="gmail://personal/message/msg-123",
             object_label="Email",
             subject_props={"email": "alice@example.com"},
             subject_merge_key="email",
@@ -1085,10 +1085,10 @@ class TestEmailGraphHints:
         """Thread nodes should MERGE on thread_id property."""
         tx = MagicMock()
         hint = GraphHint(
-            subject_id="gmail:msg-123",
+            subject_id="gmail://personal/message/msg-123",
             subject_label="Email",
             predicate="PART_OF",
-            object_id="gmail-thread:thread-456",
+            object_id="gmail://personal/thread/thread-456",
             object_label="Thread",
             object_props={"thread_id": "thread-456", "subject": "Test"},
             object_merge_key="thread_id",
@@ -1108,7 +1108,7 @@ class TestEmailGraphHints:
         """TO edge: Email→Person should merge Person on email."""
         tx = MagicMock()
         hint = GraphHint(
-            subject_id="gmail:msg-123",
+            subject_id="gmail://personal/message/msg-123",
             subject_label="Email",
             predicate="TO",
             object_id="person:bob@example.com",
@@ -1139,7 +1139,7 @@ class TestEmailGraphHints:
             subject_id="person:alice@example.com",
             subject_label="Person",
             predicate="SENT",
-            object_id="gmail:msg-123",
+            object_id="gmail://personal/message/msg-123",
             object_label="Email",
             subject_props={"email": "alice@example.com"},
             subject_merge_key="email",
@@ -1159,10 +1159,10 @@ class TestEmailGraphHints:
         """PART_OF edge: Email→Thread should create correct relationship."""
         tx = MagicMock()
         hint = GraphHint(
-            subject_id="gmail:msg-123",
+            subject_id="gmail://personal/message/msg-123",
             subject_label="Email",
             predicate="PART_OF",
-            object_id="gmail-thread:thread-456",
+            object_id="gmail://personal/thread/thread-456",
             object_label="Thread",
             object_props={"thread_id": "thread-456", "subject": "Test"},
             object_merge_key="thread_id",
@@ -1200,7 +1200,7 @@ class TestEmailGraphHints:
         tx = MagicMock()
         doc = _doc(
             source_type="gmail",
-            source_id="gmail:msg-123",
+            source_id="gmail://personal/message/msg-123",
             node_label="Email",
             node_props={
                 "message_id": "msg-123",
@@ -1219,7 +1219,7 @@ class TestEmailGraphHints:
         """End-to-end: writing an Email WriteUnit processes all graph hints."""
         doc = _doc(
             source_type="gmail",
-            source_id="gmail:msg-123",
+            source_id="gmail://personal/message/msg-123",
             node_label="Email",
             node_props={
                 "message_id": "msg-123",
@@ -1231,14 +1231,14 @@ class TestEmailGraphHints:
                     subject_id="person:alice@example.com",
                     subject_label="Person",
                     predicate="SENT",
-                    object_id="gmail:msg-123",
+                    object_id="gmail://personal/message/msg-123",
                     object_label="Email",
                     subject_props={"email": "alice@example.com"},
                     subject_merge_key="email",
                     confidence=1.0,
                 ),
                 GraphHint(
-                    subject_id="gmail:msg-123",
+                    subject_id="gmail://personal/message/msg-123",
                     subject_label="Email",
                     predicate="TO",
                     object_id="person:bob@example.com",
@@ -1248,10 +1248,10 @@ class TestEmailGraphHints:
                     confidence=1.0,
                 ),
                 GraphHint(
-                    subject_id="gmail:msg-123",
+                    subject_id="gmail://personal/message/msg-123",
                     subject_label="Email",
                     predicate="PART_OF",
-                    object_id="gmail-thread:thread-456",
+                    object_id="gmail://personal/thread/thread-456",
                     object_label="Thread",
                     object_props={"thread_id": "thread-456", "subject": "Test"},
                     object_merge_key="thread_id",
@@ -1328,13 +1328,13 @@ class TestIndexedSourceIds:
         # Simulate Neo4j returning two of the three chunk:0 IDs (the third
         # source has never been chunked, so it's omitted).
         session.run.return_value = [
-            {"cid": "gmail:msg-1:chunk:0"},
-            {"cid": "gmail:msg-3:chunk:0"},
+            {"cid": "gmail://personal/message/msg-1:chunk:0"},
+            {"cid": "gmail://personal/message/msg-3:chunk:0"},
         ]
         result = writer.indexed_source_ids(
-            ["gmail:msg-1", "gmail:msg-2", "gmail:msg-3"]
+            ["gmail://personal/message/msg-1", "gmail://personal/message/msg-2", "gmail://personal/message/msg-3"]
         )
-        assert result == {"gmail:msg-1", "gmail:msg-3"}
+        assert result == {"gmail://personal/message/msg-1", "gmail://personal/message/msg-3"}
 
         # Verify the query was issued with chunk:0 IDs.
         called = [c for c in session.run.call_args_list if "Chunk" in c[0][0]]
@@ -1342,26 +1342,32 @@ class TestIndexedSourceIds:
         cypher, kwargs = called[0][0][0], called[0][1]
         assert "MATCH (c:Chunk {id: cid})" in cypher
         assert kwargs["cids"] == [
-            "gmail:msg-1:chunk:0",
-            "gmail:msg-2:chunk:0",
-            "gmail:msg-3:chunk:0",
+            "gmail://personal/message/msg-1:chunk:0",
+            "gmail://personal/message/msg-2:chunk:0",
+            "gmail://personal/message/msg-3:chunk:0",
         ]
 
     def test_deduplicates_input(self, writer, mock_neo4j, mock_qdrant):
         session = _make_session(mock_neo4j)
-        session.run.return_value = [{"cid": "gmail:dup:chunk:0"}]
-        writer.indexed_source_ids(["gmail:dup", "gmail:dup", "gmail:dup"])
+        session.run.return_value = [{"cid": "gmail://personal/message/dup:chunk:0"}]
+        writer.indexed_source_ids(
+            [
+                "gmail://personal/message/dup",
+                "gmail://personal/message/dup",
+                "gmail://personal/message/dup",
+            ]
+        )
 
         called = [c for c in session.run.call_args_list if "Chunk" in c[0][0]]
         kwargs = called[0][1]
         # Should be deduplicated to a single chunk-id lookup
-        assert kwargs["cids"] == ["gmail:dup:chunk:0"]
+        assert kwargs["cids"] == ["gmail://personal/message/dup:chunk:0"]
 
     def test_batches_large_input(self, writer, mock_neo4j, mock_qdrant):
         session = _make_session(mock_neo4j)
         session.run.return_value = []  # Nothing matches in any batch
 
-        sids = [f"gmail:msg-{i}" for i in range(2500)]
+        sids = [f"gmail://personal/message/msg-{i}" for i in range(2500)]
         result = writer.indexed_source_ids(sids)
 
         # 2500 IDs / 1000-per-batch → 3 query calls.  Filter out any
@@ -1376,11 +1382,11 @@ class TestIndexedSourceIds:
         """Defensive: ignore Neo4j rows whose cid doesn't end in :chunk:0."""
         session = _make_session(mock_neo4j)
         session.run.return_value = [
-            {"cid": "gmail:msg-1:chunk:0"},
+            {"cid": "gmail://personal/message/msg-1:chunk:0"},
             {"cid": "weird-row-no-suffix"},
         ]
-        result = writer.indexed_source_ids(["gmail:msg-1"])
-        assert result == {"gmail:msg-1"}
+        result = writer.indexed_source_ids(["gmail://personal/message/msg-1"])
+        assert result == {"gmail://personal/message/msg-1"}
 
 
 class TestGetContentHashes:
@@ -1395,20 +1401,20 @@ class TestGetContentHashes:
         session = _make_session(mock_neo4j)
         session.run.side_effect = [
             [
-                {"sid": "gmail:msg-1", "hash": "abc"},
-                {"sid": "gmail:msg-2", "hash": "def"},
+                {"sid": "gmail://personal/message/msg-1", "hash": "abc"},
+                {"sid": "gmail://personal/message/msg-2", "hash": "def"},
             ],
             [{"sid": "notes/foo.md", "hash": "deadbeef"}],
         ]
         result = writer.get_content_hashes(
             {
-                "Email": ["gmail:msg-1", "gmail:msg-2", "gmail:msg-missing"],
+                "Email": ["gmail://personal/message/msg-1", "gmail://personal/message/msg-2", "gmail://personal/message/msg-missing"],
                 "File": ["notes/foo.md"],
             }
         )
         assert result == {
-            "gmail:msg-1": "abc",
-            "gmail:msg-2": "def",
+            "gmail://personal/message/msg-1": "abc",
+            "gmail://personal/message/msg-2": "def",
             "notes/foo.md": "deadbeef",
         }
 
@@ -1422,7 +1428,7 @@ class TestGetContentHashes:
         session = _make_session(mock_neo4j)
         session.run.reset_mock()
         result = writer.get_content_hashes(
-            {"Email`); DROP CONSTRAINT": ["gmail:msg-1"]}
+            {"Email`); DROP CONSTRAINT": ["gmail://personal/message/msg-1"]}
         )
         assert result == {}
         # No query should have been issued for the bad label.
@@ -1440,14 +1446,14 @@ class TestGetContentHashes:
 
     def test_deduplicates_within_label(self, writer, mock_neo4j, mock_qdrant):
         session = _make_session(mock_neo4j)
-        session.run.return_value = [{"sid": "gmail:dup", "hash": "abc"}]
-        writer.get_content_hashes({"Email": ["gmail:dup", "gmail:dup"]})
+        session.run.return_value = [{"sid": "gmail://personal/message/dup", "hash": "abc"}]
+        writer.get_content_hashes({"Email": ["gmail://personal/message/dup", "gmail://personal/message/dup"]})
 
         match_calls = [
             c for c in session.run.call_args_list if "MATCH (n:" in c[0][0]
         ]
         kwargs = match_calls[0][1]
-        assert kwargs["sids"] == ["gmail:dup"]
+        assert kwargs["sids"] == ["gmail://personal/message/dup"]
 
 
 # ------------------------------------------------------------------

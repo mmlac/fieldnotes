@@ -90,9 +90,11 @@ def _build_ingest_event(
 ) -> dict[str, Any] | None:
     """Build an IngestEvent dict from a Calendar API event resource.
 
-    *calendar_id* is the synthetic ``{account}/{cal_id}`` identifier so two
-    accounts each polling ``primary`` produce distinct CalendarEvent and
-    Calendar nodes (e.g. ``work/primary`` vs ``home/primary``).
+    *calendar_id* is the synthetic ``{account}/{cal_id}`` identifier so the
+    raw cal-id is preserved in event metadata for downstream queries.  The
+    document URI is account-scoped (``google-calendar://{account}/event/{id}``)
+    so two accounts each polling ``primary`` produce distinct
+    CalendarEvent nodes even when Google reuses event IDs across calendars.
 
     Returns None for cancelled events (they are handled as deletes).
     """
@@ -173,7 +175,7 @@ def _build_ingest_event(
     return {
         "id": str(uuid.uuid4()),
         "source_type": "google_calendar",
-        "source_id": f"gcal:{calendar_id}:{event_id}",
+        "source_id": f"google-calendar://{account}/event/{event_id}",
         "operation": operation,
         "text": body_text,
         "mime_type": "text/plain",
@@ -407,7 +409,7 @@ class GoogleCalendarSource(PythonSource):
                         ev_id = ev.get("id")
                         if ev_id:
                             candidate_sids.append(
-                                f"gcal:{synthetic_id}:{ev_id}"
+                                f"google-calendar://{self._account}/event/{ev_id}"
                             )
                     if candidate_sids:
                         try:

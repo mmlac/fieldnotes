@@ -774,13 +774,19 @@ class TestBackfillIndexedCheck:
 
         api.get.side_effect = get_side_effect
 
-        # Mark messages 0, 2, 4 as already indexed.
-        already = {"gmail:m-0", "gmail:m-2", "gmail:m-4"}
+        # Mark messages 0, 2, 4 as already indexed.  The candidate IDs
+        # the backfill produces are URI-shaped (gmail://{account}/message/{id}).
+        already = {
+            "gmail://personal/message/m-0",
+            "gmail://personal/message/m-2",
+            "gmail://personal/message/m-4",
+        }
 
         def indexed_check(sids: list[str]) -> set[str]:
             return {s for s in sids if s in already}
 
         source = GmailSource()
+        source._account = "personal"
         source._max_initial_threads = 10
         source._label_filter = "INBOX"
 

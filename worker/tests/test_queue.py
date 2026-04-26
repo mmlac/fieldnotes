@@ -164,7 +164,7 @@ class TestIndexedCheckPreFilter:
         self, tmp_path: Path
     ) -> None:
         def indexed_check(sids):
-            return {sid for sid in sids if sid == "gmail:msg-1"}
+            return {sid for sid in sids if sid == "gmail://personal/message/msg-1"}
 
         q = PersistentQueue(
             db_path=tmp_path / "queue.db", indexed_check=indexed_check
@@ -173,7 +173,7 @@ class TestIndexedCheckPreFilter:
             {
                 "id": "ev-1",
                 "source_type": "gmail",
-                "source_id": "gmail:msg-1",
+                "source_id": "gmail://personal/message/msg-1",
                 "operation": "created",
             }
         )
@@ -191,7 +191,7 @@ class TestIndexedCheckPreFilter:
             {
                 "id": "ev-1",
                 "source_type": "gmail",
-                "source_id": "gmail:new",
+                "source_id": "gmail://personal/message/new",
                 "operation": "created",
             }
         )
@@ -246,7 +246,7 @@ class TestIndexedCheckPreFilter:
             {
                 "id": "ev-1",
                 "source_type": "gmail",
-                "source_id": "gmail:msg-1",
+                "source_id": "gmail://personal/message/msg-1",
                 "operation": "created",
             },
             cursor_key="gmail",
@@ -351,11 +351,11 @@ class TestInspection:
     def test_stats(self, queue: PersistentQueue) -> None:
         queue.enqueue({
             "id": "s1", "source_type": "gmail",
-            "source_id": "gmail:1", "operation": "created",
+            "source_id": "gmail://personal/message/1", "operation": "created",
         })
         queue.enqueue({
             "id": "s2", "source_type": "gmail",
-            "source_id": "gmail:2", "operation": "created",
+            "source_id": "gmail://personal/message/2", "operation": "created",
         })
         queue.enqueue({
             "id": "s3", "source_type": "files",

@@ -175,7 +175,7 @@ def _build_ingest_event(msg: dict[str, Any], account: str = "") -> dict[str, Any
     return {
         "id": str(uuid.uuid4()),
         "source_type": "gmail",
-        "source_id": f"gmail:{msg['id']}",
+        "source_id": f"gmail://{account}/message/{msg['id']}",
         "operation": "created",
         "text": body_text,
         "mime_type": body_mime or "message/rfc822",
@@ -367,8 +367,8 @@ class GmailSource(PythonSource):
         exponential backoff to avoid hitting Gmail API rate limits.
 
         When *indexed_check* is provided, each page of message stubs is
-        first batched against Neo4j to skip messages whose ``gmail:{id}``
-        source_id is already chunked.  This avoids the per-message
+        first batched against Neo4j to skip messages whose
+        ``gmail://{account}/message/{id}`` source_id is already chunked.  This avoids the per-message
         ``messages.get(format="full")`` call entirely for items that have
         already been processed — Gmail messages are content-immutable
         once sent, so re-fetching them would only re-do the same work.
@@ -407,7 +407,10 @@ class GmailSource(PythonSource):
             # we can skip the per-message GET call (the expensive one).
             already_indexed_sids: set[str] = set()
             if indexed_check is not None:
-                candidate_sids = [f"gmail:{stub['id']}" for stub in msg_stubs]
+                candidate_sids = [
+                    f"gmail://{self._account}/message/{stub['id']}"
+                    for stub in msg_stubs
+                ]
                 try:
                     already_indexed_sids = await loop.run_in_executor(
                         None, indexed_check, candidate_sids
@@ -426,7 +429,10 @@ class GmailSource(PythonSource):
                 if stub["id"] in seen_ids:
                     continue
                 seen_ids.add(stub["id"])
-                if f"gmail:{stub['id']}" in already_indexed_sids:
+                if (
+                    f"gmail://{self._account}/message/{stub['id']}"
+                    in already_indexed_sids
+                ):
                     INDEXED_PREFILTER_SKIPPED.labels(source_type="gmail").inc()
                     fetched += 1
                     continue
