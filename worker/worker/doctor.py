@@ -5,7 +5,7 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
-from worker.config import DEFAULT_CONFIG_PATH, load_config
+from worker.config import DEFAULT_CONFIG_PATH, SlackSourceConfig, load_config
 
 
 def _ok(msg: str) -> None:
@@ -63,6 +63,31 @@ def check_slack_auth(token_path: Path | None = None) -> int:
         return 1
     _ok("Slack auth: OK")
     return 0
+
+
+def check_slack(slack_cfg: SlackSourceConfig) -> int:
+    """Run Slack source pre-flight checks. Returns the number of errors."""
+    if not slack_cfg.enabled:
+        _ok("Slack disabled (set [sources.slack] enabled = true to enable)")
+        return 0
+
+    secrets_path = Path(slack_cfg.client_secrets_path).expanduser()
+    if not secrets_path.is_file():
+        _fail(f"Slack client_secrets_path missing: {secrets_path}")
+        return 1
+
+    _ok(f"Slack client secrets present ({secrets_path})")
+
+    try:
+        import worker.sources.slack_auth  # noqa: F401
+    except ImportError:
+        _warn(
+            "Slack auth module not available "
+            "(worker.sources.slack_auth) — skipping auth probe"
+        )
+        return 0
+
+    return check_slack_auth()
 
 
 def doctor(config_path: Path | None = None) -> int:
@@ -245,10 +270,9 @@ def doctor(config_path: Path | None = None) -> int:
         if not found_any:
             _ok(f"{name} configured")
 
-    # ── 6.5. Slack auth ─────────────────────────────────────────────
-    if "slack" in cfg.sources:
-        print("\nSlack auth")
-        errors += check_slack_auth()
+    # ── 6b. Slack source ────────────────────────────────────────────
+    print("\nSlack")
+    errors += check_slack(cfg.slack)
 
     # ── 7. Reranker ──────────────────────────────────────────────────
     print("\nReranker")

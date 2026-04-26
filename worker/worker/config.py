@@ -115,6 +115,28 @@ class SourceConfig:
 
 
 @dataclass
+class SlackSourceConfig:
+    """Parsed ``[sources.slack]`` section.
+
+    Configures the Slack ingestion adapter: auth, polling, channel filters,
+    and burst-window splitting parameters.
+    """
+
+    enabled: bool = False
+    client_secrets_path: str = "~/.fieldnotes/slack_credentials.json"
+    poll_interval_seconds: int = 300
+    max_initial_days: int = 90
+    include_channels: list[str] = field(default_factory=list)
+    exclude_channels: list[str] = field(default_factory=list)
+    include_dms: bool = True
+    include_archived: bool = False
+    window_max_tokens: int = 512
+    window_gap_seconds: int = 1800
+    window_overlap_messages: int = 3
+    download_files: bool = False
+
+
+@dataclass
 class VisionConfig:
     enabled: bool = True
     concurrency: int = 2
@@ -211,6 +233,7 @@ class Config:
     metrics: MetricsConfig = field(default_factory=MetricsConfig)
     rate_limits: RateLimitConfig = field(default_factory=RateLimitConfig)
     reranker: RerankerConfig = field(default_factory=RerankerConfig)
+    slack: SlackSourceConfig = field(default_factory=SlackSourceConfig)
 
     # Expected embedding dimension used by the clustering pipeline.
     _EXPECTED_VECTOR_SIZE = 768
@@ -275,6 +298,14 @@ class Config:
                 f"clustering pipeline expects {self._EXPECTED_VECTOR_SIZE}. "
                 f"Ensure your embedding model produces "
                 f"{self.qdrant.vector_size}-dimensional vectors."
+            )
+
+        # (e) Warn when Slack include/exclude channels are both non-empty
+        if self.slack.include_channels and self.slack.exclude_channels:
+            warnings.append(
+                "[sources.slack] include_channels and exclude_channels are both "
+                "non-empty; exclude_channels will be ignored when include_channels "
+                "is set"
             )
 
         # (d) Warn on clamped-looking min_interval_seconds boundaries
@@ -354,6 +385,99 @@ def _validate_homebrew_config(settings: dict[str, Any]) -> None:
         _check_type(section, "include_system", settings["include_system"], bool)
 
 
+def _parse_slack_config(settings: dict[str, Any]) -> SlackSourceConfig:
+    """Validate and parse [sources.slack] settings into SlackSourceConfig."""
+    section = "sources.slack"
+    defaults = SlackSourceConfig()
+
+    if "enabled" in settings:
+        _check_type(section, "enabled", settings["enabled"], bool)
+    if "client_secrets_path" in settings:
+        _check_type(
+            section, "client_secrets_path", settings["client_secrets_path"], str
+        )
+    if "poll_interval_seconds" in settings:
+        _check_type(
+            section, "poll_interval_seconds", settings["poll_interval_seconds"], int
+        )
+    if "max_initial_days" in settings:
+        _check_type(section, "max_initial_days", settings["max_initial_days"], int)
+    if "include_channels" in settings:
+        _check_list_of(section, "include_channels", settings["include_channels"], str)
+    if "exclude_channels" in settings:
+        _check_list_of(section, "exclude_channels", settings["exclude_channels"], str)
+    if "include_dms" in settings:
+        _check_type(section, "include_dms", settings["include_dms"], bool)
+    if "include_archived" in settings:
+        _check_type(section, "include_archived", settings["include_archived"], bool)
+    if "window_max_tokens" in settings:
+        _check_type(section, "window_max_tokens", settings["window_max_tokens"], int)
+        v = settings["window_max_tokens"]
+        if not 128 <= v <= 4096:
+            raise ValueError(
+                f"[{section}] window_max_tokens must be in [128, 4096], got {v}"
+            )
+    if "window_gap_seconds" in settings:
+        _check_type(section, "window_gap_seconds", settings["window_gap_seconds"], int)
+        v = settings["window_gap_seconds"]
+        if not 60 <= v <= 86_400:
+            raise ValueError(
+                f"[{section}] window_gap_seconds must be in [60, 86400], got {v}"
+            )
+    if "window_overlap_messages" in settings:
+        _check_type(
+            section,
+            "window_overlap_messages",
+            settings["window_overlap_messages"],
+            int,
+        )
+        v = settings["window_overlap_messages"]
+        if not 0 <= v <= 10:
+            raise ValueError(
+                f"[{section}] window_overlap_messages must be in [0, 10], got {v}"
+            )
+    if "download_files" in settings:
+        _check_type(section, "download_files", settings["download_files"], bool)
+
+    cfg = SlackSourceConfig(
+        enabled=settings.get("enabled", defaults.enabled),
+        client_secrets_path=settings.get(
+            "client_secrets_path", defaults.client_secrets_path
+        ),
+        poll_interval_seconds=settings.get(
+            "poll_interval_seconds", defaults.poll_interval_seconds
+        ),
+        max_initial_days=settings.get("max_initial_days", defaults.max_initial_days),
+        include_channels=list(
+            settings.get("include_channels", defaults.include_channels)
+        ),
+        exclude_channels=list(
+            settings.get("exclude_channels", defaults.exclude_channels)
+        ),
+        include_dms=settings.get("include_dms", defaults.include_dms),
+        include_archived=settings.get("include_archived", defaults.include_archived),
+        window_max_tokens=settings.get("window_max_tokens", defaults.window_max_tokens),
+        window_gap_seconds=settings.get(
+            "window_gap_seconds", defaults.window_gap_seconds
+        ),
+        window_overlap_messages=settings.get(
+            "window_overlap_messages", defaults.window_overlap_messages
+        ),
+        download_files=settings.get("download_files", defaults.download_files),
+    )
+
+    # If enabled, the client_secrets file must exist on disk.
+    if cfg.enabled:
+        expanded = Path(cfg.client_secrets_path).expanduser()
+        if not expanded.is_file():
+            raise ValueError(
+                f"[{section}] enabled=true but client_secrets_path does not exist: "
+                f"{expanded} (expected JSON file with Slack client_id + client_secret)"
+            )
+
+    return cfg
+
+
 def _validate_google_calendar_config(settings: dict[str, Any]) -> None:
     """Validate [sources.google_calendar] settings."""
     section = "sources.google_calendar"
@@ -366,7 +490,9 @@ def _validate_google_calendar_config(settings: dict[str, Any]) -> None:
     if "calendar_ids" in settings:
         _check_list_of(section, "calendar_ids", settings["calendar_ids"], str)
     if "client_secrets_path" in settings:
-        _check_type(section, "client_secrets_path", settings["client_secrets_path"], str)
+        _check_type(
+            section, "client_secrets_path", settings["client_secrets_path"], str
+        )
 
 
 def _parse(raw: dict[str, Any]) -> Config:
@@ -443,6 +569,9 @@ def _parse(raw: dict[str, Any]) -> Config:
             _validate_homebrew_config(settings)
         elif name == "google_calendar":
             _validate_google_calendar_config(settings)
+        elif name == "slack":
+            cfg.slack = _parse_slack_config(settings)
+            continue  # parsed into cfg.slack; skip generic sources dict
         cfg.sources[name] = SourceConfig(name=name, settings=settings)
 
     # [vision]

@@ -9,6 +9,7 @@ from worker.config import (
     McpConfig,
     QdrantConfig,
     RolesConfig,
+    SlackSourceConfig,
     VisionConfig,
     load_config,
     _parse,
@@ -517,3 +518,275 @@ class TestConfigValidate:
         cfg = self._make_config(**{"clustering.min_interval_seconds": 60.0})
         warnings = cfg.validate()
         assert not any("min_interval" in w for w in warnings)
+
+
+class TestParseSlackSource:
+    """[sources.slack] parses into a typed SlackSourceConfig."""
+
+    def test_defaults(self) -> None:
+        cfg = _parse({})
+        assert cfg.slack == SlackSourceConfig()
+        assert cfg.slack.enabled is False
+        assert cfg.slack.poll_interval_seconds == 300
+        assert cfg.slack.max_initial_days == 90
+        assert cfg.slack.include_channels == []
+        assert cfg.slack.exclude_channels == []
+        assert cfg.slack.include_dms is True
+        assert cfg.slack.include_archived is False
+        assert cfg.slack.window_max_tokens == 512
+        assert cfg.slack.window_gap_seconds == 1800
+        assert cfg.slack.window_overlap_messages == 3
+        assert cfg.slack.download_files is False
+        # When disabled, no [sources.slack] entry leaks into cfg.sources.
+        assert "slack" not in cfg.sources
+
+    def test_partial_override_disabled(self) -> None:
+        cfg = _parse(
+            {
+                "sources": {
+                    "slack": {
+                        "poll_interval_seconds": 600,
+                        "include_dms": False,
+                        "window_max_tokens": 1024,
+                    }
+                }
+            }
+        )
+        assert cfg.slack.enabled is False
+        assert cfg.slack.poll_interval_seconds == 600
+        assert cfg.slack.include_dms is False
+        assert cfg.slack.window_max_tokens == 1024
+        # Defaults preserved.
+        assert cfg.slack.window_gap_seconds == 1800
+
+    def test_enabled_with_existing_secrets(self, tmp_path) -> None:
+        secrets = tmp_path / "slack.json"
+        secrets.write_text("{}")
+        cfg = _parse(
+            {
+                "sources": {
+                    "slack": {
+                        "enabled": True,
+                        "client_secrets_path": str(secrets),
+                    }
+                }
+            }
+        )
+        assert cfg.slack.enabled is True
+        assert cfg.slack.client_secrets_path == str(secrets)
+
+    def test_enabled_without_secrets_raises(self, tmp_path) -> None:
+        missing = tmp_path / "does-not-exist.json"
+        with pytest.raises(
+            ValueError, match=r"\[sources.slack\] enabled=true but client_secrets_path"
+        ):
+            _parse(
+                {
+                    "sources": {
+                        "slack": {
+                            "enabled": True,
+                            "client_secrets_path": str(missing),
+                        }
+                    }
+                }
+            )
+
+    def test_disabled_with_missing_secrets_does_not_raise(self, tmp_path) -> None:
+        missing = tmp_path / "does-not-exist.json"
+        cfg = _parse(
+            {
+                "sources": {
+                    "slack": {
+                        "enabled": False,
+                        "client_secrets_path": str(missing),
+                    }
+                }
+            }
+        )
+        assert cfg.slack.enabled is False
+
+    # -- Window bounds --
+
+    def test_window_max_tokens_below_min_raises(self) -> None:
+        with pytest.raises(
+            ValueError, match=r"window_max_tokens must be in \[128, 4096\]"
+        ):
+            _parse({"sources": {"slack": {"window_max_tokens": 64}}})
+
+    def test_window_max_tokens_above_max_raises(self) -> None:
+        with pytest.raises(
+            ValueError, match=r"window_max_tokens must be in \[128, 4096\]"
+        ):
+            _parse({"sources": {"slack": {"window_max_tokens": 8192}}})
+
+    def test_window_max_tokens_at_bounds(self) -> None:
+        cfg = _parse({"sources": {"slack": {"window_max_tokens": 128}}})
+        assert cfg.slack.window_max_tokens == 128
+        cfg = _parse({"sources": {"slack": {"window_max_tokens": 4096}}})
+        assert cfg.slack.window_max_tokens == 4096
+
+    def test_window_gap_seconds_out_of_range_raises(self) -> None:
+        with pytest.raises(
+            ValueError, match=r"window_gap_seconds must be in \[60, 86400\]"
+        ):
+            _parse({"sources": {"slack": {"window_gap_seconds": 30}}})
+        with pytest.raises(
+            ValueError, match=r"window_gap_seconds must be in \[60, 86400\]"
+        ):
+            _parse({"sources": {"slack": {"window_gap_seconds": 100_000}}})
+
+    def test_window_overlap_messages_out_of_range_raises(self) -> None:
+        with pytest.raises(
+            ValueError, match=r"window_overlap_messages must be in \[0, 10\]"
+        ):
+            _parse({"sources": {"slack": {"window_overlap_messages": -1}}})
+        with pytest.raises(
+            ValueError, match=r"window_overlap_messages must be in \[0, 10\]"
+        ):
+            _parse({"sources": {"slack": {"window_overlap_messages": 11}}})
+
+    def test_window_overlap_messages_at_bounds(self) -> None:
+        cfg = _parse({"sources": {"slack": {"window_overlap_messages": 0}}})
+        assert cfg.slack.window_overlap_messages == 0
+        cfg = _parse({"sources": {"slack": {"window_overlap_messages": 10}}})
+        assert cfg.slack.window_overlap_messages == 10
+
+    # -- Type validation --
+
+    def test_enabled_wrong_type(self) -> None:
+        with pytest.raises(
+            TypeError, match=r"\[sources.slack\] enabled: expected bool"
+        ):
+            _parse({"sources": {"slack": {"enabled": "yes"}}})
+
+    def test_client_secrets_path_wrong_type(self) -> None:
+        with pytest.raises(
+            TypeError, match=r"\[sources.slack\] client_secrets_path: expected str"
+        ):
+            _parse({"sources": {"slack": {"client_secrets_path": 42}}})
+
+    def test_include_channels_wrong_item_type(self) -> None:
+        with pytest.raises(
+            TypeError, match=r"\[sources.slack\] include_channels\[0\]: expected str"
+        ):
+            _parse({"sources": {"slack": {"include_channels": [123]}}})
+
+
+class TestSlackValidateWarnings:
+    """Config.validate() — Slack include/exclude mutual-exclusivity warning."""
+
+    def test_both_include_and_exclude_warns(self) -> None:
+        cfg = _parse(
+            {
+                "sources": {
+                    "slack": {
+                        "include_channels": ["#general"],
+                        "exclude_channels": ["#noise"],
+                    }
+                }
+            }
+        )
+        warnings = cfg.validate()
+        assert any(
+            "include_channels and exclude_channels are both" in w for w in warnings
+        )
+
+    def test_only_include_no_warning(self) -> None:
+        cfg = _parse({"sources": {"slack": {"include_channels": ["#general"]}}})
+        warnings = cfg.validate()
+        assert not any("include_channels and exclude_channels" in w for w in warnings)
+
+    def test_only_exclude_no_warning(self) -> None:
+        cfg = _parse({"sources": {"slack": {"exclude_channels": ["#noise"]}}})
+        warnings = cfg.validate()
+        assert not any("include_channels and exclude_channels" in w for w in warnings)
+
+    def test_neither_no_warning(self) -> None:
+        cfg = _parse({})
+        warnings = cfg.validate()
+        assert not any("include_channels and exclude_channels" in w for w in warnings)
+
+
+def _install_fake_slack_auth(monkeypatch, check_fn):
+    """Install a fake worker.sources.slack_auth module exporting check_slack_auth."""
+    import sys
+    import types
+
+    sources_mod = sys.modules.get("worker.sources")
+    if sources_mod is None:
+        sources_mod = types.ModuleType("worker.sources")
+        monkeypatch.setitem(sys.modules, "worker.sources", sources_mod)
+
+    fake = types.ModuleType("worker.sources.slack_auth")
+    fake.check_slack_auth = check_fn  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "worker.sources.slack_auth", fake)
+    monkeypatch.setattr(sources_mod, "slack_auth", fake, raising=False)
+
+
+class TestDoctorSlack:
+    """doctor.check_slack — disabled vs enabled paths."""
+
+    def test_disabled_returns_zero(self, capsys) -> None:
+        from worker.doctor import check_slack
+
+        cfg = SlackSourceConfig(enabled=False)
+        errors = check_slack(cfg)
+        out = capsys.readouterr().out
+        assert errors == 0
+        assert "Slack disabled" in out
+
+    def test_enabled_missing_secrets_file_fails(self, tmp_path, capsys) -> None:
+        from worker.doctor import check_slack
+
+        missing = tmp_path / "absent.json"
+        cfg = SlackSourceConfig(enabled=True, client_secrets_path=str(missing))
+        errors = check_slack(cfg)
+        out = capsys.readouterr().out
+        assert errors == 1
+        assert "client_secrets_path missing" in out
+
+    def test_enabled_with_secrets_no_auth_module(
+        self, tmp_path, capsys, monkeypatch
+    ) -> None:
+        """If the slack_auth sister module isn't available, warn and pass."""
+        import sys
+
+        from worker import doctor
+
+        secrets = tmp_path / "slack.json"
+        secrets.write_text("{}")
+        cfg = SlackSourceConfig(enabled=True, client_secrets_path=str(secrets))
+
+        # Make any future import of worker.sources.slack_auth raise ImportError.
+        monkeypatch.setitem(sys.modules, "worker.sources.slack_auth", None)
+        errors = doctor.check_slack(cfg)
+        out = capsys.readouterr().out
+        assert errors == 0
+        assert "Slack client secrets present" in out
+        assert "auth module not available" in out
+
+    def test_enabled_auth_ok(self, tmp_path, capsys, monkeypatch) -> None:
+        from worker import doctor
+
+        secrets = tmp_path / "slack.json"
+        secrets.write_text("{}")
+        cfg = SlackSourceConfig(enabled=True, client_secrets_path=str(secrets))
+
+        _install_fake_slack_auth(monkeypatch, lambda *a, **k: 0)
+        monkeypatch.setattr(doctor, "check_slack_auth", lambda *a, **k: 0)
+        errors = doctor.check_slack(cfg)
+        out = capsys.readouterr().out
+        assert errors == 0
+        assert "Slack client secrets present" in out
+
+    def test_enabled_auth_fails(self, tmp_path, capsys, monkeypatch) -> None:
+        from worker import doctor
+
+        secrets = tmp_path / "slack.json"
+        secrets.write_text("{}")
+        cfg = SlackSourceConfig(enabled=True, client_secrets_path=str(secrets))
+
+        _install_fake_slack_auth(monkeypatch, lambda *a, **k: 1)
+        monkeypatch.setattr(doctor, "check_slack_auth", lambda *a, **k: 1)
+        errors = doctor.check_slack(cfg)
+        assert errors == 1

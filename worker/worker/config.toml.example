@@ -40,6 +40,21 @@ max_file_size = 104857600
 # poll_interval_seconds = 300
 # state_path = "~/.fieldnotes/state/omnifocus.json"
 
+[sources.slack]
+enabled = false
+# JSON file with Slack app client_id + client_secret. Required when enabled.
+client_secrets_path = "~/.fieldnotes/slack_credentials.json"
+poll_interval_seconds = 300
+max_initial_days = 90                  # backfill window per conversation
+include_channels = []                  # channel names or IDs; [] = all joined channels
+exclude_channels = []                  # mutually exclusive with include_channels (warn)
+include_dms = true                     # include 1:1 and multi-party DMs
+include_archived = false
+window_max_tokens = 512                # burst-window upper bound (token count) [128..4096]
+window_gap_seconds = 1800              # quiet-gap that closes a window (30 min) [60..86400]
+window_overlap_messages = 3            # whole-message overlap between windows [0..10]
+download_files = false                 # v1: skip file uploads (separate later bead)
+
 # --- Clustering ---
 
 [clustering]
