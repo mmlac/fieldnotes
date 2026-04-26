@@ -20,6 +20,51 @@ def _fail(msg: str) -> None:
     print(f"  \u2717 {msg}")
 
 
+def check_slack_auth(token_path: Path | None = None) -> int:
+    """Check Slack auth status and print a result line.
+
+    Returns 0 on OK / not-configured, 1 if the token is rejected (reauth
+    required) — those are surfaced as errors so ``fieldnotes doctor``
+    exits non-zero and the user knows to re-run the install flow.
+    """
+    from slack_sdk import WebClient
+    from slack_sdk.errors import SlackApiError
+
+    from worker.sources.slack_auth import (
+        DEFAULT_TOKEN_PATH,
+        REAUTH_ERRORS,
+        _load_token,
+        _slack_error_code,
+    )
+
+    path = token_path or DEFAULT_TOKEN_PATH
+    if not path.exists():
+        _warn("Slack auth: not configured (run install flow)")
+        return 0
+    try:
+        token = _load_token(path)
+    except Exception as exc:
+        _fail(f"Slack auth: token unreadable ({exc}) — re-run install flow")
+        return 1
+    if token is None:
+        _warn("Slack auth: not configured (run install flow)")
+        return 0
+    try:
+        WebClient(token=token.bot_token).auth_test()
+    except SlackApiError as exc:
+        err = _slack_error_code(exc)
+        if err in REAUTH_ERRORS:
+            _fail(f"Slack auth: reauth required ({err}) — re-run install flow")
+        else:
+            _fail(f"Slack auth: API error ({err or exc})")
+        return 1
+    except Exception as exc:
+        _fail(f"Slack auth: error ({exc})")
+        return 1
+    _ok("Slack auth: OK")
+    return 0
+
+
 def doctor(config_path: Path | None = None) -> int:
     """Run pre-flight checks and print results.  Returns 0 if all pass."""
     path = config_path or DEFAULT_CONFIG_PATH
@@ -199,6 +244,11 @@ def doctor(config_path: Path | None = None) -> int:
                     _warn(f"{name}.{key}: {expanded} (does not exist)")
         if not found_any:
             _ok(f"{name} configured")
+
+    # ── 6.5. Slack auth ─────────────────────────────────────────────
+    if "slack" in cfg.sources:
+        print("\nSlack auth")
+        errors += check_slack_auth()
 
     # ── 7. Reranker ──────────────────────────────────────────────────
     print("\nReranker")
