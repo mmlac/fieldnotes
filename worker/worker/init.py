@@ -200,7 +200,7 @@ def _list_gmail_labels(client_secrets_path: Path) -> list[dict[str, str]]:
 
     from worker.sources.gmail_auth import get_credentials
 
-    creds = get_credentials(client_secrets_path)
+    creds = get_credentials(client_secrets_path, account="default")
     service = build("gmail", "v1", credentials=creds)
     result = service.users().labels().list(userId="me").execute()
     raw_labels = result.get("labels", [])
@@ -238,7 +238,7 @@ def _list_calendars(client_secrets_path: Path) -> list[dict[str, str]]:
 
     from worker.sources.calendar_auth import get_credentials
 
-    creds = get_credentials(client_secrets_path)
+    creds = get_credentials(client_secrets_path, account="default")
     service = build("calendar", "v3", credentials=creds)
     result = service.calendarList().list().execute()
     raw = result.get("items", [])

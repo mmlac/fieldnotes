@@ -190,9 +190,6 @@ class GoogleCalendarSource(PythonSource):
         self._calendar_ids: list[str] = list(DEFAULT_CALENDAR_IDS)
         self._client_secrets_path = "~/.fieldnotes/credentials.json"
         self._cursor_path = DEFAULT_CURSOR_PATH
-        self._token_path = (
-            Path.home() / ".fieldnotes" / "data" / "calendar_token.json"
-        )
 
     def name(self) -> str:
         return "google_calendar"
@@ -210,8 +207,6 @@ class GoogleCalendarSource(PythonSource):
             self._client_secrets_path = cfg["client_secrets_path"]
         if "cursor_path" in cfg:
             self._cursor_path = Path(cfg["cursor_path"]).expanduser().resolve()
-        if "token_path" in cfg:
-            self._token_path = Path(cfg["token_path"]).expanduser().resolve()
 
     async def start(
         self,
@@ -230,7 +225,7 @@ class GoogleCalendarSource(PythonSource):
                 await asyncio.sleep(3600)
 
         creds = await asyncio.to_thread(
-            get_credentials, secrets_path, self._token_path
+            get_credentials, secrets_path, "default"
         )
         service = build("calendar", "v3", credentials=creds)
 

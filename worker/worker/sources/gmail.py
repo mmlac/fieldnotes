@@ -235,7 +235,7 @@ class GmailSource(PythonSource):
                 "client_secrets_path is not set"
             )
 
-        creds = get_credentials(self._client_secrets_path)
+        creds = get_credentials(self._client_secrets_path, account="default")
         service = build("gmail", "v1", credentials=creds)
         messages_api = service.users().messages()
 

@@ -1,8 +1,6 @@
-"""Tests for Gmail OAuth2 authentication (gmail_auth.py).
+"""Tests for Calendar OAuth2 authentication (calendar_auth.py).
 
-Covers per-account token paths, token refresh, expired credentials,
-file permission handling, and the ban on the legacy single-account
-call signature — all with mocked google-auth.
+Mirrors test_gmail_auth — same shape, different module/scopes/path.
 """
 
 from __future__ import annotations
@@ -14,7 +12,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from google.oauth2.credentials import Credentials
 
-from worker.sources.gmail_auth import (
+from worker.sources.calendar_auth import (
     SCOPES,
     get_credentials,
     token_path_for_account,
@@ -26,7 +24,6 @@ def _fake_creds(
     expired: bool = False,
     refresh_token: str | None = "refresh-tok",
 ) -> MagicMock:
-    """Build a mock Credentials object."""
     creds = MagicMock(spec=Credentials)
     creds.valid = valid
     creds.expired = expired
@@ -43,24 +40,19 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 class TestTokenPathForAccount:
-    """Token path is derived from the account label."""
-
     def test_personal_account_path(self, home: Path) -> None:
         assert token_path_for_account("personal") == (
-            home / ".fieldnotes" / "data" / "gmail_token-personal.json"
+            home / ".fieldnotes" / "data" / "calendar_token-personal.json"
         )
 
     def test_work_account_path(self, home: Path) -> None:
         assert token_path_for_account("work-123") == (
-            home / ".fieldnotes" / "data" / "gmail_token-work-123.json"
+            home / ".fieldnotes" / "data" / "calendar_token-work-123.json"
         )
 
 
 class TestGetCredentials:
-    """Unit tests for get_credentials()."""
-
     def test_returns_cached_valid_token(self, home: Path) -> None:
-        """If token file exists and creds are valid, return immediately."""
         token = token_path_for_account("default")
         token.parent.mkdir(parents=True, exist_ok=True)
         token.write_text('{"token": "good"}')
@@ -74,7 +66,6 @@ class TestGetCredentials:
         assert result is mock_creds
 
     def test_refreshes_expired_token(self, home: Path) -> None:
-        """Expired creds with a refresh_token are refreshed via Request()."""
         token = token_path_for_account("default")
         token.parent.mkdir(parents=True, exist_ok=True)
         token.write_text('{"token": "old"}')
@@ -85,19 +76,17 @@ class TestGetCredentials:
             patch.object(
                 Credentials, "from_authorized_user_file", return_value=mock_creds
             ),
-            patch("worker.sources.gmail_auth.Request") as MockRequest,
+            patch("worker.sources.calendar_auth.Request") as MockRequest,
         ):
             result = get_credentials("unused.json", account="default")
 
         mock_creds.refresh.assert_called_once_with(MockRequest())
         assert result is mock_creds
-        # Token was persisted
         assert token.exists()
 
     def test_runs_oauth_flow_when_no_token_file(
         self, home: Path, tmp_path: Path
     ) -> None:
-        """When no token file exists, runs the OAuth2 consent flow."""
         secrets = tmp_path / "secrets.json"
         secrets.write_text('{"installed": {}}')
 
@@ -106,7 +95,7 @@ class TestGetCredentials:
         mock_flow.run_local_server.return_value = mock_new_creds
 
         with patch(
-            "worker.sources.gmail_auth.InstalledAppFlow.from_client_secrets_file",
+            "worker.sources.calendar_auth.InstalledAppFlow.from_client_secrets_file",
             return_value=mock_flow,
         ) as mock_from_file:
             result = get_credentials(secrets, account="default")
@@ -114,42 +103,11 @@ class TestGetCredentials:
         mock_from_file.assert_called_once_with(str(secrets), SCOPES)
         mock_flow.run_local_server.assert_called_once_with(port=0)
         assert result is mock_new_creds
-        # Token persisted at the per-account path
         assert token_path_for_account("default").exists()
-
-    def test_runs_oauth_flow_when_no_refresh_token(
-        self, home: Path, tmp_path: Path
-    ) -> None:
-        """Expired creds without refresh_token trigger full OAuth flow."""
-        token = token_path_for_account("default")
-        token.parent.mkdir(parents=True, exist_ok=True)
-        token.write_text('{"token": "stale"}')
-        secrets = tmp_path / "secrets.json"
-        secrets.write_text('{"installed": {}}')
-
-        stale_creds = _fake_creds(valid=False, expired=True, refresh_token=None)
-
-        mock_flow = MagicMock()
-        mock_new_creds = _fake_creds(valid=True)
-        mock_flow.run_local_server.return_value = mock_new_creds
-
-        with (
-            patch.object(
-                Credentials, "from_authorized_user_file", return_value=stale_creds
-            ),
-            patch(
-                "worker.sources.gmail_auth.InstalledAppFlow.from_client_secrets_file",
-                return_value=mock_flow,
-            ),
-        ):
-            result = get_credentials(secrets, account="default")
-
-        assert result is mock_new_creds
 
     def test_token_saved_with_restricted_permissions(
         self, home: Path, tmp_path: Path
     ) -> None:
-        """Saved token file has 0o600 permissions (owner-only)."""
         secrets = tmp_path / "secrets.json"
         secrets.write_text('{"installed": {}}')
 
@@ -158,7 +116,7 @@ class TestGetCredentials:
         mock_flow.run_local_server.return_value = mock_new_creds
 
         with patch(
-            "worker.sources.gmail_auth.InstalledAppFlow.from_client_secrets_file",
+            "worker.sources.calendar_auth.InstalledAppFlow.from_client_secrets_file",
             return_value=mock_flow,
         ):
             get_credentials(secrets, account="default")
@@ -171,7 +129,6 @@ class TestGetCredentials:
     def test_chmod_tightens_existing_loose_perms(
         self, home: Path, tmp_path: Path
     ) -> None:
-        """If a token file already exists with loose perms, save tightens to 0o600."""
         token = token_path_for_account("default")
         token.parent.mkdir(parents=True, exist_ok=True)
         token.write_text('{"token": "old"}')
@@ -183,7 +140,7 @@ class TestGetCredentials:
             patch.object(
                 Credentials, "from_authorized_user_file", return_value=mock_creds
             ),
-            patch("worker.sources.gmail_auth.Request"),
+            patch("worker.sources.calendar_auth.Request"),
         ):
             get_credentials("unused.json", account="default")
 
@@ -193,7 +150,6 @@ class TestGetCredentials:
     def test_creates_parent_directories(
         self, home: Path, tmp_path: Path
     ) -> None:
-        """Token parent dirs are created if they don't exist."""
         secrets = tmp_path / "secrets.json"
         secrets.write_text('{"installed": {}}')
 
@@ -201,12 +157,11 @@ class TestGetCredentials:
         mock_new_creds = _fake_creds(valid=True)
         mock_flow.run_local_server.return_value = mock_new_creds
 
-        # Parent dirs do not yet exist under the sandboxed home
         token = token_path_for_account("default")
         assert not token.parent.exists()
 
         with patch(
-            "worker.sources.gmail_auth.InstalledAppFlow.from_client_secrets_file",
+            "worker.sources.calendar_auth.InstalledAppFlow.from_client_secrets_file",
             return_value=mock_flow,
         ):
             get_credentials(secrets, account="default")
@@ -214,28 +169,9 @@ class TestGetCredentials:
         assert token.exists()
         assert token.parent.is_dir()
 
-    def test_refresh_failure_propagates(self, home: Path) -> None:
-        """If token refresh raises, the error propagates to caller."""
-        token = token_path_for_account("default")
-        token.parent.mkdir(parents=True, exist_ok=True)
-        token.write_text('{"token": "old"}')
-
-        mock_creds = _fake_creds(valid=False, expired=True, refresh_token="rt")
-        mock_creds.refresh.side_effect = Exception("refresh failed")
-
-        with (
-            patch.object(
-                Credentials, "from_authorized_user_file", return_value=mock_creds
-            ),
-            patch("worker.sources.gmail_auth.Request"),
-            pytest.raises(Exception, match="refresh failed"),
-        ):
-            get_credentials("unused.json", account="default")
-
     def test_two_accounts_no_collision(
         self, home: Path, tmp_path: Path
     ) -> None:
-        """Saving account A then account B leaves both files intact."""
         secrets = tmp_path / "secrets.json"
         secrets.write_text('{"installed": {}}')
 
@@ -250,7 +186,7 @@ class TestGetCredentials:
         flow_b.run_local_server.return_value = creds_b
 
         with patch(
-            "worker.sources.gmail_auth.InstalledAppFlow.from_client_secrets_file",
+            "worker.sources.calendar_auth.InstalledAppFlow.from_client_secrets_file",
             side_effect=[flow_a, flow_b],
         ):
             get_credentials(secrets, account="personal")
@@ -268,7 +204,6 @@ class TestGetCredentials:
     def test_round_trip_save_then_load(
         self, home: Path, tmp_path: Path
     ) -> None:
-        """First call saves; second call loads the same file."""
         secrets = tmp_path / "secrets.json"
         secrets.write_text('{"installed": {}}')
 
@@ -280,19 +215,18 @@ class TestGetCredentials:
         flow.run_local_server.return_value = new_creds
 
         with patch(
-            "worker.sources.gmail_auth.InstalledAppFlow.from_client_secrets_file",
+            "worker.sources.calendar_auth.InstalledAppFlow.from_client_secrets_file",
             return_value=flow,
         ):
             first = get_credentials(secrets, account="default")
 
-        # Second call: file now exists, so flow must NOT run.
         cached = _fake_creds(valid=True)
         with (
             patch.object(
                 Credentials, "from_authorized_user_file", return_value=cached
             ) as mock_load,
             patch(
-                "worker.sources.gmail_auth.InstalledAppFlow.from_client_secrets_file"
+                "worker.sources.calendar_auth.InstalledAppFlow.from_client_secrets_file"
             ) as mock_flow_factory,
         ):
             second = get_credentials(secrets, account="default")

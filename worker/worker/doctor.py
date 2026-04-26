@@ -65,6 +65,61 @@ def check_slack_auth(token_path: Path | None = None) -> int:
     return 0
 
 
+def check_gmail_auth(client_secrets_path: Path, account: str) -> int:
+    """Check Gmail auth status for *account* and print a result line.
+
+    Returns 0 on OK / not-configured, 1 if the client secrets file is
+    missing or the saved token is rejected / unreadable.  Mirrors the
+    shape of :func:`check_slack_auth` but is parameterized per-account;
+    the per-account doctor loop lives in a separate bead.
+    """
+    from worker.sources.gmail_auth import SCOPES, token_path_for_account
+
+    secrets = Path(client_secrets_path).expanduser()
+    if not secrets.is_file():
+        _fail(
+            f"Gmail auth (account={account}): client_secrets_path missing "
+            f"({secrets})"
+        )
+        return 1
+
+    path = token_path_for_account(account)
+    if not path.exists():
+        _warn(
+            f"Gmail auth (account={account}): not configured (run install flow)"
+        )
+        return 0
+    try:
+        from google.auth.transport.requests import Request
+        from google.oauth2.credentials import Credentials
+
+        creds = Credentials.from_authorized_user_file(str(path), SCOPES)
+    except Exception as exc:
+        _fail(
+            f"Gmail auth (account={account}): token unreadable ({exc}) "
+            "— re-run install flow"
+        )
+        return 1
+    if creds.valid:
+        _ok(f"Gmail auth (account={account}): OK")
+        return 0
+    if creds.expired and creds.refresh_token:
+        try:
+            creds.refresh(Request())
+        except Exception as exc:
+            _fail(
+                f"Gmail auth (account={account}): refresh failed ({exc}) "
+                "— re-run install flow"
+            )
+            return 1
+        _ok(f"Gmail auth (account={account}): OK (refreshed)")
+        return 0
+    _fail(
+        f"Gmail auth (account={account}): token invalid — re-run install flow"
+    )
+    return 1
+
+
 def check_slack(slack_cfg: SlackSourceConfig) -> int:
     """Run Slack source pre-flight checks. Returns the number of errors."""
     if not slack_cfg.enabled:
