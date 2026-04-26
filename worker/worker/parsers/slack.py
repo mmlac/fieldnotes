@@ -296,7 +296,14 @@ def _person_hint_for_user(
 
     if email_raw:
         norm = canonicalize_email(email_raw)
-        props: dict[str, Any] = {"email": norm}
+        # Carry slack identity on the email-keyed Person too, so a later
+        # reconcile pass can SAME_AS-link this node with any earlier
+        # slack-user-keyed Person emitted before the email was known.
+        props: dict[str, Any] = {
+            "email": norm,
+            "slack_user_id": user_id,
+            "team_id": team_id,
+        }
         if real_name:
             props["name"] = real_name
         if handle:

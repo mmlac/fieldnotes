@@ -322,6 +322,16 @@ class Pipeline:
                 exc_info=True,
             )
 
+        # Link Person nodes that share a Slack identity but where one was
+        # created before the user's profile email was known.
+        try:
+            self._writer.reconcile_persons_by_slack_user()
+        except Exception:
+            logger.warning(
+                "Slack Person reconciliation failed — will retry on next batch",
+                exc_info=True,
+            )
+
         # Fuzzy name matching for Person nodes (catches name variants)
         try:
             self._writer.reconcile_persons_by_name()
@@ -403,9 +413,7 @@ class Pipeline:
         existing_hashes: dict[str, str] = {}
 
         try:
-            created_sids = [
-                d.source_id for d in docs if d.operation == "created"
-            ]
+            created_sids = [d.source_id for d in docs if d.operation == "created"]
             if created_sids:
                 already_indexed = self._writer.indexed_source_ids(created_sids)
         except Exception:

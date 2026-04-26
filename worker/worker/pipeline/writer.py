@@ -401,9 +401,7 @@ class Writer:
                 batch = unique[start : start + BATCH]
                 chunk_ids = [sid + suffix for sid in batch]
                 result = session.run(
-                    "UNWIND $cids AS cid "
-                    "MATCH (c:Chunk {id: cid}) "
-                    "RETURN c.id AS cid",
+                    "UNWIND $cids AS cid MATCH (c:Chunk {id: cid}) RETURN c.id AS cid",
                     cids=chunk_ids,
                 )
                 for record in result:
@@ -645,6 +643,55 @@ class Writer:
             if updated > 0:
                 logger.info("Reconciled %d Person nodes by email", updated)
             return updated
+
+    # ------------------------------------------------------------------
+    # Slack identity reconciliation
+    # ------------------------------------------------------------------
+
+    def reconcile_persons_by_slack_user(self) -> int:
+        """Link Person nodes that share a Slack identity (team_id, slack_user_id).
+
+        When a Slack message exposes a user with no profile email, the parser
+        emits a Person keyed on ``slack-user:{team}/{user_id}``. If a later
+        message exposes the same user's email, the parser emits an
+        email-keyed Person (which now also carries ``slack_user_id`` +
+        ``team_id``). This step creates SAME_AS edges between the two so
+        the user is recognised as a single entity.
+
+        Returns the number of SAME_AS edges created.
+        """
+        return self._reconcile_persons_by_slack_user_neo4j()
+
+    @_neo4j_retry
+    def _reconcile_persons_by_slack_user_neo4j(self) -> int:
+        with self._neo4j_driver.session() as session:
+            result = session.run(
+                """
+                MATCH (p:Person)
+                WHERE p.slack_user_id IS NOT NULL
+                  AND p.team_id IS NOT NULL
+                WITH p.team_id AS team, p.slack_user_id AS uid,
+                     collect(p) AS persons
+                WHERE size(persons) > 1
+                UNWIND persons AS a
+                UNWIND persons AS b
+                WITH a, b
+                WHERE id(a) < id(b) AND NOT (a)-[:SAME_AS]-(b)
+                MERGE (a)-[r:SAME_AS]->(b)
+                SET r.match_type = 'slack_user_id',
+                    r.cross_source = true,
+                    r.confidence = 1.0
+                RETURN count(r) AS cnt
+                """
+            )
+            created = result.single()["cnt"]
+
+        if created > 0:
+            logger.info(
+                "Reconciled %d Slack Person pairs by (team_id, slack_user_id)",
+                created,
+            )
+        return created
 
     # ------------------------------------------------------------------
     # Fuzzy Person name reconciliation (technique #1)
