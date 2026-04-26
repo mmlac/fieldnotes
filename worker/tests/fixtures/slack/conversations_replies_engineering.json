@@ -1,0 +1,12 @@
+{
+  "ok": true,
+  "messages": [
+    {"ts": "1700000900.000000", "user": "U-ALICE", "thread_ts": "1700000900.000000", "text": "Engineering deploy postmortem question: what is our rollback signal?"},
+    {"ts": "1700001020.000000", "user": "U-BOB", "thread_ts": "1700000900.000000", "text": "I think error rate above two percent for ten minutes is the rollback trigger."},
+    {"ts": "1700001140.000000", "user": "U-ALICE", "thread_ts": "1700000900.000000", "text": "Agreed. Let us also watch p99 latency on the deploy."},
+    {"ts": "1700001260.000000", "user": "U-BOB", "thread_ts": "1700000900.000000", "text": "I will write the runbook for the engineering deploy rollback."},
+    {"ts": "1700001380.000000", "user": "U-ALICE", "thread_ts": "1700000900.000000", "text": "Great. Link it in the engineering wiki when ready."}
+  ],
+  "has_more": false,
+  "response_metadata": {"next_cursor": ""}
+}

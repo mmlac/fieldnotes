@@ -1,0 +1,22 @@
+{
+  "U-ALICE": {
+    "id": "U-ALICE",
+    "name": "alice",
+    "real_name": "Alice Example",
+    "profile": {
+      "real_name": "Alice Example",
+      "display_name": "alice",
+      "email": "alice@gmail.com"
+    }
+  },
+  "U-BOB": {
+    "id": "U-BOB",
+    "name": "bob",
+    "real_name": "Bob Example",
+    "profile": {
+      "real_name": "Bob Example",
+      "display_name": "bob",
+      "email": "bob@example.com"
+    }
+  }
+}

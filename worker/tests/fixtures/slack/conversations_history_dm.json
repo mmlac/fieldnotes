@@ -1,0 +1,11 @@
+{
+  "ok": true,
+  "messages": [
+    {"ts": "1700010000.000100", "user": "U-ALICE", "text": "Hey Bob, quick question about the deploy schedule."},
+    {"ts": "1700010060.000200", "user": "U-BOB", "text": "Sure, what do you need?"},
+    {"ts": "1700010120.000300", "user": "U-ALICE", "text": "Can we move the engineering deploy to Friday instead of Thursday?"},
+    {"ts": "1700010180.000400", "user": "U-BOB", "text": "Friday works. I will update the engineering wiki."}
+  ],
+  "has_more": false,
+  "response_metadata": {"next_cursor": ""}
+}

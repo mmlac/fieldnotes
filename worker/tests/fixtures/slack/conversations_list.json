@@ -1,0 +1,25 @@
+{
+  "ok": true,
+  "channels": [
+    {
+      "id": "C-ENG",
+      "name": "engineering",
+      "is_channel": true,
+      "is_archived": false,
+      "is_private": false,
+      "is_im": false,
+      "is_mpim": false,
+      "is_member": true
+    },
+    {
+      "id": "D-AB",
+      "name": "",
+      "is_im": true,
+      "is_archived": false,
+      "is_private": true,
+      "is_member": true,
+      "user": "U-BOB"
+    }
+  ],
+  "response_metadata": {"next_cursor": ""}
+}
