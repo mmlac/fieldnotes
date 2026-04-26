@@ -16,7 +16,6 @@ Config section ``[sources.google_calendar]``::
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import logging
 import uuid
@@ -42,35 +41,14 @@ from worker.metrics import (
 
 from .base import IndexedCheck, PythonSource
 from .calendar_auth import get_credentials
-from .cursor import save_json_atomic
 
 logger = logging.getLogger(__name__)
-
-def _default_cursor_path(account: str) -> Path:
-    """Per-account cursor file: ~/.fieldnotes/data/calendar_cursor-{account}.json."""
-    return Path.home() / ".fieldnotes" / "data" / f"calendar_cursor-{account}.json"
 
 
 DEFAULT_POLL_INTERVAL = 300  # 5 minutes
 DEFAULT_MAX_INITIAL_DAYS = 90  # backfill ~3 months
 DEFAULT_CALENDAR_IDS = ["primary"]
 API_CALL_TIMEOUT = 60
-
-
-def _load_cursor(path: Path) -> dict[str, str]:
-    """Load per-calendar sync tokens from disk.
-
-    Returns a dict mapping calendar_id → syncToken.
-    """
-    if not path.exists():
-        return {}
-    try:
-        data = json.loads(path.read_text())
-        if isinstance(data, dict):
-            return data
-    except (json.JSONDecodeError, OSError) as exc:
-        logger.warning("Failed to load calendar cursor: %s", exc)
-    return {}
 
 
 def _event_start_iso(event: dict[str, Any]) -> str:
@@ -199,7 +177,6 @@ class GoogleCalendarSource(PythonSource):
         self._max_initial_days = DEFAULT_MAX_INITIAL_DAYS
         self._calendar_ids: list[str] = list(DEFAULT_CALENDAR_IDS)
         self._client_secrets_path = "~/.fieldnotes/credentials.json"
-        self._cursor_path: Path | None = None
 
     def name(self) -> str:
         return "google_calendar"
@@ -239,9 +216,11 @@ class GoogleCalendarSource(PythonSource):
         if "client_secrets_path" in cfg:
             self._client_secrets_path = cfg["client_secrets_path"]
         if "cursor_path" in cfg:
-            self._cursor_path = Path(cfg["cursor_path"]).expanduser().resolve()
-        else:
-            self._cursor_path = _default_cursor_path(self._account)
+            raise ValueError(
+                "GoogleCalendarSource: 'cursor_path' is no longer supported. "
+                "Cursors live in queue.db (cursors table, key "
+                "'calendar:<account>'); remove this key from your config."
+            )
 
     async def start(
         self,
@@ -264,7 +243,7 @@ class GoogleCalendarSource(PythonSource):
         )
         service = build("calendar", "v3", credentials=creds)
 
-        # Load persisted cursor state from queue DB (migrated from JSON file).
+        # Load persisted cursor state from queue DB (single source of truth).
         raw_cursor = queue.load_cursor(self._cursor_key)
         sync_tokens: dict[str, str] = {}
         seen_series: set[str] = set()
@@ -281,9 +260,6 @@ class GoogleCalendarSource(PythonSource):
                         sync_tokens = data
             except (json.JSONDecodeError, AttributeError):
                 pass
-        # Fall back to legacy JSON file if not yet migrated.
-        if not sync_tokens:
-            sync_tokens = _load_cursor(self._cursor_path)
 
         WATCHER_ACTIVE.labels(source_type="google_calendar").set(1)
         logger.info(
@@ -330,7 +306,6 @@ class GoogleCalendarSource(PythonSource):
                 await asyncio.sleep(self._poll_interval)
         except asyncio.CancelledError:
             WATCHER_ACTIVE.labels(source_type="google_calendar").set(0)
-            save_json_atomic(self._cursor_path, sync_tokens)
             raise
 
     async def _poll_calendar(
@@ -505,9 +480,7 @@ class GoogleCalendarSource(PythonSource):
                     cursor_key=self._cursor_key if is_last and cursor_val else None,
                     cursor_value=cursor_val if is_last else None,
                 )
-            # Also persist to legacy file.
             if new_sync_token:
-                save_json_atomic(self._cursor_path, sync_tokens)
                 logger.info(
                     "Calendar %s: sync token saved after backfill",
                     calendar_id,
@@ -528,7 +501,7 @@ class GoogleCalendarSource(PythonSource):
             # Save sync token (whether or not there were events).
             if new_sync_token:
                 sync_tokens[calendar_id] = new_sync_token
-                save_json_atomic(self._cursor_path, sync_tokens)
+                queue.save_cursor(self._cursor_key, _cursor_json())
 
         if total_events > 0:
             if is_backfill:

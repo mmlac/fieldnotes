@@ -6,7 +6,7 @@ import asyncio
 import json
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -15,7 +15,6 @@ from worker.sources.calendar import (
     _build_ingest_event,
     _event_end_iso,
     _event_start_iso,
-    _load_cursor,
 )
 
 
@@ -107,32 +106,6 @@ def _all_day_event(
         "creator": {"email": "alice@example.com"},
         "updated": "2026-03-20T12:00:00Z",
     }
-
-
-# ---------------------------------------------------------------------------
-# _load_cursor
-# ---------------------------------------------------------------------------
-
-
-class TestLoadCursor:
-    def test_returns_empty_when_file_missing(self, tmp_path: Path) -> None:
-        assert _load_cursor(tmp_path / "nope.json") == {}
-
-    def test_returns_dict_from_valid_json(self, tmp_path: Path) -> None:
-        data = {"primary": "sync-token-123"}
-        cursor = tmp_path / "cursor.json"
-        cursor.write_text(json.dumps(data))
-        assert _load_cursor(cursor) == data
-
-    def test_returns_empty_on_invalid_json(self, tmp_path: Path) -> None:
-        cursor = tmp_path / "cursor.json"
-        cursor.write_text("not json")
-        assert _load_cursor(cursor) == {}
-
-    def test_returns_empty_on_non_dict(self, tmp_path: Path) -> None:
-        cursor = tmp_path / "cursor.json"
-        cursor.write_text('"just a string"')
-        assert _load_cursor(cursor) == {}
 
 
 # ---------------------------------------------------------------------------
@@ -263,10 +236,14 @@ class TestGoogleCalendarSource:
         with pytest.raises(ValueError, match="account"):
             source.configure({"client_secrets_path": "/tmp/x.json"})
 
-    def test_default_cursor_path_includes_account(self) -> None:
+    def test_configure_rejects_cursor_path(self) -> None:
+        """cursor_path is no longer a valid config key — cursors live in queue.db."""
         source = GoogleCalendarSource()
-        source.configure({"account": "personal"})
-        assert source._cursor_path.name == "calendar_cursor-personal.json"
+        with pytest.raises(ValueError, match="queue.db"):
+            source.configure({
+                "account": "personal",
+                "cursor_path": "/tmp/whatever.json",
+            })
 
     @pytest.mark.asyncio
     async def test_missing_secrets_stays_idle(self, tmp_path: Path) -> None:
@@ -544,7 +521,6 @@ class TestMultiAccount:
         src_b.configure({"account": "work"})
         assert src_a._cursor_key == "calendar:home"
         assert src_b._cursor_key == "calendar:work"
-        assert src_a._cursor_path != src_b._cursor_path
 
     def test_source_id_property_includes_account(self) -> None:
         src = GoogleCalendarSource()
@@ -567,3 +543,39 @@ class TestMultiAccount:
         src_a._calendar_ids.append("leaked@group.calendar.google.com")
         assert "leaked@group.calendar.google.com" not in src_b._calendar_ids
         assert src_a._account != src_b._account
+
+    @pytest.mark.asyncio
+    async def test_stray_legacy_cursor_file_is_ignored(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Stray legacy calendar_cursor-*.json on disk does not influence the source."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        data_dir = tmp_path / ".fieldnotes" / "data"
+        data_dir.mkdir(parents=True, exist_ok=True)
+        stray = data_dir / "calendar_cursor-personal.json"
+        stray.write_text(json.dumps({"primary": "stale-token"}))
+
+        source = GoogleCalendarSource()
+        source.configure({"account": "personal"})
+        queue = _TestQueue()
+
+        events_list_result = {
+            "items": [_calendar_event()],
+            "nextSyncToken": "fresh-token",
+        }
+        mock_events = MagicMock()
+        mock_list = MagicMock()
+        mock_list.execute.return_value = events_list_result
+        mock_events.list.return_value = mock_list
+        mock_service = MagicMock()
+        mock_service.events.return_value = mock_events
+
+        token = await source._poll_calendar(
+            mock_service, queue, "primary", None, {}
+        )
+
+        # Sync token came from the API — stray file was never read.
+        assert token == "fresh-token"
+        # No call passed syncToken=stale-token
+        kwargs = mock_events.list.call_args[1]
+        assert kwargs.get("syncToken") != "stale-token"

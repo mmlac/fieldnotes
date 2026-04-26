@@ -41,17 +41,10 @@ from worker.metrics import (
     observe_duration,
 )
 
-from worker.log_sanitizer import redact_home_path
-
 from .base import IndexedCheck, PythonSource
-from .cursor import save_json_atomic
 from .gmail_auth import get_credentials
 
 logger = logging.getLogger(__name__)
-
-def _default_cursor_path(account: str) -> Path:
-    """Per-account cursor file: ~/.fieldnotes/data/gmail_cursor-{account}.json."""
-    return Path.home() / ".fieldnotes" / "data" / f"gmail_cursor-{account}.json"
 
 
 DEFAULT_POLL_INTERVAL = 300  # seconds
@@ -60,37 +53,6 @@ BACKFILL_PAGE_DELAY = 0.5  # seconds between backfill page fetches
 BACKFILL_MAX_RETRIES = 3
 BACKFILL_INITIAL_BACKOFF = 1.0  # seconds
 API_CALL_TIMEOUT = 60  # seconds — max wait for a single Gmail API call
-
-
-def _load_cursor(path: Path) -> str | None:
-    """Load the persisted history ID from disk."""
-    if not path.exists():
-        return None
-    try:
-        data = json.loads(path.read_text())
-        hid = data.get("history_id")
-        if hid is None:
-            return None
-        # Validate cursor is a valid integer string before returning
-        int(hid)
-        return hid
-    except (json.JSONDecodeError, OSError):
-        logger.warning(
-            "Failed to read cursor file %s, starting fresh", redact_home_path(str(path))
-        )
-        return None
-    except (ValueError, TypeError):
-        logger.warning(
-            "Corrupted cursor in %s (non-integer value %r), resetting",
-            redact_home_path(str(path)),
-            hid,
-        )
-        return None
-
-
-def _save_cursor(path: Path, history_id: str) -> None:
-    """Persist the latest history ID to disk."""
-    save_json_atomic(path, {"history_id": history_id})
 
 
 def _extract_recipients(headers: list[dict[str, str]]) -> list[str]:
@@ -193,7 +155,6 @@ class GmailSource(PythonSource):
         max_initial_threads: int    — backfill limit (default: 500)
         label_filter: str           — Gmail label to poll (optional, omit for all)
         client_secrets_path: str    — OAuth2 client secrets file (required)
-        cursor_path: str            — cursor persistence file (optional)
     """
 
     def __init__(self) -> None:
@@ -202,7 +163,6 @@ class GmailSource(PythonSource):
         self._max_initial_threads: int = DEFAULT_MAX_INITIAL_THREADS
         self._label_filter: str | None = None
         self._client_secrets_path: Path | None = None
-        self._cursor_path: Path | None = None
 
     def name(self) -> str:
         return "gmail"
@@ -243,11 +203,12 @@ class GmailSource(PythonSource):
         else:
             self._label_filter = None
 
-        cursor = cfg.get("cursor_path")
-        if cursor:
-            self._cursor_path = Path(cursor).expanduser().resolve()
-        else:
-            self._cursor_path = _default_cursor_path(self._account)
+        if "cursor_path" in cfg:
+            raise ValueError(
+                "GmailSource: 'cursor_path' is no longer supported. Cursors "
+                "live in queue.db (cursors table, key 'gmail:<account>'); "
+                "remove this key from your config."
+            )
 
     async def start(
         self,
@@ -269,7 +230,7 @@ class GmailSource(PythonSource):
         if self._label_filter:
             await self._validate_label(service)
 
-        # Load cursor from persistent queue (migrated from JSON file).
+        # Load cursor from persistent queue (queue.db is the only source of truth).
         raw_cursor = queue.load_cursor(self._cursor_key)
         cursor: str | None = None
         if raw_cursor:
@@ -277,9 +238,6 @@ class GmailSource(PythonSource):
                 cursor = json.loads(raw_cursor).get("history_id")
             except (json.JSONDecodeError, AttributeError):
                 cursor = None
-        # Fall back to legacy JSON file if not yet migrated.
-        if cursor is None:
-            cursor = _load_cursor(self._cursor_path)
 
         WATCHER_ACTIVE.labels(source_type="gmail").set(1)
 
@@ -317,8 +275,6 @@ class GmailSource(PythonSource):
                         )
         except asyncio.CancelledError:
             WATCHER_ACTIVE.labels(source_type="gmail").set(0)
-            if cursor:
-                _save_cursor(self._cursor_path, cursor)
             raise
 
     async def _validate_label(self, service: Any) -> None:
@@ -614,13 +570,6 @@ class GmailSource(PythonSource):
                     "Gmail history ID %s no longer valid (404) — resetting cursor for full backfill",
                     cursor,
                 )
-                try:
-                    self._cursor_path.unlink(missing_ok=True)
-                except OSError:
-                    logger.warning(
-                        "Failed to delete stale cursor file %s",
-                        redact_home_path(str(self._cursor_path)),
-                    )
                 return None
             logger.exception("Failed to fetch Gmail history (cursor=%s)", cursor)
             return cursor

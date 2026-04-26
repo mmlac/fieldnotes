@@ -1,7 +1,7 @@
 """Tests for Gmail source async methods and helpers (sources/gmail.py).
 
-Covers: _load_cursor, _save_cursor, _extract_recipients, _backfill,
-_poll_incremental, and rate-limiting/backoff in backfill.
+Covers: _extract_recipients, _backfill, _poll_incremental, and
+rate-limiting/backoff in backfill.
 """
 
 from __future__ import annotations
@@ -23,8 +23,6 @@ from worker.sources.gmail import (
     GmailSource,
     _extract_body,
     _extract_recipients,
-    _load_cursor,
-    _save_cursor,
 )
 
 
@@ -89,49 +87,6 @@ def _mock_messages_api(messages: list[dict[str, Any]], page_token: str | None = 
     api.get.side_effect = get_side_effect
 
     return api
-
-
-# ---------------------------------------------------------------------------
-# _load_cursor / _save_cursor
-# ---------------------------------------------------------------------------
-
-
-class TestLoadCursor:
-    def test_returns_none_when_file_missing(self, tmp_path: Path) -> None:
-        assert _load_cursor(tmp_path / "nope.json") is None
-
-    def test_reads_history_id(self, tmp_path: Path) -> None:
-        f = tmp_path / "cursor.json"
-        f.write_text(json.dumps({"history_id": "42"}))
-        assert _load_cursor(f) == "42"
-
-    def test_returns_none_on_invalid_json(self, tmp_path: Path) -> None:
-        f = tmp_path / "cursor.json"
-        f.write_text("not-json")
-        assert _load_cursor(f) is None
-
-    def test_returns_none_on_missing_key(self, tmp_path: Path) -> None:
-        f = tmp_path / "cursor.json"
-        f.write_text(json.dumps({"other": "data"}))
-        assert _load_cursor(f) is None
-
-
-class TestSaveCursor:
-    def test_writes_history_id(self, tmp_path: Path) -> None:
-        f = tmp_path / "cursor.json"
-        _save_cursor(f, "99")
-        data = json.loads(f.read_text())
-        assert data["history_id"] == "99"
-
-    def test_creates_parent_dirs(self, tmp_path: Path) -> None:
-        f = tmp_path / "a" / "b" / "cursor.json"
-        _save_cursor(f, "1")
-        assert f.exists()
-
-    def test_sets_restrictive_permissions(self, tmp_path: Path) -> None:
-        f = tmp_path / "cursor.json"
-        _save_cursor(f, "42")
-        assert f.stat().st_mode & 0o777 == 0o600
 
 
 # ---------------------------------------------------------------------------
@@ -383,7 +338,6 @@ class TestPollIncremental:
         service.users.return_value.history.return_value = history_api
 
         source = GmailSource()
-        source._cursor_path = tmp_path / "cursor.json"
         source._label_filter = "INBOX"
 
         queue = FakeQueue()
@@ -414,7 +368,6 @@ class TestPollIncremental:
         service.users.return_value.history.return_value = history_api
 
         source = GmailSource()
-        source._cursor_path = tmp_path / "cursor.json"
         source._label_filter = "INBOX"
 
         queue = FakeQueue()
@@ -444,7 +397,6 @@ class TestPollIncremental:
         service.users.return_value.history.return_value = history_api
 
         source = GmailSource()
-        source._cursor_path = tmp_path / "cursor.json"
         source._label_filter = "INBOX"
 
         queue = FakeQueue()
@@ -455,9 +407,8 @@ class TestPollIncremental:
         assert "metadataHeaders" not in call_kwargs
 
     @pytest.mark.asyncio
-    async def test_returns_old_cursor_on_no_cursor(self, tmp_path: Path) -> None:
+    async def test_returns_old_cursor_on_no_cursor(self) -> None:
         source = GmailSource()
-        source._cursor_path = tmp_path / "cursor.json"
 
         queue = FakeQueue()
         result = await source._poll_incremental(MagicMock(), MagicMock(), queue, None)
@@ -488,7 +439,6 @@ class TestPollIncremental:
         service.users.return_value.history.return_value = history_api
 
         source = GmailSource()
-        source._cursor_path = tmp_path / "cursor.json"
         source._label_filter = "INBOX"
 
         queue = FakeQueue()
@@ -509,7 +459,6 @@ class TestPollIncremental:
         service.users.return_value.history.return_value = history_api
 
         source = GmailSource()
-        source._cursor_path = tmp_path / "cursor.json"
         source._label_filter = "INBOX"
 
         queue = FakeQueue()
@@ -519,11 +468,8 @@ class TestPollIncremental:
         assert queue.qsize() == 0
 
     @pytest.mark.asyncio
-    async def test_404_resets_cursor_and_returns_none(self, tmp_path: Path) -> None:
+    async def test_404_resets_cursor_and_returns_none(self) -> None:
         """404 on history list means history ID expired — reset cursor, return None."""
-        cursor_file = tmp_path / "cursor.json"
-        _save_cursor(cursor_file, "100")
-
         service = MagicMock()
         history_api = MagicMock()
         history_list_req = MagicMock()
@@ -534,41 +480,16 @@ class TestPollIncremental:
         service.users.return_value.history.return_value = history_api
 
         source = GmailSource()
-        source._cursor_path = cursor_file
         source._label_filter = "INBOX"
 
         queue = FakeQueue()
         result = await source._poll_incremental(service, MagicMock(), queue, "100")
 
         assert result is None
-        assert not cursor_file.exists()
         assert queue.qsize() == 0
 
     @pytest.mark.asyncio
-    async def test_404_with_missing_cursor_file_does_not_raise(
-        self, tmp_path: Path
-    ) -> None:
-        """404 reset is safe even when cursor file was already deleted."""
-        service = MagicMock()
-        history_api = MagicMock()
-        history_list_req = MagicMock()
-        history_list_req.execute.side_effect = HttpError(
-            Response({"status": "404"}), b"Not Found"
-        )
-        history_api.list.return_value = history_list_req
-        service.users.return_value.history.return_value = history_api
-
-        source = GmailSource()
-        source._cursor_path = tmp_path / "nonexistent.json"
-        source._label_filter = "INBOX"
-
-        queue = FakeQueue()
-        result = await source._poll_incremental(service, MagicMock(), queue, "100")
-
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_saves_new_cursor_to_queue(self, tmp_path: Path) -> None:
+    async def test_saves_new_cursor_to_queue(self) -> None:
         """When _poll_incremental advances the historyId it persists the
         new value via ``queue.save_cursor(<per-account-key>, ...)`` — the
         cursor no longer lives on disk and is namespaced per account.
@@ -585,7 +506,6 @@ class TestPollIncremental:
 
         source = GmailSource()
         source._account = "personal"
-        source._cursor_path = tmp_path / "unused.json"
         source._label_filter = "INBOX"
 
         queue = FakeQueue()
@@ -928,13 +848,15 @@ class TestMultiAccount:
         assert source._account == "personal"
         assert source.source_id == "gmail:personal"
 
-    def test_default_cursor_path_includes_account(self) -> None:
+    def test_configure_rejects_cursor_path(self) -> None:
+        """cursor_path is no longer a valid config key — cursors live in queue.db."""
         source = GmailSource()
-        source.configure({
-            "account": "personal",
-            "client_secrets_path": "/tmp/x.json",
-        })
-        assert source._cursor_path.name == "gmail_cursor-personal.json"
+        with pytest.raises(ValueError, match="queue.db"):
+            source.configure({
+                "account": "personal",
+                "client_secrets_path": "/tmp/x.json",
+                "cursor_path": "/tmp/whatever.json",
+            })
 
     @pytest.mark.asyncio
     async def test_ingest_event_carries_account_metadata(self) -> None:
@@ -988,10 +910,27 @@ class TestMultiAccount:
         assert accounts == {"personal", "work"}
 
     @pytest.mark.asyncio
-    async def test_default_cursor_file_has_restrictive_permissions(
-        self, tmp_path: Path
+    async def test_stray_legacy_cursor_file_is_ignored(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Per-account cursor files must be 0o600."""
-        f = tmp_path / "gmail_cursor-personal.json"
-        _save_cursor(f, "42")
-        assert f.stat().st_mode & 0o777 == 0o600
+        """Stray legacy gmail_cursor-*.json on disk does not influence the source."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        data_dir = tmp_path / ".fieldnotes" / "data"
+        data_dir.mkdir(parents=True, exist_ok=True)
+        stray = data_dir / "gmail_cursor-personal.json"
+        stray.write_text(json.dumps({"history_id": "9999"}))
+
+        msg = _gmail_message("m1", history_id="42")
+        api = _mock_messages_api([msg])
+        source = GmailSource()
+        source._account = "personal"
+        source._max_initial_threads = 10
+        source._label_filter = "INBOX"
+
+        queue = FakeQueue()
+        result = await source._backfill(api, queue)
+
+        # Cursor came from the API — the stray file was never read.
+        assert result == "42"
+        cur = json.loads(queue.load_cursor("gmail:personal"))
+        assert cur["history_id"] == "42"

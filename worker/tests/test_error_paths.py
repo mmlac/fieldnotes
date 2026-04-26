@@ -829,54 +829,6 @@ class TestResolverConfidenceEdgeCases:
 
 
 # ---------------------------------------------------------------------------
-# Gmail cursor integrity
-# ---------------------------------------------------------------------------
-
-
-class TestGmailCursorEdgeCases:
-    """Test Gmail cursor with non-integer and edge-case values."""
-
-    def test_non_integer_history_id_rejected(self, tmp_path: Path) -> None:
-        from worker.sources.gmail import _load_cursor
-
-        f = tmp_path / "cursor.json"
-        f.write_text(json.dumps({"history_id": "not-a-number"}))
-        assert _load_cursor(f) is None
-
-    def test_float_history_id_rejected(self, tmp_path: Path) -> None:
-        from worker.sources.gmail import _load_cursor
-
-        f = tmp_path / "cursor.json"
-        f.write_text(json.dumps({"history_id": "3.14"}))
-        # int("3.14") raises ValueError, so this should be rejected
-        assert _load_cursor(f) is None
-
-    def test_integer_history_id_accepted(self, tmp_path: Path) -> None:
-        from worker.sources.gmail import _load_cursor
-
-        f = tmp_path / "cursor.json"
-        f.write_text(json.dumps({"history_id": "12345"}))
-        assert _load_cursor(f) == "12345"
-
-    def test_none_history_id_returns_none(self, tmp_path: Path) -> None:
-        from worker.sources.gmail import _load_cursor
-
-        f = tmp_path / "cursor.json"
-        f.write_text(json.dumps({"history_id": None}))
-        assert _load_cursor(f) is None
-
-    def test_integer_type_history_id(self, tmp_path: Path) -> None:
-        """historyId stored as int (not string) should be validated."""
-        from worker.sources.gmail import _load_cursor
-
-        f = tmp_path / "cursor.json"
-        f.write_text(json.dumps({"history_id": 42}))
-        # int(42) succeeds, and the function returns the value
-        result = _load_cursor(f)
-        assert result == 42
-
-
-# ---------------------------------------------------------------------------
 # Writer predicate validation
 # ---------------------------------------------------------------------------
 
