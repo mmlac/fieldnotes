@@ -1,5 +1,7 @@
 """Tests for config.py — load_config and _parse."""
 
+from pathlib import Path
+
 import pytest
 
 from worker.config import (
@@ -1162,3 +1164,182 @@ class TestMultiAccountDataclassDefaults:
         me = MeConfig()
         assert me.emails == []
         assert me.name is None
+
+
+class TestDoctorGmailAccounts:
+    """doctor.check_gmail_accounts — per-account auth status."""
+
+    def test_no_accounts_reports_disabled(self, capsys) -> None:
+        from worker.doctor import check_gmail_accounts
+
+        errors = check_gmail_accounts({})
+        out = capsys.readouterr().out
+        assert errors == 0
+        assert "Gmail disabled" in out
+
+    def test_disabled_account_reports_and_skips_probe(self, capsys) -> None:
+        from worker.doctor import check_gmail_accounts
+
+        accts = {
+            "personal": GmailAccountConfig(
+                name="personal",
+                enabled=False,
+                client_secrets_path="/does/not/exist.json",
+            )
+        }
+        errors = check_gmail_accounts(accts)
+        out = capsys.readouterr().out
+        assert errors == 0
+        assert "Gmail [personal]: disabled" in out
+
+    def test_single_account_valid_token_reports_ok(
+        self, tmp_path, capsys, monkeypatch
+    ) -> None:
+        """1 gmail account, valid token: 'Gmail [personal]: OK'."""
+        import json
+        from unittest.mock import MagicMock
+
+        from google.oauth2.credentials import Credentials
+
+        from worker import doctor
+
+        # Sandbox Path.home() so token paths land in tmp_path.
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+
+        secrets = tmp_path / "gmail.json"
+        secrets.write_text("{}")
+
+        from worker.sources.gmail_auth import token_path_for_account
+
+        token = token_path_for_account("personal")
+        token.parent.mkdir(parents=True, exist_ok=True)
+        token.write_text(json.dumps({"token": "t"}))
+
+        creds = MagicMock(spec=Credentials)
+        creds.valid = True
+        creds.expired = False
+        monkeypatch.setattr(
+            Credentials,
+            "from_authorized_user_file",
+            classmethod(lambda cls, *a, **k: creds),
+        )
+
+        accts = {
+            "personal": GmailAccountConfig(
+                name="personal", client_secrets_path=str(secrets)
+            )
+        }
+        errors = doctor.check_gmail_accounts(accts)
+        out = capsys.readouterr().out
+        assert errors == 0
+        assert "Gmail [personal]: OK" in out
+
+    def test_two_accounts_one_missing_secrets_reports_both(
+        self, tmp_path, capsys, monkeypatch
+    ) -> None:
+        """2 gmail accounts, one missing secrets: doctor reports both, exit non-zero."""
+        import json
+        from unittest.mock import MagicMock
+
+        from google.oauth2.credentials import Credentials
+
+        from worker import doctor
+
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+
+        # Account A: secrets present, token valid → OK.
+        secrets_a = tmp_path / "a.json"
+        secrets_a.write_text("{}")
+        from worker.sources.gmail_auth import token_path_for_account
+
+        token_a = token_path_for_account("personal")
+        token_a.parent.mkdir(parents=True, exist_ok=True)
+        token_a.write_text(json.dumps({"token": "t"}))
+
+        creds = MagicMock(spec=Credentials)
+        creds.valid = True
+        creds.expired = False
+        monkeypatch.setattr(
+            Credentials,
+            "from_authorized_user_file",
+            classmethod(lambda cls, *a, **k: creds),
+        )
+
+        # Account B: secrets missing → fail.
+        missing = tmp_path / "missing.json"
+
+        accts = {
+            "personal": GmailAccountConfig(
+                name="personal", client_secrets_path=str(secrets_a)
+            ),
+            "work": GmailAccountConfig(name="work", client_secrets_path=str(missing)),
+        }
+        errors = doctor.check_gmail_accounts(accts)
+        out = capsys.readouterr().out
+        assert errors == 1
+        # Both accounts get reported; loop does NOT short-circuit.
+        assert "Gmail [personal]: OK" in out
+        assert "Gmail [work]: client_secrets file missing" in out
+
+
+class TestDoctorCalendarAccounts:
+    """doctor.check_calendar_accounts — per-account auth status."""
+
+    def test_no_accounts_reports_disabled(self, capsys) -> None:
+        from worker.doctor import check_calendar_accounts
+
+        errors = check_calendar_accounts({})
+        out = capsys.readouterr().out
+        assert errors == 0
+        assert "Calendar disabled" in out
+
+    def test_missing_secrets_fails(self, tmp_path, capsys) -> None:
+        from worker.doctor import check_calendar_accounts
+
+        missing = tmp_path / "absent.json"
+        accts = {
+            "personal": CalendarAccountConfig(
+                name="personal", client_secrets_path=str(missing)
+            )
+        }
+        errors = check_calendar_accounts(accts)
+        out = capsys.readouterr().out
+        assert errors == 1
+        assert "Calendar [personal]: client_secrets file missing" in out
+
+
+class TestDoctorMe:
+    """doctor.check_me — [me] block status reporting."""
+
+    def test_absent_prints_not_configured(self, capsys) -> None:
+        from worker.doctor import check_me
+
+        errors = check_me(None)
+        out = capsys.readouterr().out
+        assert errors == 0
+        assert "[me]: not configured" in out
+
+    def test_present_with_two_emails_prints_canonicalized(self, capsys) -> None:
+        """[me] with 2 emails: prints both canonicalized."""
+        from worker.doctor import check_me
+
+        me = MeConfig(emails=["alice@personal.com", "alice@work.com"])
+        errors = check_me(me)
+        out = capsys.readouterr().out
+        assert errors == 0
+        assert "[me]: 2 email(s)" in out
+        assert "alice@personal.com" in out
+        assert "alice@work.com" in out
+
+    def test_googlemail_alias_prints_canonical_form(self, capsys) -> None:
+        """[me] with @googlemail.com: prints @gmail.com (canonicalized)."""
+        from worker.doctor import check_me
+
+        # MeConfig built via _parse canonicalizes; simulate that here.
+        me = _parse({"me": {"emails": ["Alice@GoogleMail.com"]}}).me
+        assert me is not None
+        errors = check_me(me)
+        out = capsys.readouterr().out
+        assert errors == 0
+        assert "alice@gmail.com" in out
+        assert "googlemail.com" not in out

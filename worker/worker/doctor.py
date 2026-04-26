@@ -5,7 +5,14 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
-from worker.config import DEFAULT_CONFIG_PATH, SlackSourceConfig, load_config
+from worker.config import (
+    CalendarAccountConfig,
+    DEFAULT_CONFIG_PATH,
+    GmailAccountConfig,
+    MeConfig,
+    SlackSourceConfig,
+    load_config,
+)
 
 
 def _ok(msg: str) -> None:
@@ -65,59 +72,132 @@ def check_slack_auth(token_path: Path | None = None) -> int:
     return 0
 
 
-def check_gmail_auth(client_secrets_path: Path, account: str) -> int:
-    """Check Gmail auth status for *account* and print a result line.
+def _check_google_auth(
+    label: str,
+    account: str,
+    client_secrets_path: Path,
+    scopes: list[str],
+    token_path: Path,
+) -> int:
+    """Shared probe for Gmail/Calendar OAuth credentials.
 
+    *label* is the user-facing source name (``Gmail`` / ``Calendar``).
     Returns 0 on OK / not-configured, 1 if the client secrets file is
-    missing or the saved token is rejected / unreadable.  Mirrors the
-    shape of :func:`check_slack_auth` but is parameterized per-account;
-    the per-account doctor loop lives in a separate bead.
+    missing or the saved token is rejected / unreadable.
     """
-    from worker.sources.gmail_auth import SCOPES, token_path_for_account
-
     secrets = Path(client_secrets_path).expanduser()
     if not secrets.is_file():
-        _fail(
-            f"Gmail auth (account={account}): client_secrets_path missing "
-            f"({secrets})"
-        )
+        _fail(f"{label} [{account}]: client_secrets file missing ({secrets})")
         return 1
 
-    path = token_path_for_account(account)
-    if not path.exists():
-        _warn(
-            f"Gmail auth (account={account}): not configured (run install flow)"
-        )
+    if not token_path.exists():
+        _warn(f"{label} [{account}]: not configured (run install flow)")
         return 0
     try:
         from google.auth.transport.requests import Request
         from google.oauth2.credentials import Credentials
 
-        creds = Credentials.from_authorized_user_file(str(path), SCOPES)
+        creds = Credentials.from_authorized_user_file(str(token_path), scopes)
     except Exception as exc:
-        _fail(
-            f"Gmail auth (account={account}): token unreadable ({exc}) "
-            "— re-run install flow"
-        )
+        _fail(f"{label} [{account}]: token unreadable ({exc}) — re-run install flow")
         return 1
     if creds.valid:
-        _ok(f"Gmail auth (account={account}): OK")
+        _ok(f"{label} [{account}]: OK")
         return 0
     if creds.expired and creds.refresh_token:
         try:
             creds.refresh(Request())
         except Exception as exc:
-            _fail(
-                f"Gmail auth (account={account}): refresh failed ({exc}) "
-                "— re-run install flow"
-            )
+            _fail(f"{label} [{account}]: reauth required ({exc}) — re-run install flow")
             return 1
-        _ok(f"Gmail auth (account={account}): OK (refreshed)")
+        _ok(f"{label} [{account}]: OK (refreshed)")
         return 0
-    _fail(
-        f"Gmail auth (account={account}): token invalid — re-run install flow"
-    )
+    _fail(f"{label} [{account}]: reauth required — re-run install flow")
     return 1
+
+
+def check_gmail_auth(client_secrets_path: Path, account: str) -> int:
+    """Check Gmail auth status for *account* and print a result line.
+
+    Returns 0 on OK / not-configured, 1 if the client secrets file is
+    missing or the saved token is rejected / unreadable.
+    """
+    from worker.sources.gmail_auth import SCOPES, token_path_for_account
+
+    return _check_google_auth(
+        "Gmail",
+        account,
+        Path(client_secrets_path),
+        SCOPES,
+        token_path_for_account(account),
+    )
+
+
+def check_calendar_auth(client_secrets_path: Path, account: str) -> int:
+    """Check Google Calendar auth status for *account* and print a result line.
+
+    Returns 0 on OK / not-configured, 1 if the client secrets file is
+    missing or the saved token is rejected / unreadable.
+    """
+    from worker.sources.calendar_auth import SCOPES, token_path_for_account
+
+    return _check_google_auth(
+        "Calendar",
+        account,
+        Path(client_secrets_path),
+        SCOPES,
+        token_path_for_account(account),
+    )
+
+
+def check_gmail_accounts(accounts: dict[str, GmailAccountConfig]) -> int:
+    """Per-account doctor probe for ``cfg.gmail``. Returns error count."""
+    if not accounts:
+        _ok("Gmail disabled (no [sources.gmail.<account>] sections)")
+        return 0
+    errors = 0
+    for name, acct in accounts.items():
+        if not acct.enabled:
+            _ok(f"Gmail [{name}]: disabled")
+            continue
+        errors += check_gmail_auth(Path(acct.client_secrets_path), name)
+    return errors
+
+
+def check_calendar_accounts(
+    accounts: dict[str, CalendarAccountConfig],
+) -> int:
+    """Per-account doctor probe for ``cfg.google_calendar``. Returns errors."""
+    if not accounts:
+        _ok("Calendar disabled (no [sources.google_calendar.<account>] sections)")
+        return 0
+    errors = 0
+    for name, acct in accounts.items():
+        if not acct.enabled:
+            _ok(f"Calendar [{name}]: disabled")
+            continue
+        errors += check_calendar_auth(Path(acct.client_secrets_path), name)
+    return errors
+
+
+def check_me(me: MeConfig | None) -> int:
+    """Print [me] block status. Returns 0 always (the block is optional)."""
+    if me is None:
+        _warn(
+            "[me]: not configured (optional — declare your own emails to "
+            "enable self-identity merging)"
+        )
+        return 0
+    from worker.parsers.base import canonicalize_email
+
+    canonical = [canonicalize_email(e) for e in me.emails]
+    if canonical != me.emails:
+        # Parser should have canonicalized at load time; surface drift.
+        _warn(
+            f"[me]: emails not canonicalized (stored={me.emails}, expected={canonical})"
+        )
+    _ok(f"[me]: {len(me.emails)} email(s) ({', '.join(me.emails)})")
+    return 0
 
 
 def check_slack(slack_cfg: SlackSourceConfig) -> int:
@@ -328,6 +408,18 @@ def doctor(config_path: Path | None = None) -> int:
     # ── 6b. Slack source ────────────────────────────────────────────
     print("\nSlack")
     errors += check_slack(cfg.slack)
+
+    # ── 6c. Gmail accounts ──────────────────────────────────────────
+    print("\nGmail")
+    errors += check_gmail_accounts(cfg.gmail)
+
+    # ── 6d. Calendar accounts ───────────────────────────────────────
+    print("\nCalendar")
+    errors += check_calendar_accounts(cfg.google_calendar)
+
+    # ── 6e. [me] block ──────────────────────────────────────────────
+    print("\n[me]")
+    errors += check_me(cfg.me)
 
     # ── 7. Reranker ──────────────────────────────────────────────────
     print("\nReranker")
