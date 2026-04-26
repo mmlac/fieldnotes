@@ -304,6 +304,21 @@ poll_interval_seconds = 300
 max_initial_days = 90
 calendar_ids = ["primary"]
 client_secrets_path = "~/.fieldnotes/credentials.json"
+
+[sources.slack]
+enabled = false
+# JSON file with Slack app client_id + client_secret. Required when enabled.
+client_secrets_path = "~/.fieldnotes/slack_credentials.json"
+poll_interval_seconds = 300
+max_initial_days = 90                  # backfill window per conversation
+include_channels = []                  # channel names or IDs; [] = all joined channels
+exclude_channels = []                  # mutually exclusive with include_channels (warn)
+include_dms = true                     # include 1:1 and multi-party DMs
+include_archived = false
+window_max_tokens = 512                # burst-window upper bound (token count) [128..4096]
+window_gap_seconds = 1800              # quiet-gap that closes a window (30 min) [60..86400]
+window_overlap_messages = 3            # whole-message overlap between windows [0..10]
+download_files = false                 # v1: skip file uploads (separate later bead)
 ```
 
 #### Gmail OAuth Setup
@@ -331,6 +346,38 @@ Google Calendar uses the same OAuth credentials file and Google Cloud project as
 3. **Multiple calendars**: Set `calendar_ids` to a list of calendar IDs. Use `"primary"` for your main calendar. Other calendars can be found in Google Calendar settings under *Settings for other calendars → Integrate calendar → Calendar ID*.
 
 > **Tip:** The same `credentials.json` file works for both Gmail and Google Calendar — they share the OAuth client, but each source has its own token file and consent flow.
+
+#### Slack OAuth Setup
+
+Slack indexing requires a Slack app you create in your own workspace. This is a one-time setup:
+
+1. **Create a Slack app**: Go to [api.slack.com/apps](https://api.slack.com/apps) and click *Create New App*.
+2. **Choose "From scratch"**: Pick a name (e.g., "Fieldnotes") and select your workspace.
+3. **Add OAuth scopes**: On *OAuth & Permissions*, under *Bot Token Scopes*, add:
+   - `channels:history`
+   - `channels:read`
+   - `groups:history`
+   - `groups:read`
+   - `im:history`
+   - `im:read`
+   - `mpim:history`
+   - `mpim:read`
+   - `users:read`
+   - `users:read.email`
+4. **Set the redirect URL**: On *OAuth & Permissions → Redirect URLs*, add `http://localhost:3000/oauth/callback` — the listener fieldnotes runs locally during the install flow.
+5. **Install to workspace**: Still on *OAuth & Permissions*, click *Install to Workspace* and approve. Copy the *Client ID* and *Client Secret* from *Basic Information → App Credentials*.
+6. **Save credentials**: Write a JSON file at `~/.fieldnotes/slack_credentials.json` containing the client id and secret:
+
+   ```json
+   {
+     "client_id": "1234567890.1234567890",
+     "client_secret": "abcdef0123456789abcdef0123456789"
+   }
+   ```
+
+7. **First daemon run**: When the daemon starts with Slack enabled, it opens your browser to complete the OAuth flow. Approve the requested scopes. The resulting bot token is saved to `~/.fieldnotes/data/slack_token.json` (mode `0600`) and validated on subsequent runs.
+
+> **Troubleshooting:** A `missing_scope` error from any Slack API call means the app needs additional scopes. Add them to the app's OAuth & Permissions page, then **re-install the app to the workspace** — newly added scopes are not granted to existing tokens. Delete `~/.fieldnotes/data/slack_token.json` and the daemon will re-run the OAuth flow on next start.
 
 ```toml
 [sources.repositories]
@@ -427,6 +474,7 @@ batch_size = 32                  # cross-encoder batch size
 | **macOS Apps** | Polling (default: every 6 hours) | Installed application bundles (Info.plist) |
 | **Homebrew** | Polling (default: every 6 hours) | Installed formulae and casks with descriptions |
 | **Google Calendar** | Backfill + polling (configurable interval) | Events, attendees, organizers, locations |
+| **Slack** | Backfill + polling (configurable interval) | Channel threads, DM/MPIM bursts, with attendees and mentions |
 
 Each source emits `IngestEvent` dicts into the pipeline queue. Modified files trigger a delete-before-rewrite cycle that cleans stale graph data (edges, chunks, orphan entities) in a single Neo4j transaction before writing the updated version.
 
@@ -481,11 +529,13 @@ Fieldnotes automatically merges tags across OmniFocus and Obsidian so that a sin
 - Each `categories` value must match the OmniFocus parent tag name exactly (case-sensitive).
 - The frontmatter key name is configurable via `categories_key` in `[sources.obsidian]` (default: `categories`).
 
-### Cross-Source Person Linking (Gmail + Google Calendar + Obsidian)
+### Cross-Source Person Linking (Gmail + Google Calendar + Obsidian + Slack)
 
-When multiple people-aware sources are enabled, Fieldnotes automatically merges Person nodes across sources into a single graph identity based on email address. An attendee at a meeting, the sender of an email, and a person mentioned in an Obsidian note all link to the same Person node — no manual linking required.
+When multiple people-aware sources are enabled, Fieldnotes automatically merges Person nodes across sources into a single graph identity based on email address. A user mentioned in Slack, an attendee at a meeting, the sender of an email, and a person mentioned in an Obsidian note all link to the same Person node — no manual linking required.
 
-**How it works:** The Gmail parser, Google Calendar parser, and Obsidian parser all emit `GraphHint` records with `object_merge_key="email"` and an `object_id` of the form `person:{email}`. The pipeline Writer `MERGE`s Person nodes by email, so an attendee in a calendar event, a correspondent in a Gmail thread, and a contact in an Obsidian note are guaranteed to resolve to the same graph node. Periodic `reconcile_persons()` runs create `SAME_AS` edges when the same email appears across sources, keeping the longest display name.
+**How it works:** The Gmail parser, Google Calendar parser, Obsidian parser, and Slack parser all emit `GraphHint` records with `object_merge_key="email"` and an `object_id` of the form `person:{email}`. The pipeline Writer `MERGE`s Person nodes by email, so a Slack message author, an attendee in a calendar event, a correspondent in a Gmail thread, and a contact in an Obsidian note are guaranteed to resolve to the same graph node. Periodic `reconcile_persons()` runs create `SAME_AS` edges when the same email appears across sources, keeping the longest display name.
+
+**Slack-specific identity:** When a Slack user's profile email isn't visible (the workspace doesn't grant `users:read.email`, or the user has hidden it), the Slack parser falls back to keying the Person on `slack-user:{team_id}/{user_id}`. As soon as the email becomes available on a later message, a separate email-keyed Person is emitted that also carries `(slack_user_id, team_id)`. A dedicated `reconcile_persons_by_slack_user()` step links the two via `SAME_AS`. See [docs/similarity.md](docs/similarity.md) for the full reconcile chain.
 
 **Email canonicalization:** All parsers normalise emails through a shared `canonicalize_email()` function that lower-cases, trims whitespace, and rewrites `@googlemail.com` → `@gmail.com` (Google treats these as the same mailbox). This prevents duplicate Person nodes for the same real-world identity.
 
@@ -574,6 +624,7 @@ On subsequent startups, the cursor is loaded and diffed against the current file
 | **Git Repos** | `~/.fieldnotes/data/repo_cursor.json` | Per-repo HEAD commit SHA |
 | **OmniFocus** | `~/.fieldnotes/state/omnifocus.json` | Per-task content hash |
 | **Google Calendar** | `~/.fieldnotes/data/calendar_cursor.json` | Per-calendar syncToken |
+| **Slack** | `~/.fieldnotes/data/slack_cursor.json` | Per-conversation latest_ts |
 
 Cursors are checkpointed every 5 minutes during operation and saved on graceful shutdown, so a restart only re-processes files that changed since the last checkpoint.
 
@@ -715,7 +766,7 @@ fieldnotes [-c CONFIG] [-v] <command>
 **`timeline [--since SINCE] [--until UNTIL] [--source SOURCE] [--limit N] [--json]`** — Show a chronological timeline of activity across all indexed sources. Answers "what was I working on?" by listing file modifications, task completions, emails, and commits ordered by time.
   - `--since` — Start of the time range. Accepts relative values (`24h`, `7d`, `2w`) or ISO 8601 timestamps. Default: `24h`.
   - `--until` — End of the time range. Default: now.
-  - `--source` — Filter to a single source type (`obsidian`, `omnifocus`, `gmail`, `file`, `repositories`).
+  - `--source` — Filter to a single source type (`obsidian`, `omnifocus`, `gmail`, `file`, `repositories`, `slack`).
   - `--limit` — Maximum entries. Default: 50.
   - `--json` — Structured JSON output.
 
@@ -845,6 +896,8 @@ Fieldnotes exposes tools over the [Model Context Protocol](https://modelcontextp
 | `topic_gaps()` | Cluster-discovered topics missing from your manual taxonomy |
 | `ingest_status()` | Index health: source counts, last sync times, circuit breaker states |
 
+The `source_type` parameter on `search`, `ask`, `timeline`, and `digest` accepts any configured source key — including `slack`.
+
 ### Claude Desktop Integration
 
 ```bash
@@ -870,7 +923,7 @@ This registers fieldnotes as an MCP server in Claude Desktop's configuration. Af
 ### Pipeline Stages
 
 1. **Parser** — Source-specific adapter extracts text, metadata, and graph hints (pre-known entities/edges) from raw content. Files with unsupported MIME types — or those matching `index_only_patterns` — get a metadata-only record (filename, extension, path, size) with a human-readable description so they remain discoverable via search.
-2. **Chunker** — Sentence-aware splitter produces ~512-token chunks with 64-token overlap. Short chunks are merged to avoid fragmentation.
+2. **Chunker** — Sentence-aware splitter produces ~512-token chunks with 64-token overlap. Short chunks are merged to avoid fragmentation. Slack documents opt into a *whole-message overlap* mode (`chunk_strategy={"mode": "message_overlap"}`) so chunk boundaries fall on message gaps and never split a message mid-text.
 3. **Embedder** — Generates 768-dim vectors via the `embed` role model. Batches 64 texts per call.
 4. **Extractor** — LLM extracts named entities (typed: Person, Technology, etc.) and relationship triples from each chunk. Falls back to `extract_fallback` role on JSON parse errors.
 5. **Resolver** — Deduplicates entities across chunks using a 3-strategy cascade: exact string match → fuzzy match (rapidfuzz `token_sort_ratio` with length-aware thresholds) → embedding cosine similarity. Resolves references to canonical names.
