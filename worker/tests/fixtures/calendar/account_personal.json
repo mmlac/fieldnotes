@@ -1,0 +1,24 @@
+{
+  "events": {
+    "items": [
+      {
+        "id": "evt-personal-1",
+        "status": "confirmed",
+        "summary": "Personal: lunch with Alice",
+        "description": "Catching up over lunch",
+        "location": "Cafe Central",
+        "start": {"dateTime": "2026-04-01T12:00:00Z"},
+        "end": {"dateTime": "2026-04-01T13:00:00Z"},
+        "organizer": {"email": "me@personal.com", "displayName": "Me"},
+        "creator": {"email": "me@personal.com"},
+        "htmlLink": "https://calendar.google.com/event?eid=evt-personal-1",
+        "updated": "2026-03-25T08:00:00Z",
+        "attendees": [
+          {"email": "alice@example.com", "displayName": "Alice", "responseStatus": "accepted"},
+          {"email": "me@personal.com", "displayName": "Me", "responseStatus": "accepted", "self": true}
+        ]
+      }
+    ],
+    "nextSyncToken": "sync-personal-1"
+  }
+}

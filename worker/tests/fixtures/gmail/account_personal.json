@@ -1,0 +1,93 @@
+{
+  "list": {
+    "messages": [
+      {"id": "p-m1"},
+      {"id": "p-m2"},
+      {"id": "p-m3"},
+      {"id": "p-m4"},
+      {"id": "p-m-shared"}
+    ]
+  },
+  "messages": {
+    "p-m1": {
+      "id": "p-m1",
+      "threadId": "p-t1",
+      "historyId": "1001",
+      "internalDate": "1700000001000",
+      "payload": {
+        "mimeType": "text/plain",
+        "headers": [
+          {"name": "Subject", "value": "Lunch plans"},
+          {"name": "From", "value": "Me <me@personal.com>"},
+          {"name": "To", "value": "alice@example.com"},
+          {"name": "Date", "value": "Mon, 1 Jan 2026 09:00:00 +0000"}
+        ],
+        "body": {"data": "TGV0J3MgZ3JhYiBsdW5jaCBuZXh0IHdlZWsu"}
+      }
+    },
+    "p-m2": {
+      "id": "p-m2",
+      "threadId": "p-t2",
+      "historyId": "1002",
+      "internalDate": "1700000002000",
+      "payload": {
+        "mimeType": "text/plain",
+        "headers": [
+          {"name": "Subject", "value": "Re: Project Phoenix"},
+          {"name": "From", "value": "Alice <alice@example.com>"},
+          {"name": "To", "value": "me@personal.com"},
+          {"name": "Date", "value": "Mon, 1 Jan 2026 10:00:00 +0000"}
+        ],
+        "body": {"data": "U291bmRzIGdvb2QsIGxldCdzIHRhbGsgRnJpZGF5Lg=="}
+      }
+    },
+    "p-m3": {
+      "id": "p-m3",
+      "threadId": "p-t3",
+      "historyId": "1003",
+      "internalDate": "1700000003000",
+      "payload": {
+        "mimeType": "text/plain",
+        "headers": [
+          {"name": "Subject", "value": "Bob check-in"},
+          {"name": "From", "value": "Me <me@personal.com>"},
+          {"name": "To", "value": "Bob <bob@example.com>"},
+          {"name": "Date", "value": "Mon, 1 Jan 2026 11:00:00 +0000"}
+        ],
+        "body": {"data": "SGV5IEJvYiwgaG93J3MgaXQgZ29pbmc/"}
+      }
+    },
+    "p-m4": {
+      "id": "p-m4",
+      "threadId": "p-t4",
+      "historyId": "1004",
+      "internalDate": "1700000004000",
+      "payload": {
+        "mimeType": "text/plain",
+        "headers": [
+          {"name": "Subject", "value": "Charlie note"},
+          {"name": "From", "value": "Charlie <charlie@example.com>"},
+          {"name": "To", "value": "me@personal.com"},
+          {"name": "Date", "value": "Mon, 1 Jan 2026 12:00:00 +0000"}
+        ],
+        "body": {"data": "VGhhbmtzIGZvciB0aGUgcmVmZXJyYWwu"}
+      }
+    },
+    "p-m-shared": {
+      "id": "p-m-shared",
+      "threadId": "t-shared",
+      "historyId": "1005",
+      "internalDate": "1700000005000",
+      "payload": {
+        "mimeType": "text/plain",
+        "headers": [
+          {"name": "Subject", "value": "Alice — personal account"},
+          {"name": "From", "value": "Alice <alice@example.com>"},
+          {"name": "To", "value": "me@personal.com"},
+          {"name": "Date", "value": "Mon, 1 Jan 2026 13:00:00 +0000"}
+        ],
+        "body": {"data": "Tm90ZSBmcm9tIG15IHBlcnNvbmFsLg=="}
+      }
+    }
+  }
+}

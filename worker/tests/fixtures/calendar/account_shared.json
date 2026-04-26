@@ -1,0 +1,24 @@
+{
+  "events": {
+    "items": [
+      {
+        "id": "evt-shared-1",
+        "status": "confirmed",
+        "summary": "Shared: ops review",
+        "description": "Weekly ops review for the shared team calendar",
+        "location": "Room A",
+        "start": {"dateTime": "2026-04-02T15:00:00Z"},
+        "end": {"dateTime": "2026-04-02T16:00:00Z"},
+        "organizer": {"email": "eve@example.com", "displayName": "Eve"},
+        "creator": {"email": "eve@example.com"},
+        "htmlLink": "https://calendar.google.com/event?eid=evt-shared-1",
+        "updated": "2026-03-26T08:00:00Z",
+        "attendees": [
+          {"email": "eve@example.com", "displayName": "Eve", "responseStatus": "accepted"},
+          {"email": "frank@example.com", "displayName": "Frank", "responseStatus": "needsAction"}
+        ]
+      }
+    ],
+    "nextSyncToken": "sync-shared-1"
+  }
+}

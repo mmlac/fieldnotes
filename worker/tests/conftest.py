@@ -22,6 +22,8 @@ if _TESTS_DIR not in sys.path:
 
 
 _SLACK_FIXTURES_DIR = Path(_TESTS_DIR) / "fixtures" / "slack"
+_GMAIL_FIXTURES_DIR = Path(_TESTS_DIR) / "fixtures" / "gmail"
+_CALENDAR_FIXTURES_DIR = Path(_TESTS_DIR) / "fixtures" / "calendar"
 
 
 @pytest.fixture
@@ -73,3 +75,84 @@ def fake_slack_client() -> MagicMock:
     client.conversations_replies.side_effect = _replies
     client.users_info.side_effect = _users_info
     return client
+
+
+def _load_gmail_fixture(account: str) -> dict[str, Any]:
+    path = _GMAIL_FIXTURES_DIR / f"account_{account}.json"
+    return json.loads(path.read_text())
+
+
+def _load_calendar_fixture(account: str) -> dict[str, Any]:
+    path = _CALENDAR_FIXTURES_DIR / f"account_{account}.json"
+    return json.loads(path.read_text())
+
+
+def make_fake_gmail_messages_api(account: str) -> MagicMock:
+    """Build a fake ``service.users().messages()`` API for *account*.
+
+    Backed by ``tests/fixtures/gmail/account_<account>.json``.  Routes the
+    ``list``/``get`` calls used by ``GmailSource._backfill`` so the source's
+    cursor + per-message paths run against canned data without touching
+    the real Gmail API.
+    """
+    fixture = _load_gmail_fixture(account)
+    list_result = fixture["list"]
+    messages = fixture["messages"]
+
+    api = MagicMock()
+
+    list_req = MagicMock()
+    list_req.execute.return_value = list_result
+    api.list.return_value = list_req
+
+    def _get(**kwargs: Any) -> MagicMock:
+        msg_id = kwargs["id"]
+        req = MagicMock()
+        req.execute.return_value = messages[msg_id]
+        return req
+
+    api.get.side_effect = _get
+    return api
+
+
+def make_fake_calendar_service(account: str) -> MagicMock:
+    """Build a fake Google Calendar ``service`` for *account*.
+
+    The returned mock exposes ``.events().list(...).execute()`` returning
+    the canned response for the account, suitable for driving
+    ``GoogleCalendarSource._poll_calendar``.
+    """
+    fixture = _load_calendar_fixture(account)
+    events_response = fixture["events"]
+
+    list_req = MagicMock()
+    list_req.execute.return_value = events_response
+
+    events_api = MagicMock()
+    events_api.list.return_value = list_req
+
+    service = MagicMock()
+    service.events.return_value = events_api
+    return service
+
+
+@pytest.fixture
+def fake_gmail_clients() -> dict[str, MagicMock]:
+    """Per-account fake Gmail messages APIs (``personal``, ``work``)."""
+    if not _GMAIL_FIXTURES_DIR.is_dir():
+        pytest.skip(f"Gmail fixtures missing at {_GMAIL_FIXTURES_DIR}")
+    return {
+        "personal": make_fake_gmail_messages_api("personal"),
+        "work": make_fake_gmail_messages_api("work"),
+    }
+
+
+@pytest.fixture
+def fake_calendar_services() -> dict[str, MagicMock]:
+    """Per-account fake Google Calendar services (``personal``, ``shared``)."""
+    if not _CALENDAR_FIXTURES_DIR.is_dir():
+        pytest.skip(f"Calendar fixtures missing at {_CALENDAR_FIXTURES_DIR}")
+    return {
+        "personal": make_fake_calendar_service("personal"),
+        "shared": make_fake_calendar_service("shared"),
+    }

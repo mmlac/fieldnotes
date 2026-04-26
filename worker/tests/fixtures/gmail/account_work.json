@@ -1,0 +1,59 @@
+{
+  "list": {
+    "messages": [
+      {"id": "w-m1"},
+      {"id": "w-m2"},
+      {"id": "w-m-shared"}
+    ]
+  },
+  "messages": {
+    "w-m1": {
+      "id": "w-m1",
+      "threadId": "w-t1",
+      "historyId": "2001",
+      "internalDate": "1700001001000",
+      "payload": {
+        "mimeType": "text/plain",
+        "headers": [
+          {"name": "Subject", "value": "Quarterly review prep"},
+          {"name": "From", "value": "Alice <alice@example.com>"},
+          {"name": "To", "value": "me@work.com"},
+          {"name": "Date", "value": "Mon, 1 Jan 2026 09:00:00 +0000"}
+        ],
+        "body": {"data": "Q2FuIHlvdSBzZW5kIG1lIHRoZSBkZWNrPw=="}
+      }
+    },
+    "w-m2": {
+      "id": "w-m2",
+      "threadId": "w-t2",
+      "historyId": "2002",
+      "internalDate": "1700001002000",
+      "payload": {
+        "mimeType": "text/plain",
+        "headers": [
+          {"name": "Subject", "value": "Budget"},
+          {"name": "From", "value": "Me <me@work.com>"},
+          {"name": "To", "value": "Dan <dan@example.com>"},
+          {"name": "Date", "value": "Mon, 1 Jan 2026 10:00:00 +0000"}
+        ],
+        "body": {"data": "Q29uZmlybWluZyB0aGUgUTEgYnVkZ2V0Lg=="}
+      }
+    },
+    "w-m-shared": {
+      "id": "w-m-shared",
+      "threadId": "t-shared",
+      "historyId": "2003",
+      "internalDate": "1700001003000",
+      "payload": {
+        "mimeType": "text/plain",
+        "headers": [
+          {"name": "Subject", "value": "Alice — work account"},
+          {"name": "From", "value": "Alice <alice@example.com>"},
+          {"name": "To", "value": "me@work.com"},
+          {"name": "Date", "value": "Mon, 1 Jan 2026 11:00:00 +0000"}
+        ],
+        "body": {"data": "Tm90ZSBmcm9tIHdvcmsu"}
+      }
+    }
+  }
+}
