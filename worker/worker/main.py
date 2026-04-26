@@ -101,7 +101,9 @@ def _setup_logging(level: str, *, log_file: Path | None = None) -> None:
 
         log_file.parent.mkdir(parents=True, exist_ok=True)
         file_handler = RotatingFileHandler(
-            log_file, maxBytes=10 * 1024 * 1024, backupCount=3,
+            log_file,
+            maxBytes=10 * 1024 * 1024,
+            backupCount=3,
         )
         file_handler.setFormatter(formatter)
         root.addHandler(file_handler)
@@ -188,7 +190,7 @@ async def _run(cfg: Config) -> None:
     WORKER_UPTIME.set(0)
 
     # Initialize pipeline
-    pipeline = Pipeline(registry=registry, writer=writer)
+    pipeline = Pipeline(registry=registry, writer=writer, me_config=cfg.me)
     logger.info("Pipeline initialized")
 
     # Build sources
@@ -237,7 +239,9 @@ async def _run(cfg: Config) -> None:
     )
     recovered = queue.recover()
     if recovered:
-        logger.info("Recovered %d interrupted queue item(s) from previous run", recovered)
+        logger.info(
+            "Recovered %d interrupted queue item(s) from previous run", recovered
+        )
 
     def _on_source_task_done(source_name: str, task: asyncio.Task[None]) -> None:
         """Surface silent source-task crashes (see ``serve_daemon._on_source_task_done``)."""

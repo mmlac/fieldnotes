@@ -19,6 +19,7 @@ from typing import Any
 from collections import defaultdict
 
 from worker.circuit_breaker import CircuitOpenError
+from worker.config import MeConfig
 from worker.metrics import (
     CHUNKS_EMBEDDED,
     DOCUMENTS_FAILED,
@@ -88,12 +89,14 @@ class Pipeline:
         writer: Writer,
         vision_queue: VisionQueue | None = None,
         progress: ProgressReporter | None = None,
+        me_config: MeConfig | None = None,
     ) -> None:
         self._registry = registry
         self._writer = writer
         self._vision_queue = vision_queue
         self._app_desc_cache = AppDescriptionCache()
         self._progress: ProgressReporter = progress or NullProgressReporter()
+        self._me_config = me_config
 
     def process(
         self,
@@ -368,6 +371,19 @@ class Pipeline:
                 "Transitive SAME_AS closure failed — will retry on next batch",
                 exc_info=True,
             )
+
+        # Self-identity ([me] block): collapse the user's own emails into
+        # one logical self-Person via SAME_AS edges.  Runs last so it can
+        # group whatever Persons the email-based merge produced for the
+        # user's accounts across sources.
+        if self._me_config is not None:
+            try:
+                self._writer.reconcile_self_person(self._me_config)
+            except Exception:
+                logger.warning(
+                    "Self-identity reconciliation failed — will retry on next batch",
+                    exc_info=True,
+                )
 
         # Return all docs that need re-processing: permanent failures +
         # circuit-breaker-deferred docs.  Callers should re-submit deferred

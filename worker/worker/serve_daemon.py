@@ -66,7 +66,9 @@ async def _run_daemon(cfg: Config, *, progress_enabled: bool = False) -> None:
     progress: ProgressReporter = (
         RichProgressReporter() if progress_enabled else NullProgressReporter()
     )
-    pipeline = Pipeline(registry=registry, writer=writer, progress=progress)
+    pipeline = Pipeline(
+        registry=registry, writer=writer, progress=progress, me_config=cfg.me
+    )
 
     sources = _build_sources(cfg)
     if not sources:
@@ -110,7 +112,9 @@ async def _run_daemon(cfg: Config, *, progress_enabled: bool = False) -> None:
     )
     recovered = queue.recover()
     if recovered:
-        logger.info("Recovered %d interrupted queue item(s) from previous run", recovered)
+        logger.info(
+            "Recovered %d interrupted queue item(s) from previous run", recovered
+        )
 
     def _on_source_task_done(source_name: str, task: asyncio.Task[None]) -> None:
         """Surface silent source-task crashes.
@@ -237,9 +241,7 @@ async def _run_daemon(cfg: Config, *, progress_enabled: bool = False) -> None:
                 for doc in parsed_docs:
                     if stop_event.is_set():
                         break
-                    process_task = loop.run_in_executor(
-                        None, pipeline.process, doc
-                    )
+                    process_task = loop.run_in_executor(None, pipeline.process, doc)
                     stop_task = asyncio.ensure_future(stop_event.wait())
                     done, _pending = await asyncio.wait(
                         [process_task, stop_task],
@@ -282,9 +284,7 @@ async def _run_daemon(cfg: Config, *, progress_enabled: bool = False) -> None:
                     wait = max(1.0, min(remaining, 30.0))
                 else:
                     wait = 10.0
-                logger.info(
-                    "Sleeping %.0fs for circuit breaker recovery", wait
-                )
+                logger.info("Sleeping %.0fs for circuit breaker recovery", wait)
                 await asyncio.sleep(wait)
             except Exception:
                 logger.exception(
@@ -412,17 +412,13 @@ def run_daemon(
     for name, provider in cfg.providers.items():
         if provider.type != "ollama":
             continue
-        base_url = provider.settings.get(
-            "base_url", "http://localhost:11434"
-        )
+        base_url = provider.settings.get("base_url", "http://localhost:11434")
         logger.info("Waiting for Ollama (%s) at %s ...", name, base_url)
         for attempt in range(1, max_retries + 1):
             try:
                 import urllib.request
 
-                req = urllib.request.Request(
-                    f"{base_url}/api/tags", method="GET"
-                )
+                req = urllib.request.Request(f"{base_url}/api/tags", method="GET")
                 with urllib.request.urlopen(req, timeout=5) as resp:
                     if resp.status == 200:
                         logger.info("Ollama (%s) ready", name)

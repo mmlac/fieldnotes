@@ -51,7 +51,7 @@ from tenacity import (
 )
 
 from worker.circuit_breaker import CircuitBreaker, CircuitOpenError
-from worker.config import Neo4jConfig, QdrantConfig
+from worker.config import MeConfig, Neo4jConfig, QdrantConfig
 from worker.log_sanitizer import sanitize_exception
 from worker.metrics import (
     CIRCUIT_BREAKER_REJECTIONS,
@@ -999,6 +999,105 @@ class Writer:
                     len(matches),
                 )
             return created
+
+    # ------------------------------------------------------------------
+    # Self-identity reconciliation ([me] block)
+    # ------------------------------------------------------------------
+
+    def reconcile_self_person(self, me_cfg: MeConfig) -> int:
+        """Collapse the user's own emails into one logical self-Person.
+
+        For each email in ``me_cfg.emails`` (already canonicalised by the
+        config loader), MERGE a Person keyed on ``email`` and flag it with
+        ``is_self = true``.  Pick a display name — ``me_cfg.name`` if set,
+        otherwise the longest existing ``name`` among the matched Persons —
+        and propagate it as ``display_name`` on every self-Person so a
+        ``MATCH (p:Person {is_self: true})`` query returns a stable label.
+
+        Finally create ``SAME_AS`` edges between every pair of self-Persons
+        (n*(n-1)/2 edges, idempotent via MERGE) carrying the standard
+        cross-source metadata: ``confidence = 1.0``, ``match_type =
+        'self_identity'``, ``cross_source = true``.
+
+        A single email is a no-op for SAME_AS edges (the lone Person is
+        still flagged ``is_self = true``).  Returns the number of new
+        ``SAME_AS`` edges created on this run (0 on subsequent runs).
+        """
+        return self._reconcile_self_person_neo4j(me_cfg)
+
+    @_neo4j_retry
+    def _reconcile_self_person_neo4j(self, me_cfg: MeConfig) -> int:
+        # Dedupe while preserving order.  Inputs are already canonicalised
+        # by ``_parse_me_config``; duplicates after canonicalisation
+        # (e.g. ``me@googlemail.com`` + ``me@gmail.com``) collapse here.
+        emails = list(dict.fromkeys(me_cfg.emails))
+        if not emails:
+            return 0
+
+        with self._neo4j_driver.session() as session:
+            # Phase 1: MERGE Person nodes by email and flag is_self.
+            # Collect existing names so we can pick a survivor display name.
+            result = session.run(
+                """
+                UNWIND $emails AS email
+                MERGE (p:Person {email: email})
+                SET p.is_self = true
+                RETURN collect(p.name) AS names
+                """,
+                emails=emails,
+            )
+            existing_names = [n for n in (result.single()["names"] or []) if n]
+
+            # Pick survivor display name.  ``me_cfg.name`` is an explicit
+            # override; otherwise pick the longest existing variant.
+            if me_cfg.name:
+                chosen = me_cfg.name
+            elif existing_names:
+                chosen = max(existing_names, key=len)
+            else:
+                chosen = None
+
+            if chosen:
+                session.run(
+                    """
+                    UNWIND $emails AS email
+                    MATCH (p:Person {email: email})
+                    SET p.display_name = $chosen
+                    """,
+                    emails=emails,
+                    chosen=chosen,
+                )
+
+            # Single self-email: no SAME_AS edges to create.
+            if len(emails) < 2:
+                return 0
+
+            edge_result = session.run(
+                """
+                MATCH (p:Person)
+                WHERE p.email IN $emails AND p.is_self = true
+                WITH collect(DISTINCT p) AS persons
+                UNWIND persons AS a
+                UNWIND persons AS b
+                WITH a, b
+                WHERE id(a) < id(b) AND NOT (a)-[:SAME_AS]-(b)
+                MERGE (a)-[r:SAME_AS]->(b)
+                SET r.confidence = 1.0,
+                    r.match_type = 'self_identity',
+                    r.cross_source = true
+                RETURN count(r) AS cnt
+                """,
+                emails=emails,
+            )
+            created = edge_result.single()["cnt"]
+
+        if created > 0:
+            logger.info(
+                "Self-identity reconciliation: created %d SAME_AS edges across %d emails",
+                created,
+                len(emails),
+            )
+        return created
 
     def close_same_as_transitive(self) -> int:
         """Compute transitive closure over SAME_AS edges.

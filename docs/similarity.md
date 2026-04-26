@@ -39,7 +39,26 @@ previous one:
    `Writer.resolve_cross_source_entities()` followed by
    `Writer.close_same_as_transitive()`.
 
-Steps 1, 2, and 5 are deterministic and source-agnostic. Steps 3 and 4
+6. **Self-identity** — `Writer.reconcile_self_person(cfg.me)`
+   Runs only when the top-level `[me]` block is configured. For each
+   email in `cfg.me.emails` (already canonicalised by the config loader)
+   it `MERGE`s a Person keyed on `email`, sets `is_self = true`, and
+   propagates a survivor `display_name`. It then creates `SAME_AS` edges
+   between every pair of self-Persons (`match_type = 'self_identity'`,
+   `confidence = 1.0`, `cross_source = true`).
+
+   The display name is `cfg.me.name` when set, otherwise the longest
+   existing `name` among the matched Persons. A single email is a no-op
+   for `SAME_AS` edges (the lone Person is still flagged `is_self`).
+
+   This step runs last, *after* the email-based merge has already
+   unified email-keyed Persons across sources. The `[me]` step then
+   groups *your* aliases — e.g. `me@personal.com` and `me@work.com` —
+   that the prior steps cannot link because they have different emails.
+   `is_self` is queryable directly: `MATCH (p:Person {is_self: true})`
+   resolves to your self-Persons (or follow `SAME_AS` from any of them).
+
+Steps 1, 2, 5, and 6 are deterministic and source-agnostic. Steps 3 and 4
 are fuzzy and tuned conservatively to avoid false-positive merges.
 
 ## Why a separate Slack-identity step?
