@@ -15,12 +15,14 @@ import pytest
 
 from _fake_queue import FakeQueue
 from worker.config import (
+    CalendarAccountConfig,
+    ClusteringConfig,
     Config,
     CoreConfig,
+    GmailAccountConfig,
     Neo4jConfig,
     QdrantConfig,
     SourceConfig,
-    ClusteringConfig,
 )
 from worker.main import (
     _setup_logging,
@@ -256,6 +258,103 @@ class TestBuildSources:
             result = _build_sources(cfg)
 
         assert len(result) == 2
+
+    def test_multi_account_gmail_spawns_one_source_per_account(self):
+        cfg = _cfg(
+            gmail={
+                "personal": GmailAccountConfig(
+                    name="personal",
+                    client_secrets_path="/tmp/personal.json",
+                ),
+                "work": GmailAccountConfig(
+                    name="work",
+                    client_secrets_path="/tmp/work.json",
+                ),
+            }
+        )
+        result = _build_sources(cfg)
+        assert len(result) == 2
+        accounts = sorted(s._account for s in result)
+        assert accounts == ["personal", "work"]
+        # Cursor keys are namespaced per-account so the two sources do
+        # not stomp each other's cursor state.
+        assert {s._cursor_key for s in result} == {"gmail:personal", "gmail:work"}
+
+    def test_multi_account_calendar_spawns_one_source_per_account(self):
+        cfg = _cfg(
+            google_calendar={
+                "home": CalendarAccountConfig(
+                    name="home",
+                    client_secrets_path="/tmp/home.json",
+                ),
+                "work": CalendarAccountConfig(
+                    name="work",
+                    client_secrets_path="/tmp/work.json",
+                ),
+            }
+        )
+        result = _build_sources(cfg)
+        assert len(result) == 2
+        accounts = sorted(s._account for s in result)
+        assert accounts == ["home", "work"]
+        assert {s._cursor_key for s in result} == {"calendar:home", "calendar:work"}
+
+    def test_disabled_account_is_skipped(self):
+        cfg = _cfg(
+            gmail={
+                "personal": GmailAccountConfig(
+                    name="personal",
+                    enabled=False,
+                    client_secrets_path="/tmp/personal.json",
+                ),
+                "work": GmailAccountConfig(
+                    name="work",
+                    enabled=True,
+                    client_secrets_path="/tmp/work.json",
+                ),
+            }
+        )
+        result = _build_sources(cfg)
+        assert len(result) == 1
+        assert result[0]._account == "work"
+
+    def test_two_gmail_two_calendar_spawns_four_sources(self):
+        """Daemon startup with 2 gmail + 2 calendar accounts spawns 4 sources."""
+        cfg = _cfg(
+            gmail={
+                "personal": GmailAccountConfig(
+                    name="personal", client_secrets_path="/tmp/p.json",
+                ),
+                "work": GmailAccountConfig(
+                    name="work", client_secrets_path="/tmp/w.json",
+                ),
+            },
+            google_calendar={
+                "home": CalendarAccountConfig(
+                    name="home", client_secrets_path="/tmp/h.json",
+                ),
+                "work": CalendarAccountConfig(
+                    name="work", client_secrets_path="/tmp/cw.json",
+                ),
+            },
+        )
+        result = _build_sources(cfg)
+        assert len(result) == 4
+        names = sorted(s.name() for s in result)
+        assert names == [
+            "gmail",
+            "gmail",
+            "google_calendar",
+            "google_calendar",
+        ]
+        # Each instance is reachable via its source_id property.
+        ids = sorted(s.source_id for s in result)
+        assert ids == [
+            "gmail:personal",
+            "gmail:work",
+            "google_calendar:home",
+            "google_calendar:work",
+        ]
 
 
 # ------------------------------------------------------------------

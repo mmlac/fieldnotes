@@ -46,9 +46,11 @@ from .cursor import save_json_atomic
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_CURSOR_PATH = (
-    Path.home() / ".fieldnotes" / "data" / "calendar_cursor.json"
-)
+def _default_cursor_path(account: str) -> Path:
+    """Per-account cursor file: ~/.fieldnotes/data/calendar_cursor-{account}.json."""
+    return Path.home() / ".fieldnotes" / "data" / f"calendar_cursor-{account}.json"
+
+
 DEFAULT_POLL_INTERVAL = 300  # 5 minutes
 DEFAULT_MAX_INITIAL_DAYS = 90  # backfill ~3 months
 DEFAULT_CALENDAR_IDS = ["primary"]
@@ -84,9 +86,13 @@ def _event_end_iso(event: dict[str, Any]) -> str:
 
 
 def _build_ingest_event(
-    event: dict[str, Any], calendar_id: str
+    event: dict[str, Any], calendar_id: str, account: str = ""
 ) -> dict[str, Any] | None:
     """Build an IngestEvent dict from a Calendar API event resource.
+
+    *calendar_id* is the synthetic ``{account}/{cal_id}`` identifier so two
+    accounts each polling ``primary`` produce distinct CalendarEvent and
+    Calendar nodes (e.g. ``work/primary`` vs ``home/primary``).
 
     Returns None for cancelled events (they are handled as deletes).
     """
@@ -149,6 +155,7 @@ def _build_ingest_event(
     meta: dict[str, Any] = {
         "event_id": event_id,
         "calendar_id": calendar_id,
+        "account": account,
         "summary": summary,
         "description": description,
         "location": location,
@@ -185,16 +192,40 @@ class GoogleCalendarSource(PythonSource):
     """
 
     def __init__(self) -> None:
+        self._account: str = ""
         self._poll_interval = DEFAULT_POLL_INTERVAL
         self._max_initial_days = DEFAULT_MAX_INITIAL_DAYS
         self._calendar_ids: list[str] = list(DEFAULT_CALENDAR_IDS)
         self._client_secrets_path = "~/.fieldnotes/credentials.json"
-        self._cursor_path = DEFAULT_CURSOR_PATH
+        self._cursor_path: Path | None = None
 
     def name(self) -> str:
         return "google_calendar"
 
+    @property
+    def source_id(self) -> str:
+        """Stable identifier surfacing the account: ``google_calendar:{account}``."""
+        return f"google_calendar:{self._account}"
+
+    @property
+    def _cursor_key(self) -> str:
+        """Per-account PersistentQueue cursor key (no cross-account stomping)."""
+        return f"calendar:{self._account}"
+
+    def _synthetic_calendar_id(self, calendar_id: str) -> str:
+        """Account-namespaced calendar identifier so two ``primary`` calendars
+        from different accounts do not collide in the graph."""
+        return f"{self._account}/{calendar_id}"
+
     def configure(self, cfg: dict[str, Any]) -> None:
+        account = cfg.get("account")
+        if not account or not isinstance(account, str):
+            raise ValueError(
+                "GoogleCalendarSource requires 'account' in config (the "
+                "account label from [sources.google_calendar.<account>])"
+            )
+        self._account = account
+
         self._poll_interval = int(
             cfg.get("poll_interval_seconds", DEFAULT_POLL_INTERVAL)
         )
@@ -207,6 +238,8 @@ class GoogleCalendarSource(PythonSource):
             self._client_secrets_path = cfg["client_secrets_path"]
         if "cursor_path" in cfg:
             self._cursor_path = Path(cfg["cursor_path"]).expanduser().resolve()
+        else:
+            self._cursor_path = _default_cursor_path(self._account)
 
     async def start(
         self,
@@ -225,12 +258,12 @@ class GoogleCalendarSource(PythonSource):
                 await asyncio.sleep(3600)
 
         creds = await asyncio.to_thread(
-            get_credentials, secrets_path, "default"
+            get_credentials, secrets_path, self._account
         )
         service = build("calendar", "v3", credentials=creds)
 
         # Load persisted cursor state from queue DB (migrated from JSON file).
-        raw_cursor = queue.load_cursor("calendar")
+        raw_cursor = queue.load_cursor(self._cursor_key)
         sync_tokens: dict[str, str] = {}
         seen_series: set[str] = set()
         if raw_cursor:
@@ -366,13 +399,16 @@ class GoogleCalendarSource(PythonSource):
                 # entire page so we can skip events whose source_id is
                 # already chunked (e.g. on a cold start with no cursor but
                 # an existing graph).
+                synthetic_id = self._synthetic_calendar_id(calendar_id)
                 already_indexed_sids: set[str] = set()
                 if is_backfill and indexed_check is not None and events:
                     candidate_sids: list[str] = []
                     for ev in events:
                         ev_id = ev.get("id")
                         if ev_id:
-                            candidate_sids.append(f"gcal:{calendar_id}:{ev_id}")
+                            candidate_sids.append(
+                                f"gcal:{synthetic_id}:{ev_id}"
+                            )
                     if candidate_sids:
                         try:
                             already_indexed_sids = await asyncio.to_thread(
@@ -388,7 +424,9 @@ class GoogleCalendarSource(PythonSource):
                             already_indexed_sids = set()
 
                 for event in events:
-                    ingest = _build_ingest_event(event, calendar_id)
+                    ingest = _build_ingest_event(
+                        event, synthetic_id, self._account
+                    )
                     if ingest is not None:
                         # Phase 1: skip events already chunked in Neo4j.
                         if (
@@ -462,7 +500,7 @@ class GoogleCalendarSource(PythonSource):
                 is_last = i == len(pending_events) - 1
                 queue.enqueue(
                     ingest,
-                    cursor_key="calendar" if is_last and cursor_val else None,
+                    cursor_key=self._cursor_key if is_last and cursor_val else None,
                     cursor_value=cursor_val if is_last else None,
                 )
             # Also persist to legacy file.
@@ -482,7 +520,7 @@ class GoogleCalendarSource(PythonSource):
                     is_last = i == len(pending_events) - 1
                     queue.enqueue(
                         ingest,
-                        cursor_key="calendar" if is_last and cursor_val else None,
+                        cursor_key=self._cursor_key if is_last and cursor_val else None,
                         cursor_value=cursor_val if is_last else None,
                     )
             # Save sync token (whether or not there were events).

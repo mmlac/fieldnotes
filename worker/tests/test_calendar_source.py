@@ -235,29 +235,44 @@ class TestGoogleCalendarSource:
 
     def test_configure_defaults(self) -> None:
         source = GoogleCalendarSource()
-        source.configure({})
+        source.configure({"account": "default"})
+        assert source._account == "default"
         assert source._poll_interval == 300
         assert source._max_initial_days == 90
         assert source._calendar_ids == ["primary"]
+        assert source.source_id == "google_calendar:default"
 
     def test_configure_custom(self) -> None:
         source = GoogleCalendarSource()
         source.configure({
+            "account": "work",
             "poll_interval_seconds": 600,
             "max_initial_days": 30,
             "calendar_ids": ["primary", "work@group.calendar.google.com"],
             "client_secrets_path": "/tmp/secrets.json",
         })
+        assert source._account == "work"
         assert source._poll_interval == 600
         assert source._max_initial_days == 30
         assert len(source._calendar_ids) == 2
         assert source._client_secrets_path == "/tmp/secrets.json"
+
+    def test_configure_requires_account(self) -> None:
+        source = GoogleCalendarSource()
+        with pytest.raises(ValueError, match="account"):
+            source.configure({"client_secrets_path": "/tmp/x.json"})
+
+    def test_default_cursor_path_includes_account(self) -> None:
+        source = GoogleCalendarSource()
+        source.configure({"account": "personal"})
+        assert source._cursor_path.name == "calendar_cursor-personal.json"
 
     @pytest.mark.asyncio
     async def test_missing_secrets_stays_idle(self, tmp_path: Path) -> None:
         """Source should log error and stay alive when secrets file is missing."""
         source = GoogleCalendarSource()
         source.configure({
+            "account": "default",
             "client_secrets_path": str(tmp_path / "nonexistent.json"),
         })
         queue = _TestQueue()
@@ -273,7 +288,7 @@ class TestGoogleCalendarSource:
     async def test_poll_calendar_initial_backfill(self) -> None:
         """_poll_calendar should fetch events and return a sync token."""
         source = GoogleCalendarSource()
-        source.configure({})
+        source.configure({"account": "default"})
         queue = _TestQueue()
 
         events_list_result = {
@@ -295,7 +310,11 @@ class TestGoogleCalendarSource:
         assert queue.qsize() > 0
         event = queue.get_nowait()
         assert event["source_type"] == "google_calendar"
-        assert event["source_id"] == "gcal:primary:evt-1"
+        # source_id uses synthetic ``{account}/{calendar_id}`` so two
+        # accounts each polling 'primary' don't collide.
+        assert event["source_id"] == "gcal:default/primary:evt-1"
+        assert event["meta"]["account"] == "default"
+        assert event["meta"]["calendar_id"] == "default/primary"
         # orderBy must NOT be set during backfill — it causes the
         # Google Calendar API to omit nextSyncToken from the response.
         call_kwargs = mock_events.list.call_args[1]
@@ -305,7 +324,7 @@ class TestGoogleCalendarSource:
     async def test_poll_calendar_incremental_sync(self) -> None:
         """With a sync token, should pass syncToken and showDeleted."""
         source = GoogleCalendarSource()
-        source.configure({})
+        source.configure({"account": "default"})
         queue = _TestQueue()
 
         events_list_result = {
@@ -333,7 +352,7 @@ class TestGoogleCalendarSource:
     async def test_poll_calendar_pagination(self) -> None:
         """Should handle paginated results."""
         source = GoogleCalendarSource()
-        source.configure({})
+        source.configure({"account": "default"})
         queue = _TestQueue()
 
         page1 = {
@@ -363,7 +382,7 @@ class TestGoogleCalendarSource:
     async def test_recurring_events_deduped_during_backfill(self) -> None:
         """Recurring instances should have text stripped after the first."""
         source = GoogleCalendarSource()
-        source.configure({})
+        source.configure({"account": "default"})
         queue = _TestQueue()
 
         # Three instances of the same recurring series
@@ -407,7 +426,7 @@ class TestGoogleCalendarSource:
     async def test_recurring_dedup_applied_during_incremental(self) -> None:
         """Incremental sync should also dedup recurring events."""
         source = GoogleCalendarSource()
-        source.configure({})
+        source.configure({"account": "default"})
         queue = _TestQueue()
 
         items = []
@@ -441,7 +460,7 @@ class TestGoogleCalendarSource:
     async def test_seen_series_persisted_across_polls(self) -> None:
         """Persistent seen_series prevents re-extraction on subsequent polls."""
         source = GoogleCalendarSource()
-        source.configure({})
+        source.configure({"account": "default"})
         queue = _TestQueue()
 
         # Simulate a series already seen in a previous poll
@@ -466,3 +485,84 @@ class TestGoogleCalendarSource:
         event = queue.get_nowait()
         # Series was already seen — text stripped even for first instance in this poll
         assert event["text"] == ""
+
+
+# ---------------------------------------------------------------------------
+# Multi-account isolation
+# ---------------------------------------------------------------------------
+
+
+class TestMultiAccount:
+    @pytest.mark.asyncio
+    async def test_two_calendar_sources_distinct_nodes_for_primary(self) -> None:
+        """Two calendar sources both polling 'primary' must produce
+        distinct synthetic calendar IDs so the graph doesn't conflate
+        the two accounts' calendars."""
+        src_a = GoogleCalendarSource()
+        src_a.configure({"account": "home"})
+        src_b = GoogleCalendarSource()
+        src_b.configure({"account": "work"})
+
+        evt_a = _calendar_event(event_id="evt-A")
+        evt_b = _calendar_event(event_id="evt-B")
+
+        def make_service(item):
+            mock_events = MagicMock()
+            mock_list = MagicMock()
+            mock_list.execute.return_value = {
+                "items": [item],
+                "nextSyncToken": "tok",
+            }
+            mock_events.list.return_value = mock_list
+            mock_service = MagicMock()
+            mock_service.events.return_value = mock_events
+            return mock_service
+
+        queue_a = _TestQueue()
+        queue_b = _TestQueue()
+        await src_a._poll_calendar(make_service(evt_a), queue_a, "primary", None, {})
+        await src_b._poll_calendar(make_service(evt_b), queue_b, "primary", None, {})
+
+        ev_a = queue_a.get_nowait()
+        ev_b = queue_b.get_nowait()
+
+        assert ev_a["source_id"] == "gcal:home/primary:evt-A"
+        assert ev_b["source_id"] == "gcal:work/primary:evt-B"
+        assert ev_a["meta"]["calendar_id"] == "home/primary"
+        assert ev_b["meta"]["calendar_id"] == "work/primary"
+        assert ev_a["meta"]["account"] == "home"
+        assert ev_b["meta"]["account"] == "work"
+        assert ev_a["source_id"] != ev_b["source_id"]
+
+    @pytest.mark.asyncio
+    async def test_two_calendar_sources_isolated_cursor_keys(self) -> None:
+        """Cursor keys are per-account so concurrent backfills don't stomp."""
+        src_a = GoogleCalendarSource()
+        src_a.configure({"account": "home"})
+        src_b = GoogleCalendarSource()
+        src_b.configure({"account": "work"})
+        assert src_a._cursor_key == "calendar:home"
+        assert src_b._cursor_key == "calendar:work"
+        assert src_a._cursor_path != src_b._cursor_path
+
+    def test_source_id_property_includes_account(self) -> None:
+        src = GoogleCalendarSource()
+        src.configure({"account": "personal"})
+        assert src.source_id == "google_calendar:personal"
+
+    def test_each_instance_has_isolated_state(self) -> None:
+        """Source instances do not share mutable state (no shared singleton)."""
+        src_a = GoogleCalendarSource()
+        src_a.configure({
+            "account": "home",
+            "calendar_ids": ["primary"],
+        })
+        src_b = GoogleCalendarSource()
+        src_b.configure({
+            "account": "work",
+            "calendar_ids": ["work@group.calendar.google.com"],
+        })
+        # Mutating one's state must not leak into the other.
+        src_a._calendar_ids.append("leaked@group.calendar.google.com")
+        assert "leaked@group.calendar.google.com" not in src_b._calendar_ids
+        assert src_a._account != src_b._account

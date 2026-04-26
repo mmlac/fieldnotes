@@ -133,8 +133,16 @@ def _check_qdrant(cfg: Config) -> None:
 
 
 def _build_sources(cfg: Config) -> list[PythonSource]:
-    """Instantiate and configure sources from [sources.*] config sections."""
+    """Instantiate and configure sources from [sources.*] config sections.
+
+    Gmail and Google Calendar are per-account: each ``[sources.gmail.<name>]``
+    or ``[sources.google_calendar.<name>]`` table spawns its own source
+    instance with isolated cursor state and credentials.
+    """
+    from dataclasses import asdict
+
     sources: list[PythonSource] = []
+
     for name, source_cfg in cfg.sources.items():
         cls = SOURCE_CLASSES.get(name)
         if cls is None:
@@ -144,6 +152,31 @@ def _build_sources(cfg: Config) -> list[PythonSource]:
         source.configure(source_cfg.settings)
         sources.append(source)
         logger.info("Configured source: %s", name)
+
+    for account, gmail_cfg in cfg.gmail.items():
+        if not gmail_cfg.enabled:
+            logger.info("Gmail account %r disabled, skipping", account)
+            continue
+        settings = asdict(gmail_cfg)
+        settings["account"] = account
+        settings.pop("name", None)
+        source = GmailSource()
+        source.configure(settings)
+        sources.append(source)
+        logger.info("Configured source: gmail (account=%s)", account)
+
+    for account, cal_cfg in cfg.google_calendar.items():
+        if not cal_cfg.enabled:
+            logger.info("Google Calendar account %r disabled, skipping", account)
+            continue
+        settings = asdict(cal_cfg)
+        settings["account"] = account
+        settings.pop("name", None)
+        source = GoogleCalendarSource()
+        source.configure(settings)
+        sources.append(source)
+        logger.info("Configured source: google_calendar (account=%s)", account)
+
     return sources
 
 

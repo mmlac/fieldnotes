@@ -570,8 +570,8 @@ class TestPollIncremental:
     @pytest.mark.asyncio
     async def test_saves_new_cursor_to_queue(self, tmp_path: Path) -> None:
         """When _poll_incremental advances the historyId it persists the
-        new value via ``queue.save_cursor("gmail", ...)`` — the cursor
-        no longer lives on disk.
+        new value via ``queue.save_cursor(<per-account-key>, ...)`` — the
+        cursor no longer lives on disk and is namespaced per account.
         """
         service = MagicMock()
         history_api = MagicMock()
@@ -584,13 +584,14 @@ class TestPollIncremental:
         service.users.return_value.history.return_value = history_api
 
         source = GmailSource()
+        source._account = "personal"
         source._cursor_path = tmp_path / "unused.json"
         source._label_filter = "INBOX"
 
         queue = FakeQueue()
         await source._poll_incremental(service, MagicMock(), queue, "400")
 
-        raw = queue.load_cursor("gmail")
+        raw = queue.load_cursor("gmail:personal")
         assert raw is not None
         data = json.loads(raw)
         assert data["history_id"] == "500"
@@ -899,3 +900,92 @@ class TestBackfillIndexedCheck:
         assert queue.enqueue.call_count == 0
         # No messages were fetched, so no historyId was tracked.
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Multi-account isolation
+# ---------------------------------------------------------------------------
+
+
+class TestMultiAccount:
+    def test_configure_requires_account(self) -> None:
+        source = GmailSource()
+        with pytest.raises(ValueError, match="account"):
+            source.configure({"client_secrets_path": "/tmp/x.json"})
+
+    def test_configure_sets_account_and_source_id(self) -> None:
+        source = GmailSource()
+        source.configure({
+            "account": "personal",
+            "client_secrets_path": "/tmp/x.json",
+        })
+        assert source._account == "personal"
+        assert source.source_id == "gmail:personal"
+
+    def test_default_cursor_path_includes_account(self) -> None:
+        source = GmailSource()
+        source.configure({
+            "account": "personal",
+            "client_secrets_path": "/tmp/x.json",
+        })
+        assert source._cursor_path.name == "gmail_cursor-personal.json"
+
+    @pytest.mark.asyncio
+    async def test_ingest_event_carries_account_metadata(self) -> None:
+        msgs = [_gmail_message("m1", history_id="10")]
+        api = _mock_messages_api(msgs)
+
+        source = GmailSource()
+        source._account = "work"
+        source._max_initial_threads = 100
+        source._label_filter = "INBOX"
+
+        queue = FakeQueue()
+        await source._backfill(api, queue)
+
+        event = queue.get_nowait()
+        assert event["meta"]["account"] == "work"
+
+    @pytest.mark.asyncio
+    async def test_two_gmail_sources_isolated_cursors(self) -> None:
+        """Two GmailSources side by side write to distinct cursor keys."""
+        # Account A
+        msg_a = _gmail_message("ma-1", history_id="100")
+        api_a = _mock_messages_api([msg_a])
+        src_a = GmailSource()
+        src_a._account = "personal"
+        src_a._max_initial_threads = 10
+        src_a._label_filter = "INBOX"
+
+        # Account B
+        msg_b = _gmail_message("mb-1", history_id="500")
+        api_b = _mock_messages_api([msg_b])
+        src_b = GmailSource()
+        src_b._account = "work"
+        src_b._max_initial_threads = 10
+        src_b._label_filter = "INBOX"
+
+        # Shared queue (the production daemon pattern).
+        queue = FakeQueue()
+        await src_a._backfill(api_a, queue)
+        await src_b._backfill(api_b, queue)
+
+        # Cursors live under per-account keys — neither stomps the other.
+        cur_a = json.loads(queue.load_cursor("gmail:personal"))
+        cur_b = json.loads(queue.load_cursor("gmail:work"))
+        assert cur_a["history_id"] == "100"
+        assert cur_b["history_id"] == "500"
+
+        # Drain both events and verify account metadata.
+        events = [queue.get_nowait(), queue.get_nowait()]
+        accounts = {e["meta"]["account"] for e in events}
+        assert accounts == {"personal", "work"}
+
+    @pytest.mark.asyncio
+    async def test_default_cursor_file_has_restrictive_permissions(
+        self, tmp_path: Path
+    ) -> None:
+        """Per-account cursor files must be 0o600."""
+        f = tmp_path / "gmail_cursor-personal.json"
+        _save_cursor(f, "42")
+        assert f.stat().st_mode & 0o777 == 0o600

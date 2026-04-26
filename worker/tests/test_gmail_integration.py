@@ -310,6 +310,7 @@ class TestGmailEndToEnd:
         source = GmailSource()
         source.configure(
             {
+                "account": "default",
                 "client_secrets_path": str(secrets),
                 "poll_interval_seconds": 60,
                 "max_initial_threads": 100,
@@ -318,6 +319,7 @@ class TestGmailEndToEnd:
         )
 
         assert source.name() == "gmail"
+        assert source._account == "default"
         assert source._poll_interval == 60
         assert source._max_initial_threads == 100
         assert source._label_filter == "IMPORTANT"
@@ -327,7 +329,7 @@ class TestGmailEndToEnd:
         """GmailSource.configure() raises if client_secrets_path missing."""
         source = GmailSource()
         with pytest.raises(ValueError, match="client_secrets_path"):
-            source.configure({})
+            source.configure({"account": "default"})
 
     @patch("worker.pipeline.resolve_entities_from_registry")
     @patch("worker.pipeline.extract_chunks")

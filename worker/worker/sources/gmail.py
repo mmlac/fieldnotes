@@ -49,7 +49,11 @@ from .gmail_auth import get_credentials
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_CURSOR_PATH = Path.home() / ".fieldnotes" / "data" / "gmail_cursor.json"
+def _default_cursor_path(account: str) -> Path:
+    """Per-account cursor file: ~/.fieldnotes/data/gmail_cursor-{account}.json."""
+    return Path.home() / ".fieldnotes" / "data" / f"gmail_cursor-{account}.json"
+
+
 DEFAULT_POLL_INTERVAL = 300  # seconds
 DEFAULT_MAX_INITIAL_THREADS = 500
 BACKFILL_PAGE_DELAY = 0.5  # seconds between backfill page fetches
@@ -142,7 +146,7 @@ def _extract_body(payload: dict[str, Any]) -> tuple[str, str]:
     return "", mime
 
 
-def _build_ingest_event(msg: dict[str, Any]) -> dict[str, Any]:
+def _build_ingest_event(msg: dict[str, Any], account: str = "") -> dict[str, Any]:
     """Build an IngestEvent dict from a Gmail API message resource."""
     payload = msg.get("payload", {})
     headers = payload.get("headers", [])
@@ -165,6 +169,7 @@ def _build_ingest_event(msg: dict[str, Any]) -> dict[str, Any]:
         "date": date_str,
         "sender_email": sender,
         "recipients": recipients,
+        "account": account,
     }
 
     return {
@@ -192,16 +197,35 @@ class GmailSource(PythonSource):
     """
 
     def __init__(self) -> None:
+        self._account: str = ""
         self._poll_interval: int = DEFAULT_POLL_INTERVAL
         self._max_initial_threads: int = DEFAULT_MAX_INITIAL_THREADS
         self._label_filter: str | None = None
         self._client_secrets_path: Path | None = None
-        self._cursor_path: Path = DEFAULT_CURSOR_PATH
+        self._cursor_path: Path | None = None
 
     def name(self) -> str:
         return "gmail"
 
+    @property
+    def source_id(self) -> str:
+        """Stable identifier surfacing the account: ``gmail:{account}``."""
+        return f"gmail:{self._account}"
+
+    @property
+    def _cursor_key(self) -> str:
+        """Per-account PersistentQueue cursor key (no cross-account stomping)."""
+        return f"gmail:{self._account}"
+
     def configure(self, cfg: dict[str, Any]) -> None:
+        account = cfg.get("account")
+        if not account or not isinstance(account, str):
+            raise ValueError(
+                "GmailSource requires 'account' in config (the account label "
+                "from [sources.gmail.<account>])"
+            )
+        self._account = account
+
         secrets = cfg.get("client_secrets_path")
         if not secrets:
             raise ValueError("GmailSource requires 'client_secrets_path' in config")
@@ -222,6 +246,8 @@ class GmailSource(PythonSource):
         cursor = cfg.get("cursor_path")
         if cursor:
             self._cursor_path = Path(cursor).expanduser().resolve()
+        else:
+            self._cursor_path = _default_cursor_path(self._account)
 
     async def start(
         self,
@@ -229,13 +255,13 @@ class GmailSource(PythonSource):
         *,
         indexed_check: IndexedCheck | None = None,
     ) -> None:
-        if self._client_secrets_path is None:
+        if self._client_secrets_path is None or not self._account:
             raise ValueError(
                 "GmailSource.start() called before configure() — "
-                "client_secrets_path is not set"
+                "client_secrets_path or account is not set"
             )
 
-        creds = get_credentials(self._client_secrets_path, account="default")
+        creds = get_credentials(self._client_secrets_path, account=self._account)
         service = build("gmail", "v1", credentials=creds)
         messages_api = service.users().messages()
 
@@ -244,7 +270,7 @@ class GmailSource(PythonSource):
             await self._validate_label(service)
 
         # Load cursor from persistent queue (migrated from JSON file).
-        raw_cursor = queue.load_cursor("gmail")
+        raw_cursor = queue.load_cursor(self._cursor_key)
         cursor: str | None = None
         if raw_cursor:
             try:
@@ -412,7 +438,7 @@ class GmailSource(PythonSource):
                         format="full",
                     ).execute(),
                 )
-                event = _build_ingest_event(msg)
+                event = _build_ingest_event(msg, self._account)
                 if is_initial:
                     event["initial_scan"] = True
                 # Skip events already in the queue (pending/processing).
@@ -473,12 +499,13 @@ class GmailSource(PythonSource):
                 is_last = i == len(pending_events) - 1
                 queue.enqueue(
                     ev,
-                    cursor_key="gmail" if is_last and cursor_val else None,
+                    cursor_key=self._cursor_key if is_last and cursor_val else None,
                     cursor_value=cursor_val if is_last else None,
                 )
             if latest_history_id:
                 logger.info(
-                    "Gmail backfill cursor saved (history_id=%s)",
+                    "Gmail backfill cursor saved (account=%s, history_id=%s)",
+                    self._account,
                     latest_history_id,
                 )
 
@@ -615,7 +642,7 @@ class GmailSource(PythonSource):
                         ),
                         timeout=API_CALL_TIMEOUT,
                     )
-                    event = _build_ingest_event(msg)
+                    event = _build_ingest_event(msg, self._account)
                     pending_events.append(event)
                     SOURCE_WATCHER_EVENTS.labels(
                         source_type="gmail",
@@ -640,12 +667,14 @@ class GmailSource(PythonSource):
                 is_last = i == len(pending_events) - 1
                 queue.enqueue(
                     ev,
-                    cursor_key="gmail" if is_last else None,
+                    cursor_key=self._cursor_key if is_last else None,
                     cursor_value=cursor_val if is_last else None,
                 )
         else:
             # No new messages but historyId may have advanced — safe to
             # save immediately since there's nothing in the pipeline.
-            queue.save_cursor("gmail", json.dumps({"history_id": new_history_id}))
+            queue.save_cursor(
+                self._cursor_key, json.dumps({"history_id": new_history_id})
+            )
 
         return new_history_id
