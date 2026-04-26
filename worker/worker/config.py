@@ -23,6 +23,20 @@ logger = logging.getLogger(__name__)
 DEFAULT_CONFIG_PATH = Path.home() / ".fieldnotes" / "config.toml"
 
 
+# Account names for [sources.gmail.<name>] / [sources.google_calendar.<name>].
+# Lowercase letter to start, then up to 30 of [a-z0-9_-].
+_ACCOUNT_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,30}$")
+
+
+class MigrationRequiredError(Exception):
+    """Raised when the legacy single-table source schema is detected.
+
+    The new multi-account schema (``[sources.gmail.<account>]``) is required.
+    Users must run the migration command to clean stored data, then update
+    their config to the keyed form.
+    """
+
+
 def _check_type(section: str, key: str, value: Any, expected: type) -> None:
     """Raise TypeError if *value* is not an instance of *expected*."""
     if not isinstance(value, expected):
@@ -112,6 +126,38 @@ class SourceConfig:
 
     name: str
     settings: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class GmailAccountConfig:
+    """A single ``[sources.gmail.<account>]`` section."""
+
+    name: str
+    enabled: bool = True
+    client_secrets_path: str = "~/.fieldnotes/gmail_credentials.json"
+    poll_interval_seconds: int = 300
+    max_initial_threads: int = 500
+    label_filter: str = "INBOX"
+
+
+@dataclass
+class CalendarAccountConfig:
+    """A single ``[sources.google_calendar.<account>]`` section."""
+
+    name: str
+    enabled: bool = True
+    client_secrets_path: str = "~/.fieldnotes/gmail_credentials.json"
+    poll_interval_seconds: int = 300
+    max_initial_days: int = 90
+    calendar_ids: list[str] = field(default_factory=lambda: ["primary"])
+
+
+@dataclass
+class MeConfig:
+    """Top-level ``[me]`` block: identifies the current user across sources."""
+
+    emails: list[str] = field(default_factory=list)
+    name: str | None = None
 
 
 @dataclass
@@ -234,6 +280,9 @@ class Config:
     rate_limits: RateLimitConfig = field(default_factory=RateLimitConfig)
     reranker: RerankerConfig = field(default_factory=RerankerConfig)
     slack: SlackSourceConfig = field(default_factory=SlackSourceConfig)
+    gmail: dict[str, GmailAccountConfig] = field(default_factory=dict)
+    google_calendar: dict[str, CalendarAccountConfig] = field(default_factory=dict)
+    me: MeConfig | None = None
 
     # Expected embedding dimension used by the clustering pipeline.
     _EXPECTED_VECTOR_SIZE = 768
@@ -478,9 +527,92 @@ def _parse_slack_config(settings: dict[str, Any]) -> SlackSourceConfig:
     return cfg
 
 
-def _validate_google_calendar_config(settings: dict[str, Any]) -> None:
-    """Validate [sources.google_calendar] settings."""
-    section = "sources.google_calendar"
+def _detect_old_multiaccount_shape(source: str, settings: dict[str, Any]) -> None:
+    """Reject the legacy single-table ``[sources.<source>]`` shape.
+
+    In the new multi-account schema every direct child of ``sources.gmail``
+    or ``sources.google_calendar`` is itself a table (an account section).
+    A scalar at this level means the user wrote the old shape.
+    """
+    for v in settings.values():
+        if not isinstance(v, dict):
+            raise MigrationRequiredError(
+                "Multi-account schema is required. Run "
+                "`fieldnotes migrate gmail-multiaccount` to clean old data, "
+                f"then update your config to [sources.{source}.<account>] "
+                "form. See README."
+            )
+
+
+def _validate_account_name(source: str, account: str) -> None:
+    """Account names must match ``^[a-z][a-z0-9_-]{0,30}$``."""
+    if not _ACCOUNT_NAME_RE.match(account):
+        raise ValueError(
+            f"[sources.{source}] account name {account!r} is invalid: must "
+            f"match ^[a-z][a-z0-9_-]{{0,30}}$"
+        )
+
+
+def _parse_gmail_account(account: str, settings: dict[str, Any]) -> GmailAccountConfig:
+    """Validate and parse a single ``[sources.gmail.<account>]`` section."""
+    section = f"sources.gmail.{account}"
+    defaults = GmailAccountConfig(name=account)
+
+    if "enabled" in settings:
+        _check_type(section, "enabled", settings["enabled"], bool)
+    if "client_secrets_path" in settings:
+        _check_type(
+            section, "client_secrets_path", settings["client_secrets_path"], str
+        )
+    if "poll_interval_seconds" in settings:
+        _check_type(
+            section, "poll_interval_seconds", settings["poll_interval_seconds"], int
+        )
+    if "max_initial_threads" in settings:
+        _check_type(
+            section, "max_initial_threads", settings["max_initial_threads"], int
+        )
+    if "label_filter" in settings:
+        _check_type(section, "label_filter", settings["label_filter"], str)
+
+    enabled = settings.get("enabled", True)
+    # An account section must define a credentials path when enabled.
+    # Bare ``[sources.gmail.foo]`` with no fields is invalid.
+    if enabled and "client_secrets_path" not in settings:
+        raise ValueError(
+            f"[{section}] must define client_secrets_path "
+            f"(account section cannot be empty when enabled)"
+        )
+
+    return GmailAccountConfig(
+        name=account,
+        enabled=enabled,
+        client_secrets_path=settings.get(
+            "client_secrets_path", defaults.client_secrets_path
+        ),
+        poll_interval_seconds=settings.get(
+            "poll_interval_seconds", defaults.poll_interval_seconds
+        ),
+        max_initial_threads=settings.get(
+            "max_initial_threads", defaults.max_initial_threads
+        ),
+        label_filter=settings.get("label_filter", defaults.label_filter),
+    )
+
+
+def _parse_calendar_account(
+    account: str, settings: dict[str, Any]
+) -> CalendarAccountConfig:
+    """Validate and parse a single ``[sources.google_calendar.<account>]``."""
+    section = f"sources.google_calendar.{account}"
+    defaults = CalendarAccountConfig(name=account)
+
+    if "enabled" in settings:
+        _check_type(section, "enabled", settings["enabled"], bool)
+    if "client_secrets_path" in settings:
+        _check_type(
+            section, "client_secrets_path", settings["client_secrets_path"], str
+        )
     if "poll_interval_seconds" in settings:
         _check_type(
             section, "poll_interval_seconds", settings["poll_interval_seconds"], int
@@ -489,10 +621,47 @@ def _validate_google_calendar_config(settings: dict[str, Any]) -> None:
         _check_type(section, "max_initial_days", settings["max_initial_days"], int)
     if "calendar_ids" in settings:
         _check_list_of(section, "calendar_ids", settings["calendar_ids"], str)
-    if "client_secrets_path" in settings:
-        _check_type(
-            section, "client_secrets_path", settings["client_secrets_path"], str
+
+    enabled = settings.get("enabled", True)
+    if enabled and "client_secrets_path" not in settings:
+        raise ValueError(
+            f"[{section}] must define client_secrets_path "
+            f"(account section cannot be empty when enabled)"
         )
+
+    return CalendarAccountConfig(
+        name=account,
+        enabled=enabled,
+        client_secrets_path=settings.get(
+            "client_secrets_path", defaults.client_secrets_path
+        ),
+        poll_interval_seconds=settings.get(
+            "poll_interval_seconds", defaults.poll_interval_seconds
+        ),
+        max_initial_days=settings.get("max_initial_days", defaults.max_initial_days),
+        calendar_ids=list(settings.get("calendar_ids", defaults.calendar_ids)),
+    )
+
+
+def _parse_me_config(raw_me: dict[str, Any]) -> MeConfig:
+    """Validate and parse the top-level ``[me]`` block."""
+    from worker.parsers.base import canonicalize_email
+
+    section = "me"
+    if "emails" not in raw_me:
+        raise ValueError(
+            f"[{section}] emails: required (must be a non-empty list of strings)"
+        )
+    _check_list_of(section, "emails", raw_me["emails"], str)
+    if not raw_me["emails"]:
+        raise ValueError(f"[{section}] emails: must be a non-empty list of strings")
+    if "name" in raw_me and raw_me["name"] is not None:
+        _check_type(section, "name", raw_me["name"], str)
+
+    return MeConfig(
+        emails=[canonicalize_email(e) for e in raw_me["emails"]],
+        name=raw_me.get("name"),
+    )
 
 
 def _parse(raw: dict[str, Any]) -> Config:
@@ -567,12 +736,30 @@ def _parse(raw: dict[str, Any]) -> Config:
             _validate_macos_apps_config(settings)
         elif name == "homebrew":
             _validate_homebrew_config(settings)
-        elif name == "google_calendar":
-            _validate_google_calendar_config(settings)
         elif name == "slack":
             cfg.slack = _parse_slack_config(settings)
             continue  # parsed into cfg.slack; skip generic sources dict
+        elif name == "gmail":
+            _detect_old_multiaccount_shape("gmail", settings)
+            for account, account_settings in settings.items():
+                _validate_account_name("gmail", account)
+                cfg.gmail[account] = _parse_gmail_account(
+                    account, dict(account_settings)
+                )
+            continue  # parsed into cfg.gmail; skip generic sources dict
+        elif name == "google_calendar":
+            _detect_old_multiaccount_shape("google_calendar", settings)
+            for account, account_settings in settings.items():
+                _validate_account_name("google_calendar", account)
+                cfg.google_calendar[account] = _parse_calendar_account(
+                    account, dict(account_settings)
+                )
+            continue  # parsed into cfg.google_calendar; skip generic sources dict
         cfg.sources[name] = SourceConfig(name=name, settings=settings)
+
+    # [me]
+    if "me" in raw:
+        cfg.me = _parse_me_config(dict(raw["me"]))
 
     # [vision]
     if "vision" in raw:

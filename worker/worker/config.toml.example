@@ -1,6 +1,16 @@
 # fieldnotes worker configuration
 # Copy to ~/.fieldnotes/config.toml and edit as needed.
 
+# --- Self-identity ---
+# The [me] block tells fieldnotes which Person nodes are *you* across
+# Gmail, Calendar, Slack, etc. Used to reconcile self-identity at parse time.
+# Emails are canonicalized (e.g. @googlemail.com → @gmail.com).
+# 'name' is optional; if multiple sources disagree, the longest non-empty
+# display name wins.
+# [me]
+# emails = ["me@personal.com", "me@work.com"]
+# name = "Optional Display Name"
+
 [core]
 data_dir = "~/.fieldnotes/data"
 log_level = "info"
@@ -39,6 +49,41 @@ max_file_size = 104857600
 # enabled = true             # auto-detected on macOS
 # poll_interval_seconds = 300
 # state_path = "~/.fieldnotes/state/omnifocus.json"
+
+# --- Gmail (multi-account) ---
+# One [sources.gmail.<account>] section per Gmail account you want to ingest.
+# <account> must match ^[a-z][a-z0-9_-]{0,30}$ (e.g. "personal", "work").
+# Multiple accounts may share a client_secrets_path (same OAuth client app).
+# Presence of the section means enabled; set enabled = false to keep it
+# defined but inactive.
+#
+# [sources.gmail.personal]
+# client_secrets_path = "~/.fieldnotes/gmail_credentials.json"
+# poll_interval_seconds = 300
+# max_initial_threads = 500
+# label_filter = "INBOX"
+#
+# [sources.gmail.work]
+# client_secrets_path = "~/.fieldnotes/gmail_credentials.json"
+# poll_interval_seconds = 300
+# max_initial_threads = 500
+# label_filter = "INBOX"
+
+# --- Google Calendar (multi-account) ---
+# Same per-account schema as Gmail. Each account can target multiple
+# calendars; "primary" is the user's default calendar.
+#
+# [sources.google_calendar.personal]
+# client_secrets_path = "~/.fieldnotes/gmail_credentials.json"
+# poll_interval_seconds = 300
+# max_initial_days = 90
+# calendar_ids = ["primary"]
+#
+# [sources.google_calendar.work]
+# client_secrets_path = "~/.fieldnotes/gmail_credentials.json"
+# poll_interval_seconds = 300
+# max_initial_days = 90
+# calendar_ids = ["primary"]
 
 [sources.slack]
 enabled = false

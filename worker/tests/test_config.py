@@ -3,10 +3,14 @@
 import pytest
 
 from worker.config import (
+    CalendarAccountConfig,
     Config,
     CoreConfig,
     ClusteringConfig,
+    GmailAccountConfig,
     McpConfig,
+    MeConfig,
+    MigrationRequiredError,
     QdrantConfig,
     RolesConfig,
     SlackSourceConfig,
@@ -790,3 +794,371 @@ class TestDoctorSlack:
         monkeypatch.setattr(doctor, "check_slack_auth", lambda *a, **k: 1)
         errors = doctor.check_slack(cfg)
         assert errors == 1
+
+
+class TestParseGmailMultiAccount:
+    """[sources.gmail.<account>] keyed table parses into cfg.gmail."""
+
+    def test_no_gmail_section_yields_empty_dict(self) -> None:
+        cfg = _parse({})
+        assert cfg.gmail == {}
+
+    def test_single_account(self) -> None:
+        raw = {
+            "sources": {
+                "gmail": {
+                    "personal": {
+                        "client_secrets_path": "/secrets/gmail.json",
+                        "poll_interval_seconds": 600,
+                        "max_initial_threads": 200,
+                        "label_filter": "INBOX",
+                    }
+                }
+            }
+        }
+        cfg = _parse(raw)
+        assert "personal" in cfg.gmail
+        acct = cfg.gmail["personal"]
+        assert acct.name == "personal"
+        assert acct.enabled is True  # presence implies enabled
+        assert acct.client_secrets_path == "/secrets/gmail.json"
+        assert acct.poll_interval_seconds == 600
+        assert acct.max_initial_threads == 200
+        assert acct.label_filter == "INBOX"
+        # gmail accounts must NOT leak into the generic sources dict.
+        assert "gmail" not in cfg.sources
+
+    def test_two_accounts(self) -> None:
+        raw = {
+            "sources": {
+                "gmail": {
+                    "personal": {"client_secrets_path": "/s/a.json"},
+                    "work": {"client_secrets_path": "/s/b.json"},
+                }
+            }
+        }
+        cfg = _parse(raw)
+        assert set(cfg.gmail.keys()) == {"personal", "work"}
+        assert cfg.gmail["personal"].client_secrets_path == "/s/a.json"
+        assert cfg.gmail["work"].client_secrets_path == "/s/b.json"
+
+    def test_shared_client_secrets_path(self) -> None:
+        """Two accounts can point at the same OAuth client file."""
+        shared = "/secrets/shared.json"
+        raw = {
+            "sources": {
+                "gmail": {
+                    "personal": {"client_secrets_path": shared},
+                    "work": {"client_secrets_path": shared},
+                }
+            }
+        }
+        cfg = _parse(raw)
+        assert cfg.gmail["personal"].client_secrets_path == shared
+        assert cfg.gmail["work"].client_secrets_path == shared
+
+    def test_enabled_false_keeps_account(self) -> None:
+        cfg = _parse(
+            {
+                "sources": {
+                    "gmail": {
+                        "personal": {
+                            "enabled": False,
+                            "client_secrets_path": "/s.json",
+                        }
+                    }
+                }
+            }
+        )
+        assert cfg.gmail["personal"].enabled is False
+
+    def test_enabled_false_skips_required_secrets_path(self) -> None:
+        """A disabled account need not define client_secrets_path."""
+        cfg = _parse({"sources": {"gmail": {"placeholder": {"enabled": False}}}})
+        acct = cfg.gmail["placeholder"]
+        assert acct.enabled is False
+        # default path still populated
+        assert acct.client_secrets_path.endswith(".json")
+
+    def test_empty_account_section_raises(self) -> None:
+        with pytest.raises(
+            ValueError, match=r"sources\.gmail\.foo.*must define client_secrets_path"
+        ):
+            _parse({"sources": {"gmail": {"foo": {}}}})
+
+    # -- Account name validation --
+
+    def test_rejects_uppercase_name(self) -> None:
+        with pytest.raises(
+            ValueError, match=r"sources\.gmail.*account name 'Personal' is invalid"
+        ):
+            _parse(
+                {"sources": {"gmail": {"Personal": {"client_secrets_path": "/s.json"}}}}
+            )
+
+    def test_rejects_leading_digit_name(self) -> None:
+        with pytest.raises(
+            ValueError, match=r"sources\.gmail.*account name '1abc' is invalid"
+        ):
+            _parse({"sources": {"gmail": {"1abc": {"client_secrets_path": "/s.json"}}}})
+
+    def test_rejects_too_long_name(self) -> None:
+        too_long = "a-very-long-name-that-exceeds-30-chars"
+        with pytest.raises(
+            ValueError, match=r"sources\.gmail.*account name.*is invalid"
+        ):
+            _parse(
+                {"sources": {"gmail": {too_long: {"client_secrets_path": "/s.json"}}}}
+            )
+
+    def test_accepts_underscore_and_hyphen(self) -> None:
+        cfg = _parse(
+            {
+                "sources": {
+                    "gmail": {
+                        "work_2024": {"client_secrets_path": "/a.json"},
+                        "side-proj": {"client_secrets_path": "/b.json"},
+                    }
+                }
+            }
+        )
+        assert "work_2024" in cfg.gmail
+        assert "side-proj" in cfg.gmail
+
+    # -- Old-shape detection --
+
+    def test_old_shape_raises_migration_error(self) -> None:
+        with pytest.raises(MigrationRequiredError) as exc_info:
+            _parse(
+                {
+                    "sources": {
+                        "gmail": {
+                            "client_secrets_path": "/secrets/gmail.json",
+                            "poll_interval_seconds": 300,
+                        }
+                    }
+                }
+            )
+        msg = str(exc_info.value)
+        assert "Multi-account schema is required" in msg
+        assert "fieldnotes migrate gmail-multiaccount" in msg
+        assert "[sources.gmail.<account>]" in msg
+
+    # -- Type validation per-account --
+
+    def test_account_enabled_wrong_type(self) -> None:
+        with pytest.raises(
+            TypeError, match=r"sources\.gmail\.foo\] enabled: expected bool"
+        ):
+            _parse(
+                {
+                    "sources": {
+                        "gmail": {
+                            "foo": {
+                                "enabled": "yes",
+                                "client_secrets_path": "/s.json",
+                            }
+                        }
+                    }
+                }
+            )
+
+    def test_account_label_filter_wrong_type(self) -> None:
+        with pytest.raises(
+            TypeError, match=r"sources\.gmail\.foo\] label_filter: expected str"
+        ):
+            _parse(
+                {
+                    "sources": {
+                        "gmail": {
+                            "foo": {
+                                "client_secrets_path": "/s.json",
+                                "label_filter": ["INBOX"],
+                            }
+                        }
+                    }
+                }
+            )
+
+
+class TestParseCalendarMultiAccount:
+    """[sources.google_calendar.<account>] parses into cfg.google_calendar."""
+
+    def test_no_section_yields_empty_dict(self) -> None:
+        cfg = _parse({})
+        assert cfg.google_calendar == {}
+
+    def test_single_account_defaults(self) -> None:
+        cfg = _parse(
+            {
+                "sources": {
+                    "google_calendar": {"personal": {"client_secrets_path": "/s.json"}}
+                }
+            }
+        )
+        acct = cfg.google_calendar["personal"]
+        assert acct.name == "personal"
+        assert acct.enabled is True
+        assert acct.poll_interval_seconds == 300
+        assert acct.max_initial_days == 90
+        assert acct.calendar_ids == ["primary"]
+
+    def test_two_accounts_with_overrides(self) -> None:
+        raw = {
+            "sources": {
+                "google_calendar": {
+                    "personal": {
+                        "client_secrets_path": "/s/a.json",
+                        "calendar_ids": ["primary", "family@group.calendar"],
+                    },
+                    "work": {
+                        "client_secrets_path": "/s/b.json",
+                        "max_initial_days": 30,
+                        "calendar_ids": ["primary"],
+                    },
+                }
+            }
+        }
+        cfg = _parse(raw)
+        assert set(cfg.google_calendar.keys()) == {"personal", "work"}
+        assert cfg.google_calendar["personal"].calendar_ids == [
+            "primary",
+            "family@group.calendar",
+        ]
+        assert cfg.google_calendar["work"].max_initial_days == 30
+        # calendar accounts do NOT leak into the generic sources dict.
+        assert "google_calendar" not in cfg.sources
+
+    def test_old_shape_raises_migration_error(self) -> None:
+        with pytest.raises(MigrationRequiredError) as exc_info:
+            _parse(
+                {
+                    "sources": {
+                        "google_calendar": {
+                            "client_secrets_path": "/secrets/g.json",
+                            "calendar_ids": ["primary"],
+                        }
+                    }
+                }
+            )
+        msg = str(exc_info.value)
+        assert "fieldnotes migrate gmail-multiaccount" in msg
+        assert "[sources.google_calendar.<account>]" in msg
+
+    def test_rejects_invalid_account_name(self) -> None:
+        with pytest.raises(
+            ValueError, match=r"sources\.google_calendar.*account name '1abc'"
+        ):
+            _parse(
+                {
+                    "sources": {
+                        "google_calendar": {"1abc": {"client_secrets_path": "/s.json"}}
+                    }
+                }
+            )
+
+    def test_empty_account_section_raises(self) -> None:
+        with pytest.raises(
+            ValueError,
+            match=r"sources\.google_calendar\.foo.*must define client_secrets_path",
+        ):
+            _parse({"sources": {"google_calendar": {"foo": {}}}})
+
+    def test_calendar_ids_wrong_item_type(self) -> None:
+        with pytest.raises(
+            TypeError,
+            match=r"sources\.google_calendar\.foo\] calendar_ids\[0\]: expected str",
+        ):
+            _parse(
+                {
+                    "sources": {
+                        "google_calendar": {
+                            "foo": {
+                                "client_secrets_path": "/s.json",
+                                "calendar_ids": [123],
+                            }
+                        }
+                    }
+                }
+            )
+
+
+class TestParseMeConfig:
+    """[me] block parses into cfg.me with email canonicalization."""
+
+    def test_absent_me_block_is_none(self) -> None:
+        cfg = _parse({})
+        assert cfg.me is None
+
+    def test_basic_me_block(self) -> None:
+        cfg = _parse(
+            {
+                "me": {
+                    "emails": ["alice@personal.com", "alice@work.com"],
+                    "name": "Alice Example",
+                }
+            }
+        )
+        assert cfg.me is not None
+        assert cfg.me.emails == ["alice@personal.com", "alice@work.com"]
+        assert cfg.me.name == "Alice Example"
+
+    def test_name_optional(self) -> None:
+        cfg = _parse({"me": {"emails": ["me@example.com"]}})
+        assert cfg.me is not None
+        assert cfg.me.name is None
+
+    def test_emails_canonicalized(self) -> None:
+        """@googlemail.com rewrites to @gmail.com; case is normalized."""
+        cfg = _parse(
+            {
+                "me": {
+                    "emails": ["Alice@GoogleMail.com", "BOB@gmail.com"],
+                }
+            }
+        )
+        assert cfg.me is not None
+        assert cfg.me.emails == ["alice@gmail.com", "bob@gmail.com"]
+
+    def test_missing_emails_raises(self) -> None:
+        with pytest.raises(ValueError, match=r"\[me\] emails.*required"):
+            _parse({"me": {"name": "Solo"}})
+
+    def test_empty_emails_raises(self) -> None:
+        with pytest.raises(ValueError, match=r"\[me\] emails.*non-empty list"):
+            _parse({"me": {"emails": []}})
+
+    def test_emails_non_list_raises(self) -> None:
+        with pytest.raises(TypeError, match=r"\[me\] emails: expected list"):
+            _parse({"me": {"emails": "me@example.com"}})
+
+    def test_emails_non_string_item_raises(self) -> None:
+        with pytest.raises(TypeError, match=r"\[me\] emails\[0\]: expected str"):
+            _parse({"me": {"emails": [42]}})
+
+    def test_name_wrong_type(self) -> None:
+        with pytest.raises(TypeError, match=r"\[me\] name: expected str"):
+            _parse({"me": {"emails": ["x@y.com"], "name": 123}})
+
+
+class TestMultiAccountDataclassDefaults:
+    """Sanity-check dataclass field defaults match the bead's spec."""
+
+    def test_gmail_account_defaults(self) -> None:
+        acct = GmailAccountConfig(name="x")
+        assert acct.enabled is True
+        assert acct.poll_interval_seconds == 300
+        assert acct.max_initial_threads == 500
+        assert acct.label_filter == "INBOX"
+
+    def test_calendar_account_defaults(self) -> None:
+        acct = CalendarAccountConfig(name="x")
+        assert acct.enabled is True
+        assert acct.poll_interval_seconds == 300
+        assert acct.max_initial_days == 90
+        assert acct.calendar_ids == ["primary"]
+
+    def test_me_config_defaults(self) -> None:
+        me = MeConfig()
+        assert me.emails == []
+        assert me.name is None
