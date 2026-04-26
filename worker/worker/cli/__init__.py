@@ -452,6 +452,38 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Show what would change without modifying the queue",
     )
 
+    # ── migrate ────────────────────────────────────────────────────
+    migrate_p = sub.add_parser(
+        "migrate",
+        help="One-shot migrations (e.g. multi-account Gmail/Calendar retag)",
+    )
+    migrate_sub = migrate_p.add_subparsers(dest="migrate_command")
+    gma_p = migrate_sub.add_parser(
+        "gmail-multiaccount",
+        help="Retag legacy Gmail+Calendar artifacts under a chosen account label",
+    )
+    gma_p.add_argument(
+        "--account",
+        default=None,
+        help="Account label (^[a-z][a-z0-9_-]{0,30}$). "
+        "Default: 'default' (under --yes) or interactive prompt.",
+    )
+    gma_p.add_argument(
+        "--yes",
+        action="store_true",
+        help="Skip confirmation; assume 'default' if --account is omitted.",
+    )
+    gma_p.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print counts of what would change without mutating state.",
+    )
+    gma_p.add_argument(
+        "--force-running",
+        action="store_true",
+        help="Run even when the daemon is alive (queue.db writes may race).",
+    )
+
     # ── topics ──────────────────────────────────────────────────────
     topics_p = sub.add_parser("topics", help="Browse and inspect topics")
     topics_p.add_argument(
@@ -832,6 +864,62 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
+
+    if args.command == "migrate":
+        if args.migrate_command == "gmail-multiaccount":
+            import tomllib
+
+            from worker.cli.migrate import run_migrate_gmail_multiaccount
+
+            # Read raw config — load_config rejects the flat-shape
+            # config that this migration is designed to fix.
+            cfg_file = args.config or (
+                Path.home() / ".fieldnotes" / "config.toml"
+            )
+            try:
+                raw_cfg = tomllib.loads(Path(cfg_file).read_text())
+            except OSError as exc:
+                print(f"error: cannot read {cfg_file}: {exc}", file=sys.stderr)
+                return 1
+
+            neo4j_cfg = raw_cfg.get("neo4j", {})
+            qdrant_cfg = raw_cfg.get("qdrant", {})
+
+            from neo4j import GraphDatabase
+            from qdrant_client import QdrantClient
+
+            driver = GraphDatabase.driver(
+                neo4j_cfg.get("uri", "bolt://localhost:7687"),
+                auth=(
+                    neo4j_cfg.get("user", "neo4j"),
+                    neo4j_cfg.get("password", ""),
+                ),
+            )
+            qdrant = QdrantClient(
+                host=qdrant_cfg.get("host", "localhost"),
+                port=qdrant_cfg.get("port", 6333),
+            )
+            try:
+                return run_migrate_gmail_multiaccount(
+                    config_path=args.config,
+                    account=args.account,
+                    yes=args.yes,
+                    dry_run=args.dry_run,
+                    force_running=args.force_running,
+                    neo4j_session_factory=driver.session,
+                    qdrant_factory=lambda: qdrant,
+                    qdrant_collection=qdrant_cfg.get("collection", "fieldnotes"),
+                )
+            except Exception as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                return 1
+            finally:
+                driver.close()
+        print(
+            "Usage: fieldnotes migrate {gmail-multiaccount}",
+            file=sys.stderr,
+        )
+        return 1
 
     if args.command == "cluster":
         from worker.cli.cluster import run_cluster
