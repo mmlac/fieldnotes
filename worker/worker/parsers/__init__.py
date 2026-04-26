@@ -7,3 +7,4 @@ from . import gmail  # noqa: F401
 from . import obsidian  # noqa: F401
 from . import omnifocus  # noqa: F401
 from . import repositories  # noqa: F401
+from . import slack  # noqa: F401
