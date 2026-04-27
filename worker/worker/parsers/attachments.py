@@ -59,6 +59,45 @@ DEFAULT_PDF_TIMEOUT_SECONDS: int = 60
 DEFAULT_IMAGE_MAX_PIXELS: int = 25_000_000  # ~5000x5000
 DEFAULT_IMAGE_MAX_DIMENSION: int = 8_000
 
+
+# Magic-byte prefixes for common binary container formats.  A ``text/*``
+# attachment whose first bytes match one of these is almost certainly a
+# binary file with a spoofed (or misconfigured) MIME type — decoding it as
+# UTF-8 with ``errors='replace'`` would land a wall of U+FFFD characters
+# in the index.  Kept tight so that legitimate text (which never starts
+# with these signatures) isn't false-positived.
+_BINARY_MAGIC_PREFIXES: tuple[bytes, ...] = (
+    b"%PDF-",  # PDF
+    b"PK\x03\x04",  # ZIP / DOCX / XLSX / JAR / ODF
+    b"PK\x05\x06",  # empty ZIP
+    b"PK\x07\x08",  # spanned ZIP
+    b"\x7fELF",  # ELF executable
+    b"\xfe\xed\xfa\xce",  # Mach-O 32-bit
+    b"\xfe\xed\xfa\xcf",  # Mach-O 64-bit
+    b"\xce\xfa\xed\xfe",  # Mach-O 32-bit reverse
+    b"\xcf\xfa\xed\xfe",  # Mach-O 64-bit reverse
+    b"\x89PNG\r\n\x1a\n",
+    b"\xff\xd8\xff",  # JPEG
+    b"GIF87a",
+    b"GIF89a",
+    b"II*\x00",  # TIFF little-endian
+    b"MM\x00*",  # TIFF big-endian
+    b"RIFF",  # WebP / WAV / AVI container
+    b"\x1f\x8b",  # gzip
+    b"BZh",  # bzip2
+    b"\xfd7zXZ\x00",  # xz
+    b"7z\xbc\xaf\x27\x1c",  # 7-Zip
+    b"Rar!\x1a\x07",  # RAR
+)
+
+# Maximum fraction of decoded characters allowed to be U+FFFD before a
+# ``text/*`` attachment is rejected as binary garbage.  5% is a starting
+# point per fn-2hw — high enough to tolerate stray invalid bytes in
+# otherwise legitimate UTF-8 (typo'd encodings, truncated streams), low
+# enough to catch a binary file that decodes to nearly all replacement
+# chars.
+_TEXT_REPLACEMENT_RATIO_LIMIT: float = 0.05
+
 # Align Pillow's own ``DecompressionBombError`` ceiling with our default
 # pixel cap so any code path that bypasses our explicit guard (e.g. a
 # direct ``PIL.Image.open(...).load()``) still trips Pillow's built-in
@@ -266,7 +305,7 @@ def stream_and_parse(
             max_dimension=image_max_dimension,
         )
     if mime.startswith("text/"):
-        return _parse_text_bytes(data)
+        return _parse_text_bytes(data, filename=filename, source_id=source_id)
 
     raise AttachmentParseError(
         f"unsupported MIME for {filename!r}: {mime}",
@@ -495,8 +534,50 @@ def _parse_image_bytes(
     )
 
 
-def _parse_text_bytes(data: bytes) -> ParsedAttachment:
-    return ParsedAttachment(text=data.decode("utf-8", errors="replace"))
+def _parse_text_bytes(
+    data: bytes,
+    *,
+    filename: str = "",
+    source_id: str | None = None,
+) -> ParsedAttachment:
+    """Decode a ``text/*`` attachment after refusing spoofed binary content.
+
+    Sources occasionally label binary attachments as ``text/plain`` /
+    ``text/markdown`` / ``text/csv`` (misconfigured Slack workflows, deliberate
+    spoofing).  Sending the raw bytes through ``decode('utf-8',
+    errors='replace')`` lands a wall of U+FFFD characters in the index, so we
+    refuse two patterns before decoding succeeds:
+
+    * The first bytes match a known binary container magic
+      (PDF / ZIP / ELF / Mach-O / common image headers / common archive
+      formats — see :data:`_BINARY_MAGIC_PREFIXES`).
+    * After decoding, more than :data:`_TEXT_REPLACEMENT_RATIO_LIMIT` of the
+      result are U+FFFD replacement characters.
+
+    Either condition raises :class:`AttachmentParseError`, letting callers
+    fall through to the existing metadata-only Document path.
+    """
+    for prefix in _BINARY_MAGIC_PREFIXES:
+        if data.startswith(prefix):
+            raise AttachmentParseError(
+                f"text attachment {filename!r} has binary magic "
+                f"{prefix!r}; refusing to index spoofed content",
+                source_id=source_id,
+            )
+
+    text = data.decode("utf-8", errors="replace")
+    if text:
+        replacement_count = text.count("�")
+        ratio = replacement_count / len(text)
+        if ratio > _TEXT_REPLACEMENT_RATIO_LIMIT:
+            raise AttachmentParseError(
+                f"text attachment {filename!r} decoded with "
+                f"{replacement_count}/{len(text)} replacement characters "
+                f"(ratio {ratio:.2%} > "
+                f"{_TEXT_REPLACEMENT_RATIO_LIMIT:.0%}); refusing as binary",
+                source_id=source_id,
+            )
+    return ParsedAttachment(text=text)
 
 
 # --- Parent-URL builder -----------------------------------------------------

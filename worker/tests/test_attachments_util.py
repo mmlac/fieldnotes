@@ -537,14 +537,96 @@ class TestStreamAndParseText:
         )
         assert result.text == "résumé\nline 2"
 
-    def test_invalid_utf8_uses_replacement(self) -> None:
+    def test_low_ratio_invalid_utf8_uses_replacement(self) -> None:
+        # One stray invalid byte amid otherwise-valid UTF-8 stays under the
+        # 5% replacement-ratio limit and decodes with U+FFFD substitution
+        # rather than raising — text/* attachments often contain truncated
+        # multibyte sequences or accidental encoding mixups.
+        body = ("hello world " * 20).encode("utf-8") + b"\xff"
         result = stream_and_parse(
-            fetch=lambda: b"\xff\xfeokay",
+            fetch=lambda: body,
             filename="notes.txt",
             mime="text/plain",
         )
-        # 'errors=replace' means we never crash on bad bytes.
-        assert "okay" in result.text
+        assert "hello world" in result.text
+
+
+class TestStreamAndParseTextSpoofing:
+    """fn-2hw: refuse text/* attachments whose payload is binary."""
+
+    def test_text_with_pdf_magic_rejected(self) -> None:
+        with pytest.raises(AttachmentParseError) as exc:
+            stream_and_parse(
+                fetch=lambda: b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\nrest of binary",
+                filename="spoof.txt",
+                mime="text/plain",
+                source_id="msg-pdf",
+            )
+        assert "binary magic" in str(exc.value)
+        assert exc.value.source_id == "msg-pdf"
+
+    def test_text_with_zip_magic_rejected(self) -> None:
+        with pytest.raises(AttachmentParseError) as exc:
+            stream_and_parse(
+                fetch=lambda: b"PK\x03\x04\x14\x00\x00\x00stuff",
+                filename="spoof.md",
+                mime="text/markdown",
+                source_id="msg-zip",
+            )
+        assert "binary magic" in str(exc.value)
+        assert exc.value.source_id == "msg-zip"
+
+    def test_text_high_replacement_ratio_rejected(self) -> None:
+        # Random non-UTF-8 bytes that don't match any magic prefix in our
+        # list — still mostly U+FFFD after decode, must be refused.
+        garbage = bytes(range(0x80, 0xC0)) * 4  # 256 invalid lead bytes
+        with pytest.raises(AttachmentParseError) as exc:
+            stream_and_parse(
+                fetch=lambda: garbage,
+                filename="spoof.csv",
+                mime="text/csv",
+                source_id="msg-garbage",
+            )
+        assert "replacement characters" in str(exc.value)
+        assert exc.value.source_id == "msg-garbage"
+
+    def test_text_legitimate_utf8_unaffected(self) -> None:
+        result = stream_and_parse(
+            fetch=lambda: "Hello, world! 你好".encode("utf-8"),
+            filename="hello.txt",
+            mime="text/plain",
+        )
+        assert result.text == "Hello, world! 你好"
+
+    def test_text_empty_unaffected(self) -> None:
+        result = stream_and_parse(
+            fetch=lambda: b"",
+            filename="empty.txt",
+            mime="text/plain",
+        )
+        assert result.text == ""
+
+    def test_e2e_spoofed_text_falls_back_to_metadata_only(self) -> None:
+        # End-to-end: a Gmail/Slack attachment surfaced as text/plain whose
+        # payload is actually a PDF must raise AttachmentParseError so the
+        # source adapter's existing fallback emits a metadata-only Document
+        # instead of a wall of garbage chunks.  We verify by simulating the
+        # caller's try/except: the raise is the contract.
+        spoofed_pdf = _tiny_pdf_bytes("contents that should never be indexed")
+        assert spoofed_pdf.startswith(b"%PDF-")
+
+        emitted_metadata_only = False
+        try:
+            stream_and_parse(
+                fetch=lambda: spoofed_pdf,
+                filename="invoice.txt",
+                mime="text/plain",
+                source_id="gmail-msg-7",
+            )
+        except AttachmentParseError as exc:
+            assert exc.source_id == "gmail-msg-7"
+            emitted_metadata_only = True
+        assert emitted_metadata_only
 
 
 class TestStreamAndParseErrors:
