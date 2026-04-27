@@ -11,6 +11,8 @@ import pytest
 
 from worker.cli import _build_parser
 from worker.cli.migrate import (
+    MigrateLockHeld,
+    acquire_migrate_lock,
     detect_interleaved,
     detect_neo4j_counts,
     detect_qdrant_count,
@@ -20,9 +22,11 @@ from worker.cli.migrate import (
     migrate_neo4j,
     migrate_qdrant,
     migrate_queue,
+    release_migrate_lock,
     resolve_account,
     rewrite_source_id,
     run_migrate_gmail_multiaccount,
+    validate_post_pass,
 )
 
 
@@ -869,3 +873,324 @@ class TestRunMigrate:
             qdrant_factory=lambda: env["qdrant"],
         )
         assert rc == 2
+
+
+# ─── Post-pass validation (race detection) ───────────────────────────
+
+
+class TestValidatePostPass:
+    def test_clean_db_is_empty(self, tmp_path: Path) -> None:
+        db = tmp_path / "queue.db"
+        _seed_queue_db(db)
+        migrate_queue(db, "personal")
+        rows, keys = validate_post_pass(db)
+        assert rows == []
+        assert keys == []
+
+    def test_detects_late_inserted_old_shape_row(
+        self, tmp_path: Path
+    ) -> None:
+        db = tmp_path / "queue.db"
+        _seed_queue_db(db)
+        migrate_queue(db, "personal")
+        # Simulate a daemon writing an old-shape row *after* the
+        # migrate's UPDATE pass committed.
+        conn = sqlite3.connect(str(db))
+        conn.execute(
+            "INSERT INTO queue "
+            "(id, source_type, source_id, operation, status, payload, "
+            " enqueued_at) "
+            "VALUES ('late1', 'gmail', 'gmail://thread/LATE', "
+            "'created', 'pending', '{}', '2026-04-26T01:00:00Z')"
+        )
+        conn.commit()
+        conn.close()
+        rows, keys = validate_post_pass(db)
+        assert rows == [("late1", "gmail://thread/LATE")]
+        assert keys == []
+
+    def test_detects_bare_cursor_key(self, tmp_path: Path) -> None:
+        db = tmp_path / "queue.db"
+        _seed_queue_db(db)
+        migrate_queue(db, "personal")
+        # Simulate a daemon promoting an old-style cursor key after the
+        # migrate ran.
+        conn = sqlite3.connect(str(db))
+        conn.execute(
+            "INSERT INTO cursors VALUES "
+            "('gmail', '{\"x\":9}', '2026-04-26T02:00:00Z')"
+        )
+        conn.commit()
+        conn.close()
+        rows, keys = validate_post_pass(db)
+        assert rows == []
+        assert keys == ["gmail"]
+
+    def test_missing_db_returns_empty(self, tmp_path: Path) -> None:
+        rows, keys = validate_post_pass(tmp_path / "nope.db")
+        assert rows == []
+        assert keys == []
+
+
+# ─── Advisory lockfile ──────────────────────────────────────────────
+
+
+class TestMigrateLock:
+    def test_acquire_creates_lockfile(self, tmp_path: Path) -> None:
+        lock = tmp_path / "migrate.lock"
+        fd = acquire_migrate_lock(lock)
+        try:
+            assert lock.exists()
+            assert lock.read_text().strip().isdigit()
+        finally:
+            release_migrate_lock(lock, fd)
+        assert not lock.exists()
+
+    def test_concurrent_acquire_raises(self, tmp_path: Path) -> None:
+        lock = tmp_path / "migrate.lock"
+        fd = acquire_migrate_lock(lock)
+        try:
+            with pytest.raises(MigrateLockHeld) as exc_info:
+                acquire_migrate_lock(lock)
+            assert "another fieldnotes migrate" in str(exc_info.value).lower()
+            assert exc_info.value.lock_path == lock
+        finally:
+            release_migrate_lock(lock, fd)
+
+    def test_release_after_unlinked_is_safe(self, tmp_path: Path) -> None:
+        lock = tmp_path / "migrate.lock"
+        fd = acquire_migrate_lock(lock)
+        # Someone else removed the file.
+        lock.unlink()
+        # Should not raise.
+        release_migrate_lock(lock, fd)
+
+
+# ─── Race-window integration tests (fn-3ox) ─────────────────────────
+
+
+class TestRaceFixes:
+    def test_post_pass_detects_late_inserts(self, env, capsys) -> None:
+        """Simulate a daemon write between migrate_queue's UPDATE pass
+        and the post-pass scan: post-pass reports N=1 and exits non-zero.
+        """
+        from worker.cli import migrate as migrate_mod
+
+        original_migrate_queue = migrate_mod.migrate_queue
+
+        def racing_migrate_queue(db_path: Path, account: str):
+            result = original_migrate_queue(db_path, account)
+            # After the UPDATE pass committed, a daemon (still alive
+            # under --force-running) sneaks in an old-shape row.
+            conn = sqlite3.connect(str(db_path))
+            conn.execute(
+                "INSERT INTO queue "
+                "(id, source_type, source_id, operation, status, "
+                " payload, enqueued_at) "
+                "VALUES ('race1', 'gmail', 'gmail://thread/RACE', "
+                "'created', 'pending', '{}', "
+                "'2026-04-26T03:00:00Z')"
+            )
+            conn.commit()
+            conn.close()
+            return result
+
+        migrate_mod.migrate_queue = racing_migrate_queue
+        try:
+            rc = run_migrate_gmail_multiaccount(
+                account="personal",
+                yes=True,
+                force_running=True,
+                data_dir=env["data_dir"],
+                daemon_detector=lambda: (True, "racing-daemon"),
+                neo4j_session_factory=lambda: env["sess"],
+                qdrant_factory=lambda: env["qdrant"],
+            )
+        finally:
+            migrate_mod.migrate_queue = original_migrate_queue
+
+        assert rc == 5
+        err = capsys.readouterr().err
+        assert "gmail://thread/RACE" in err
+        assert "Post-migration validation found 1 old-shape rows" in err
+        assert "stop the daemon" in err
+        # Neo4j/Qdrant migration was *not* run (we short-circuited).
+        assert env["sess"].docs[0]["source_id"] == "gmail://thread/T1"
+
+    def test_post_pass_clean_when_serialized(self, env, capsys) -> None:
+        """With the lockfile already held by another invocation and
+        --no-force-running (default), migrate refuses to start with a
+        clear, actionable message.
+        """
+        lock_path = env["data_dir"] / "migrate.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        held_fd = acquire_migrate_lock(lock_path)
+        try:
+            rc = run_migrate_gmail_multiaccount(
+                account="personal",
+                yes=True,
+                data_dir=env["data_dir"],
+                daemon_detector=lambda: (False, None),
+                neo4j_session_factory=lambda: env["sess"],
+                qdrant_factory=lambda: env["qdrant"],
+            )
+        finally:
+            release_migrate_lock(lock_path, held_fd)
+        assert rc == 4
+        err = capsys.readouterr().err
+        assert "another fieldnotes migrate is in progress" in err.lower()
+        assert "--no-serialize" in err
+        # Queue untouched: no rows were rewritten.
+        sids = {
+            r[0]
+            for r in sqlite3.connect(str(env["db"])).execute(
+                "SELECT source_id FROM queue"
+            )
+        }
+        assert "gmail://thread/T1" in sids
+
+    def test_post_pass_clean_after_full_migrate(self, env) -> None:
+        """End-to-end happy path: post-pass scan finds zero old-shape
+        rows after the migrate completes successfully.
+        """
+        rc = run_migrate_gmail_multiaccount(
+            account="personal",
+            yes=True,
+            data_dir=env["data_dir"],
+            daemon_detector=lambda: (False, None),
+            neo4j_session_factory=lambda: env["sess"],
+            qdrant_factory=lambda: env["qdrant"],
+            config_path=env["config_path"],
+        )
+        assert rc == 0
+        rows, keys = validate_post_pass(env["db"])
+        assert rows == []
+        assert keys == []
+        # Lockfile cleaned up.
+        assert not (env["data_dir"] / "migrate.lock").exists()
+
+    def test_concurrent_migrates_one_wins(self, env, tmp_path) -> None:
+        """Two parallel migrate invocations: one wins the advisory
+        lock and proceeds; the other refuses with rc=4.
+
+        Determinism: monkey-patch ``detect_queue_counts`` to block the
+        winning thread inside the locked section until the loser has
+        attempted (and failed) acquisition.
+        """
+        import threading
+
+        from worker.cli import migrate as migrate_mod
+
+        original_detect = migrate_mod.detect_queue_counts
+        winner_in_lock = threading.Event()
+        loser_done = threading.Event()
+        first_call_seen = threading.Lock()
+        first_call_taken = {"taken": False}
+
+        def slow_detect(db_path: Path):
+            with first_call_seen:
+                is_first = not first_call_taken["taken"]
+                first_call_taken["taken"] = True
+            if is_first:
+                winner_in_lock.set()
+                loser_done.wait(timeout=5.0)
+            return original_detect(db_path)
+
+        migrate_mod.detect_queue_counts = slow_detect
+
+        # Build a separate env for the loser so its in-memory Neo4j /
+        # Qdrant fakes don't collide with the winner's; both share
+        # ``data_dir`` (and queue.db) by design — that's the point.
+        loser_sess = _FakeNeo4jSession()
+        loser_sess.docs.append({"source_id": "gmail://thread/T1"})
+        loser_qdrant = _FakeQdrantClient()
+        loser_qdrant.add(1, "gmail://thread/T1")
+
+        results: dict[str, int] = {}
+
+        def run_winner() -> None:
+            results["winner"] = run_migrate_gmail_multiaccount(
+                account="personal",
+                yes=True,
+                data_dir=env["data_dir"],
+                daemon_detector=lambda: (False, None),
+                neo4j_session_factory=lambda: env["sess"],
+                qdrant_factory=lambda: env["qdrant"],
+                config_path=env["config_path"],
+            )
+
+        def run_loser() -> None:
+            winner_in_lock.wait(timeout=5.0)
+            results["loser"] = run_migrate_gmail_multiaccount(
+                account="personal",
+                yes=True,
+                data_dir=env["data_dir"],
+                daemon_detector=lambda: (False, None),
+                neo4j_session_factory=lambda: loser_sess,
+                qdrant_factory=lambda: loser_qdrant,
+                config_path=env["config_path"],
+            )
+            loser_done.set()
+
+        winner_t = threading.Thread(target=run_winner)
+        loser_t = threading.Thread(target=run_loser)
+        winner_t.start()
+        loser_t.start()
+        winner_t.join(timeout=15.0)
+        loser_t.join(timeout=15.0)
+
+        migrate_mod.detect_queue_counts = original_detect
+
+        assert not winner_t.is_alive() and not loser_t.is_alive()
+        assert results["loser"] == 4
+        assert results["winner"] == 0
+        # Winner's migrate landed.
+        sids = {
+            r[0]
+            for r in sqlite3.connect(str(env["db"])).execute(
+                "SELECT source_id FROM queue"
+            )
+        }
+        assert "gmail://personal/thread/T1" in sids
+
+
+# ─── --no-serialize parser flag ──────────────────────────────────────
+
+
+class TestParserNoSerialize:
+    def test_default_no_serialize_false(self) -> None:
+        parser = _build_parser()
+        args = parser.parse_args(["migrate", "gmail-multiaccount"])
+        assert args.no_serialize is False
+
+    def test_no_serialize_flag(self) -> None:
+        parser = _build_parser()
+        args = parser.parse_args(
+            ["migrate", "gmail-multiaccount", "--no-serialize"]
+        )
+        assert args.no_serialize is True
+
+
+class TestNoSerializeBypass:
+    def test_no_serialize_bypasses_lock_contention(
+        self, env
+    ) -> None:
+        """With ``serialize=False``, migrate ignores an existing
+        lockfile and proceeds.  This is the documented escape hatch.
+        """
+        lock_path = env["data_dir"] / "migrate.lock"
+        held_fd = acquire_migrate_lock(lock_path)
+        try:
+            rc = run_migrate_gmail_multiaccount(
+                account="personal",
+                yes=True,
+                serialize=False,
+                data_dir=env["data_dir"],
+                daemon_detector=lambda: (False, None),
+                neo4j_session_factory=lambda: env["sess"],
+                qdrant_factory=lambda: env["qdrant"],
+                config_path=env["config_path"],
+            )
+        finally:
+            release_migrate_lock(lock_path, held_fd)
+        assert rc == 0

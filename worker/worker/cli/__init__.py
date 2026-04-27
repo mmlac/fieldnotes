@@ -483,6 +483,12 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Run even when the daemon is alive (queue.db writes may race).",
     )
+    gma_p.add_argument(
+        "--no-serialize",
+        action="store_true",
+        help="Skip the advisory lockfile that serializes concurrent "
+        "migrate invocations.  Default: serialize.",
+    )
 
     # ── topics ──────────────────────────────────────────────────────
     topics_p = sub.add_parser("topics", help="Browse and inspect topics")
@@ -906,6 +912,7 @@ def main(argv: list[str] | None = None) -> int:
                     yes=args.yes,
                     dry_run=args.dry_run,
                     force_running=args.force_running,
+                    serialize=not args.no_serialize,
                     neo4j_session_factory=driver.session,
                     qdrant_factory=lambda: qdrant,
                     qdrant_collection=qdrant_cfg.get("collection", "fieldnotes"),

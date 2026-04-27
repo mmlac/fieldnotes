@@ -534,6 +534,103 @@ def migrate_config(config_path: Path, account: str) -> bool:
     return True
 
 
+# ── Post-pass validation ──────────────────────────────────────────────
+
+
+def validate_post_pass(
+    db_path: Path,
+) -> tuple[list[tuple[str, str]], list[str]]:
+    """Re-scan ``queue.db`` for entries that survived the migrate.
+
+    Returns ``(stray_rows, stray_cursor_keys)`` where:
+
+      - ``stray_rows`` is a list of ``(queue_id, source_id)`` for any
+        row whose ``source_id`` still matches a legacy old-shape prefix
+        (``gmail://thread/`` etc., no account segment).
+      - ``stray_cursor_keys`` is a list of bare cursor keys (``gmail`` /
+        ``calendar`` without an account suffix) that survived.
+
+    Both empty means the migrate is verified clean.  No-op (returns
+    empty lists) if *db_path* does not exist.
+    """
+    if not db_path.exists():
+        return [], []
+    conn = sqlite3.connect(str(db_path))
+    try:
+        like_clause = " OR ".join(["source_id LIKE ?"] * len(_OLD_PREFIXES))
+        params = [f"{p}%" for p in _OLD_PREFIXES]
+        rows = conn.execute(
+            f"SELECT id, source_id FROM queue WHERE {like_clause}", params
+        ).fetchall()
+        try:
+            cursor_rows = conn.execute(
+                "SELECT key FROM cursors WHERE key IN ('gmail', 'calendar')"
+            ).fetchall()
+        except sqlite3.OperationalError:
+            cursor_rows = []
+        return [(r[0], r[1]) for r in rows], [r[0] for r in cursor_rows]
+    finally:
+        conn.close()
+
+
+# ── Advisory lockfile ─────────────────────────────────────────────────
+
+
+class MigrateLockHeld(Exception):
+    """Raised when the migrate lockfile is already held."""
+
+    def __init__(self, lock_path: Path) -> None:
+        super().__init__(
+            f"Another fieldnotes migrate is in progress (lock file: "
+            f"{lock_path}). If you're certain no other migrate is "
+            f"running, remove the lock file and re-run.  To skip "
+            f"locking entirely, pass --no-serialize."
+        )
+        self.lock_path = lock_path
+
+
+def acquire_migrate_lock(lock_path: Path) -> int:
+    """Atomically create *lock_path* and return the open file descriptor.
+
+    Uses ``O_CREAT|O_EXCL`` so two concurrent invocations cannot both
+    succeed.  Caller must release with ``release_migrate_lock``.
+
+    Raises ``MigrateLockHeld`` if another process already holds the
+    lockfile.
+    """
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        fd = os.open(
+            str(lock_path),
+            os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+            0o644,
+        )
+    except FileExistsError as exc:
+        raise MigrateLockHeld(lock_path) from exc
+    try:
+        os.write(fd, f"{os.getpid()}\n".encode())
+    except OSError:
+        # Best-effort PID write; the lock is held even without the body.
+        pass
+    return fd
+
+
+def release_migrate_lock(lock_path: Path, fd: int) -> None:
+    """Close *fd* and unlink *lock_path*.  Best-effort on both."""
+    try:
+        os.close(fd)
+    except OSError:
+        pass
+    try:
+        lock_path.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        logger.warning(
+            "Failed to remove migrate lockfile %s: %s", lock_path, exc
+        )
+
+
 # ── Interleaved-migration check ───────────────────────────────────────
 
 
@@ -604,6 +701,7 @@ def run_migrate_gmail_multiaccount(
     yes: bool = False,
     dry_run: bool = False,
     force_running: bool = False,
+    serialize: bool = True,
     daemon_detector: Callable[[], tuple[bool, str | None]] = detect_daemon,
     neo4j_session_factory: Callable[[], Any] | None = None,
     qdrant_factory: Callable[[], Any] | None = None,
@@ -611,7 +709,15 @@ def run_migrate_gmail_multiaccount(
     data_dir: Path | None = None,
     out: Any = None,
 ) -> int:
-    """Run the migrate command.  Returns an exit code (0 = success)."""
+    """Run the migrate command.  Returns an exit code (0 = success).
+
+    ``serialize`` (default True) acquires an advisory lockfile next to
+    ``queue.db`` so two concurrent migrate invocations cannot interleave.
+    Pass ``serialize=False`` (CLI: ``--no-serialize``) to skip locking.
+    Note: the lock is best-effort and does NOT block a daemon that
+    pre-existed it; the post-pass validation is the authoritative
+    guarantee that no old-shape rows survived the migrate.
+    """
     out = out or sys.stdout
 
     # 1. Daemon precondition.
@@ -647,6 +753,7 @@ def run_migrate_gmail_multiaccount(
         )
     data_dir = Path(data_dir).expanduser()
     queue_db = data_dir / "queue.db"
+    lock_path = data_dir / "migrate.lock"
 
     config_file = (
         config_path.expanduser()
@@ -657,6 +764,48 @@ def run_migrate_gmail_multiaccount(
     if qdrant_collection is None:
         qdrant_collection = _raw_qdrant_collection(config_path) or "fieldnotes"
 
+    # 4. Acquire advisory lock.  Skipped for dry-run (no mutations) and
+    #    when --no-serialize was passed.  Released in `finally` below.
+    lock_fd: int | None = None
+    if serialize and not dry_run:
+        try:
+            lock_fd = acquire_migrate_lock(lock_path)
+        except MigrateLockHeld as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 4
+
+    try:
+        return _run_migrate_locked(
+            account_label=account_label,
+            queue_db=queue_db,
+            data_dir=data_dir,
+            config_file=config_file,
+            qdrant_collection=qdrant_collection,
+            yes=yes,
+            dry_run=dry_run,
+            neo4j_session_factory=neo4j_session_factory,
+            qdrant_factory=qdrant_factory,
+            out=out,
+        )
+    finally:
+        if lock_fd is not None:
+            release_migrate_lock(lock_path, lock_fd)
+
+
+def _run_migrate_locked(
+    *,
+    account_label: str,
+    queue_db: Path,
+    data_dir: Path,
+    config_file: Path,
+    qdrant_collection: str,
+    yes: bool,
+    dry_run: bool,
+    neo4j_session_factory: Callable[[], Any] | None,
+    qdrant_factory: Callable[[], Any] | None,
+    out: Any,
+) -> int:
+    """Core migrate work; lock is held by the caller."""
     # 4. Detect old-shape state.
     queue_rows, cursor_rows = detect_queue_counts(queue_db)
 
@@ -709,6 +858,35 @@ def run_migrate_gmail_multiaccount(
     q = migrate_queue(queue_db, account_label)
     counts.queue_rows = q["rows"]
     counts.cursor_rows = q["cursors"]
+
+    # 7a-bis. Post-pass validation: catch rows the daemon snuck in
+    # *after* migrate_queue's UPDATE pass but *before* its commit was
+    # visible to other connections.  BEGIN IMMEDIATE blocks the daemon
+    # for the duration of the txn, but separate connections established
+    # after commit can still race in newly-enqueued old-shape rows if
+    # the daemon was running (--force-running).
+    stray_rows, stray_keys = validate_post_pass(queue_db)
+    if stray_rows or stray_keys:
+        for queue_id, sid in stray_rows:
+            print(
+                f"warning: post-migration old-shape row id={queue_id!r} "
+                f"source_id={sid!r}",
+                file=sys.stderr,
+            )
+        for key in stray_keys:
+            print(
+                f"warning: post-migration bare cursor key={key!r}",
+                file=sys.stderr,
+            )
+        print(
+            f"Post-migration validation found {len(stray_rows)} "
+            f"old-shape rows in queue.db. The daemon was likely running "
+            f"during migrate; stop the daemon and re-run "
+            f"`fieldnotes migrate gmail-multiaccount` (without "
+            f"--force-running) to clean these up.",
+            file=sys.stderr,
+        )
+        return 5
 
     # 7b. Neo4j.
     if neo4j_session_factory is not None:
