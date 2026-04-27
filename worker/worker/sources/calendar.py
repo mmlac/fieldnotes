@@ -149,9 +149,7 @@ def _build_ingest_event(
     if description:
         text_parts.append(description)
     if attendees:
-        names = [
-            a["name"] or a["email"] for a in attendees if not a.get("self")
-        ]
+        names = [a["name"] or a["email"] for a in attendees if not a.get("self")]
         if names:
             text_parts.append(f"Attendees: {', '.join(names)}")
     body_text = "\n\n".join(text_parts)
@@ -215,6 +213,9 @@ class GoogleCalendarSource(PythonSource):
             DEFAULT_INDEXABLE_MIMETYPES
         )
         self._attachment_max_size_mb = DEFAULT_ATTACHMENT_MAX_SIZE_MB
+        self._attachment_pdf_max_pages = 1000
+        self._attachment_pdf_per_page_chars = 1_000_000
+        self._attachment_pdf_timeout_seconds = 60
 
     def name(self) -> str:
         return "google_calendar"
@@ -261,6 +262,16 @@ class GoogleCalendarSource(PythonSource):
             )
         if "attachment_max_size_mb" in cfg:
             self._attachment_max_size_mb = int(cfg["attachment_max_size_mb"])
+        if "attachment_pdf_max_pages" in cfg:
+            self._attachment_pdf_max_pages = int(cfg["attachment_pdf_max_pages"])
+        if "attachment_pdf_per_page_chars" in cfg:
+            self._attachment_pdf_per_page_chars = int(
+                cfg["attachment_pdf_per_page_chars"]
+            )
+        if "attachment_pdf_timeout_seconds" in cfg:
+            self._attachment_pdf_timeout_seconds = int(
+                cfg["attachment_pdf_timeout_seconds"]
+            )
         if "cursor_path" in cfg:
             raise ValueError(
                 "GoogleCalendarSource: 'cursor_path' is no longer supported. "
@@ -345,8 +356,12 @@ class GoogleCalendarSource(PythonSource):
                     try:
                         sync_token = sync_tokens.get(cal_id)
                         new_token = await self._poll_calendar(
-                            service, queue, cal_id, sync_token,
-                            sync_tokens, seen_series,
+                            service,
+                            queue,
+                            cal_id,
+                            sync_token,
+                            sync_tokens,
+                            seen_series,
                             indexed_check=indexed_check,
                             drive_service=drive_service,
                         )
@@ -362,13 +377,9 @@ class GoogleCalendarSource(PythonSource):
                             )
                             sync_tokens.pop(cal_id, None)
                         else:
-                            logger.error(
-                                "Calendar API error for %s: %s", cal_id, exc
-                            )
+                            logger.error("Calendar API error for %s: %s", cal_id, exc)
                     except Exception:
-                        logger.exception(
-                            "Unexpected error polling calendar %s", cal_id
-                        )
+                        logger.exception("Unexpected error polling calendar %s", cal_id)
 
                 if first_cycle:
                     initial_sync_source_done()
@@ -403,9 +414,11 @@ class GoogleCalendarSource(PythonSource):
                 continue
             try:
                 meta = await asyncio.to_thread(
-                    lambda: drive_service.files()
-                    .get(fileId=file_id, fields="size")
-                    .execute()
+                    lambda: (
+                        drive_service.files()
+                        .get(fileId=file_id, fields="size")
+                        .execute()
+                    )
                 )
             except HttpError as exc:
                 logger.info(
@@ -456,8 +469,7 @@ class GoogleCalendarSource(PythonSource):
             # nextSyncToken from the response when orderBy is specified,
             # which would cause every poll cycle to re-backfill.
             time_min = (
-                datetime.now(timezone.utc)
-                - timedelta(days=self._max_initial_days)
+                datetime.now(timezone.utc) - timedelta(days=self._max_initial_days)
             ).isoformat()
             kwargs["timeMin"] = time_min
             logger.info(
@@ -520,9 +532,7 @@ class GoogleCalendarSource(PythonSource):
                             already_indexed_sids = set()
 
                 for event in events:
-                    ingest = _build_ingest_event(
-                        event, synthetic_id, self._account
-                    )
+                    ingest = _build_ingest_event(event, synthetic_id, self._account)
                     if ingest is not None:
                         # Stamp attachment policy onto every event so the
                         # parser can apply classify_attachment uniformly,
@@ -533,8 +543,15 @@ class GoogleCalendarSource(PythonSource):
                         meta["attachment_indexable_mimetypes"] = list(
                             self._attachment_indexable_mimetypes
                         )
-                        meta["attachment_max_size_mb"] = (
-                            self._attachment_max_size_mb
+                        meta["attachment_max_size_mb"] = self._attachment_max_size_mb
+                        meta["attachment_pdf_max_pages"] = (
+                            self._attachment_pdf_max_pages
+                        )
+                        meta["attachment_pdf_per_page_chars"] = (
+                            self._attachment_pdf_per_page_chars
+                        )
+                        meta["attachment_pdf_timeout_seconds"] = (
+                            self._attachment_pdf_timeout_seconds
                         )
                         if (
                             self._download_attachments
@@ -545,10 +562,7 @@ class GoogleCalendarSource(PythonSource):
                                 drive_service, meta["attachments"]
                             )
                         # Phase 1: skip events already chunked in Neo4j.
-                        if (
-                            is_backfill
-                            and ingest["source_id"] in already_indexed_sids
-                        ):
+                        if is_backfill and ingest["source_id"] in already_indexed_sids:
                             INDEXED_PREFILTER_SKIPPED.labels(
                                 source_type="google_calendar"
                             ).inc()
@@ -601,10 +615,12 @@ class GoogleCalendarSource(PythonSource):
 
         def _cursor_json() -> str:
             """Build cursor JSON with sync tokens and seen series."""
-            return json.dumps({
-                "sync_tokens": sync_tokens,
-                "seen_series": sorted(seen_series),
-            })
+            return json.dumps(
+                {
+                    "sync_tokens": sync_tokens,
+                    "seen_series": sorted(seen_series),
+                }
+            )
 
         # Enqueue the collected events with cursor persistence.
         if is_backfill and pending_events:
@@ -647,9 +663,7 @@ class GoogleCalendarSource(PythonSource):
                 initial_sync_add_items(total_events)
             skipped_msg = ""
             if total_skipped_processed:
-                skipped_msg = (
-                    f", {total_skipped_processed} already processed"
-                )
+                skipped_msg = f", {total_skipped_processed} already processed"
             if total_recurring_skipped:
                 logger.info(
                     "Calendar %s: queued %d event(s) "

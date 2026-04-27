@@ -153,6 +153,9 @@ class GmailAccountConfig:
         default_factory=lambda: list(DEFAULT_INDEXABLE_MIMETYPES)
     )
     attachment_max_size_mb: int = 25
+    attachment_pdf_max_pages: int = 1000
+    attachment_pdf_per_page_chars: int = 1_000_000
+    attachment_pdf_timeout_seconds: int = 60
 
 
 @dataclass
@@ -170,6 +173,9 @@ class CalendarAccountConfig:
         default_factory=lambda: list(DEFAULT_INDEXABLE_MIMETYPES)
     )
     attachment_max_size_mb: int = 25
+    attachment_pdf_max_pages: int = 1000
+    attachment_pdf_per_page_chars: int = 1_000_000
+    attachment_pdf_timeout_seconds: int = 60
 
 
 @dataclass
@@ -205,6 +211,9 @@ class SlackSourceConfig:
         default_factory=lambda: list(DEFAULT_INDEXABLE_MIMETYPES)
     )
     attachment_max_size_mb: int = 25
+    attachment_pdf_max_pages: int = 1000
+    attachment_pdf_per_page_chars: int = 1_000_000
+    attachment_pdf_timeout_seconds: int = 60
 
 
 @dataclass
@@ -466,13 +475,25 @@ def _validate_homebrew_config(settings: dict[str, Any]) -> None:
 _ATTACHMENT_MAX_SIZE_MIN_MB = 1
 _ATTACHMENT_MAX_SIZE_MAX_MB = 200
 
+# Inclusive bounds for the PDF-bomb defenses. Floors prevent an operator
+# from accidentally disabling the guard with a zero/negative value;
+# ceilings cap the worst case the parser will agree to attempt before
+# giving up.
+_ATTACHMENT_PDF_MAX_PAGES_MIN = 1
+_ATTACHMENT_PDF_MAX_PAGES_MAX = 100_000
+_ATTACHMENT_PDF_PER_PAGE_CHARS_MIN = 1_000
+_ATTACHMENT_PDF_PER_PAGE_CHARS_MAX = 100_000_000
+_ATTACHMENT_PDF_TIMEOUT_SECONDS_MIN = 1
+_ATTACHMENT_PDF_TIMEOUT_SECONDS_MAX = 3600
+
 
 def _validate_attachment_settings(section: str, settings: dict[str, Any]) -> None:
     """Validate the shared attachment knobs on any source section.
 
-    Checks ``attachment_indexable_mimetypes`` (list[str]) and
-    ``attachment_max_size_mb`` (int in [1, 200]).  Type / range errors
-    raise; missing keys are fine (defaults will fill in).
+    Checks ``attachment_indexable_mimetypes`` (list[str]),
+    ``attachment_max_size_mb`` (int in [1, 200]) and the three PDF-bomb
+    defense knobs. Type / range errors raise; missing keys are fine
+    (defaults will fill in).
     """
     if "attachment_indexable_mimetypes" in settings:
         _check_list_of(
@@ -495,6 +516,28 @@ def _validate_attachment_settings(section: str, settings: dict[str, Any]) -> Non
                 f"[{_ATTACHMENT_MAX_SIZE_MIN_MB}, {_ATTACHMENT_MAX_SIZE_MAX_MB}], "
                 f"got {v}"
             )
+    for key, lo, hi in (
+        (
+            "attachment_pdf_max_pages",
+            _ATTACHMENT_PDF_MAX_PAGES_MIN,
+            _ATTACHMENT_PDF_MAX_PAGES_MAX,
+        ),
+        (
+            "attachment_pdf_per_page_chars",
+            _ATTACHMENT_PDF_PER_PAGE_CHARS_MIN,
+            _ATTACHMENT_PDF_PER_PAGE_CHARS_MAX,
+        ),
+        (
+            "attachment_pdf_timeout_seconds",
+            _ATTACHMENT_PDF_TIMEOUT_SECONDS_MIN,
+            _ATTACHMENT_PDF_TIMEOUT_SECONDS_MAX,
+        ),
+    ):
+        if key in settings:
+            _check_type(section, key, settings[key], int)
+            v = settings[key]
+            if not lo <= v <= hi:
+                raise ValueError(f"[{section}] {key} must be in [{lo}, {hi}], got {v}")
 
 
 def _parse_slack_config(settings: dict[str, Any]) -> SlackSourceConfig:
@@ -625,6 +668,17 @@ def _parse_slack_config(settings: dict[str, Any]) -> SlackSourceConfig:
         attachment_max_size_mb=settings.get(
             "attachment_max_size_mb", defaults.attachment_max_size_mb
         ),
+        attachment_pdf_max_pages=settings.get(
+            "attachment_pdf_max_pages", defaults.attachment_pdf_max_pages
+        ),
+        attachment_pdf_per_page_chars=settings.get(
+            "attachment_pdf_per_page_chars",
+            defaults.attachment_pdf_per_page_chars,
+        ),
+        attachment_pdf_timeout_seconds=settings.get(
+            "attachment_pdf_timeout_seconds",
+            defaults.attachment_pdf_timeout_seconds,
+        ),
     )
 
     # If enabled, the client_secrets file must exist on disk.
@@ -652,6 +706,9 @@ _GMAIL_LEAF_KEYS: frozenset[str] = frozenset(
         "download_attachments",
         "attachment_indexable_mimetypes",
         "attachment_max_size_mb",
+        "attachment_pdf_max_pages",
+        "attachment_pdf_per_page_chars",
+        "attachment_pdf_timeout_seconds",
     }
 )
 _CALENDAR_LEAF_KEYS: frozenset[str] = frozenset(
@@ -664,6 +721,9 @@ _CALENDAR_LEAF_KEYS: frozenset[str] = frozenset(
         "download_attachments",
         "attachment_indexable_mimetypes",
         "attachment_max_size_mb",
+        "attachment_pdf_max_pages",
+        "attachment_pdf_per_page_chars",
+        "attachment_pdf_timeout_seconds",
     }
 )
 _SOURCE_LEAF_KEYS: dict[str, frozenset[str]] = {
@@ -793,6 +853,17 @@ def _parse_gmail_account(account: str, settings: dict[str, Any]) -> GmailAccount
         attachment_max_size_mb=settings.get(
             "attachment_max_size_mb", defaults.attachment_max_size_mb
         ),
+        attachment_pdf_max_pages=settings.get(
+            "attachment_pdf_max_pages", defaults.attachment_pdf_max_pages
+        ),
+        attachment_pdf_per_page_chars=settings.get(
+            "attachment_pdf_per_page_chars",
+            defaults.attachment_pdf_per_page_chars,
+        ),
+        attachment_pdf_timeout_seconds=settings.get(
+            "attachment_pdf_timeout_seconds",
+            defaults.attachment_pdf_timeout_seconds,
+        ),
     )
 
 
@@ -853,6 +924,17 @@ def _parse_calendar_account(
         ),
         attachment_max_size_mb=settings.get(
             "attachment_max_size_mb", defaults.attachment_max_size_mb
+        ),
+        attachment_pdf_max_pages=settings.get(
+            "attachment_pdf_max_pages", defaults.attachment_pdf_max_pages
+        ),
+        attachment_pdf_per_page_chars=settings.get(
+            "attachment_pdf_per_page_chars",
+            defaults.attachment_pdf_per_page_chars,
+        ),
+        attachment_pdf_timeout_seconds=settings.get(
+            "attachment_pdf_timeout_seconds",
+            defaults.attachment_pdf_timeout_seconds,
         ),
     )
 

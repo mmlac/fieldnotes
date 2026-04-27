@@ -153,6 +153,9 @@ def _build_ingest_event(
     download_attachments: bool = False,
     attachment_indexable_mimetypes: list[str] | None = None,
     attachment_max_size_mb: int = 25,
+    attachment_pdf_max_pages: int = 1000,
+    attachment_pdf_per_page_chars: int = 1_000_000,
+    attachment_pdf_timeout_seconds: int = 60,
     client_secrets_path: str | None = None,
 ) -> dict[str, Any]:
     """Build an IngestEvent dict from a Gmail API message resource.
@@ -194,6 +197,9 @@ def _build_ingest_event(
             else []
         ),
         "attachment_max_size_mb": int(attachment_max_size_mb),
+        "attachment_pdf_max_pages": int(attachment_pdf_max_pages),
+        "attachment_pdf_per_page_chars": int(attachment_pdf_per_page_chars),
+        "attachment_pdf_timeout_seconds": int(attachment_pdf_timeout_seconds),
     }
     if client_secrets_path:
         meta["client_secrets_path"] = client_secrets_path
@@ -230,6 +236,9 @@ class GmailSource(PythonSource):
         self._download_attachments: bool = False
         self._attachment_indexable_mimetypes: list[str] = []
         self._attachment_max_size_mb: int = 25
+        self._attachment_pdf_max_pages: int = 1000
+        self._attachment_pdf_per_page_chars: int = 1_000_000
+        self._attachment_pdf_timeout_seconds: int = 60
 
     def name(self) -> str:
         return "gmail"
@@ -287,6 +296,13 @@ class GmailSource(PythonSource):
             cfg.get("attachment_indexable_mimetypes") or DEFAULT_INDEXABLE_MIMETYPES
         )
         self._attachment_max_size_mb = int(cfg.get("attachment_max_size_mb", 25))
+        self._attachment_pdf_max_pages = int(cfg.get("attachment_pdf_max_pages", 1000))
+        self._attachment_pdf_per_page_chars = int(
+            cfg.get("attachment_pdf_per_page_chars", 1_000_000)
+        )
+        self._attachment_pdf_timeout_seconds = int(
+            cfg.get("attachment_pdf_timeout_seconds", 60)
+        )
 
     async def start(
         self,
@@ -484,6 +500,9 @@ class GmailSource(PythonSource):
                     download_attachments=self._download_attachments,
                     attachment_indexable_mimetypes=self._attachment_indexable_mimetypes,
                     attachment_max_size_mb=self._attachment_max_size_mb,
+                    attachment_pdf_max_pages=self._attachment_pdf_max_pages,
+                    attachment_pdf_per_page_chars=self._attachment_pdf_per_page_chars,
+                    attachment_pdf_timeout_seconds=self._attachment_pdf_timeout_seconds,
                     client_secrets_path=str(self._client_secrets_path)
                     if self._client_secrets_path
                     else None,
@@ -694,6 +713,9 @@ class GmailSource(PythonSource):
                         download_attachments=self._download_attachments,
                         attachment_indexable_mimetypes=self._attachment_indexable_mimetypes,
                         attachment_max_size_mb=self._attachment_max_size_mb,
+                        attachment_pdf_max_pages=self._attachment_pdf_max_pages,
+                        attachment_pdf_per_page_chars=self._attachment_pdf_per_page_chars,
+                        attachment_pdf_timeout_seconds=self._attachment_pdf_timeout_seconds,
                         client_secrets_path=str(self._client_secrets_path)
                         if self._client_secrets_path
                         else None,

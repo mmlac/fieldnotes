@@ -122,9 +122,7 @@ class TestGoogleCalendarParser:
     def test_organizer_hint_non_recurring(self):
         """Non-recurring events attach person hints to CalendarEvent."""
         docs = self.parser.parse(_make_event())
-        org_hints = [
-            h for h in docs[0].graph_hints if h.predicate == "ORGANIZED_BY"
-        ]
+        org_hints = [h for h in docs[0].graph_hints if h.predicate == "ORGANIZED_BY"]
         assert len(org_hints) == 1
         h = org_hints[0]
         assert h.subject_id == "google-calendar://personal/event/evt-123"
@@ -160,9 +158,7 @@ class TestGoogleCalendarParser:
         """Recurring events attach person hints to CalendarSeries, not instance."""
         event = _make_event(meta={"recurring_event_id": "series-abc"})
         docs = self.parser.parse(event)
-        org_hints = [
-            h for h in docs[0].graph_hints if h.predicate == "ORGANIZED_BY"
-        ]
+        org_hints = [h for h in docs[0].graph_hints if h.predicate == "ORGANIZED_BY"]
         assert len(org_hints) == 1
         h = org_hints[0]
         assert h.subject_id == "google-calendar://personal/series/series-abc"
@@ -170,9 +166,7 @@ class TestGoogleCalendarParser:
         assert h.subject_merge_key == "source_id"
         assert h.object_props["email"] == "alice@example.com"
 
-        att_hints = [
-            h for h in docs[0].graph_hints if h.predicate == "ATTENDED_BY"
-        ]
+        att_hints = [h for h in docs[0].graph_hints if h.predicate == "ATTENDED_BY"]
         for ah in att_hints:
             assert ah.subject_label == "CalendarSeries"
             assert ah.subject_merge_key == "source_id"
@@ -180,9 +174,7 @@ class TestGoogleCalendarParser:
     def test_attendee_hints_exclude_self(self):
         """The 'self' attendee (me@example.com) should not generate a hint."""
         docs = self.parser.parse(_make_event())
-        att_hints = [
-            h for h in docs[0].graph_hints if h.predicate == "ATTENDED_BY"
-        ]
+        att_hints = [h for h in docs[0].graph_hints if h.predicate == "ATTENDED_BY"]
         # 3 attendees total, but self=True is excluded → 2 hints
         assert len(att_hints) == 2
         attendee_ids = {h.object_id for h in att_hints}
@@ -192,9 +184,7 @@ class TestGoogleCalendarParser:
 
     def test_attendee_hint_properties(self):
         docs = self.parser.parse(_make_event())
-        att_hints = [
-            h for h in docs[0].graph_hints if h.predicate == "ATTENDED_BY"
-        ]
+        att_hints = [h for h in docs[0].graph_hints if h.predicate == "ATTENDED_BY"]
         bob_hint = next(h for h in att_hints if "bob" in h.object_id)
         assert bob_hint.subject_id == "google-calendar://personal/event/evt-123"
         assert bob_hint.subject_label == "CalendarEvent"
@@ -211,9 +201,7 @@ class TestGoogleCalendarParser:
         person:bob@example.com from Gmail, creating cross-source links.
         """
         docs = self.parser.parse(_make_event())
-        att_hints = [
-            h for h in docs[0].graph_hints if h.predicate == "ATTENDED_BY"
-        ]
+        att_hints = [h for h in docs[0].graph_hints if h.predicate == "ATTENDED_BY"]
         for h in att_hints:
             # Same pattern Gmail uses for Person nodes
             assert h.object_merge_key == "email"
@@ -223,9 +211,7 @@ class TestGoogleCalendarParser:
     def test_no_created_by_when_same_as_organizer(self):
         """CREATED_BY hint should be omitted when creator == organizer."""
         docs = self.parser.parse(_make_event())
-        created_hints = [
-            h for h in docs[0].graph_hints if h.predicate == "CREATED_BY"
-        ]
+        created_hints = [h for h in docs[0].graph_hints if h.predicate == "CREATED_BY"]
         assert len(created_hints) == 0
 
     def test_created_by_when_different_from_organizer(self):
@@ -236,9 +222,7 @@ class TestGoogleCalendarParser:
             }
         )
         docs = self.parser.parse(event)
-        created_hints = [
-            h for h in docs[0].graph_hints if h.predicate == "CREATED_BY"
-        ]
+        created_hints = [h for h in docs[0].graph_hints if h.predicate == "CREATED_BY"]
         assert len(created_hints) == 1
         assert created_hints[0].object_id == "person:delegate@example.com"
         assert created_hints[0].edge_props == {"account": "personal"}
@@ -253,17 +237,13 @@ class TestGoogleCalendarParser:
     def test_no_organizer_no_hint(self):
         event = _make_event(meta={"organizer_email": ""})
         docs = self.parser.parse(event)
-        org_hints = [
-            h for h in docs[0].graph_hints if h.predicate == "ORGANIZED_BY"
-        ]
+        org_hints = [h for h in docs[0].graph_hints if h.predicate == "ORGANIZED_BY"]
         assert len(org_hints) == 0
 
     def test_no_attendees_no_hints(self):
         event = _make_event(meta={"attendees": []})
         docs = self.parser.parse(event)
-        att_hints = [
-            h for h in docs[0].graph_hints if h.predicate == "ATTENDED_BY"
-        ]
+        att_hints = [h for h in docs[0].graph_hints if h.predicate == "ATTENDED_BY"]
         assert len(att_hints) == 0
 
     def test_missing_meta_fields(self):
@@ -293,15 +273,17 @@ class TestGoogleCalendarParser:
     def test_attendee_truncation(self):
         """More than _MAX_ATTENDEES should be truncated."""
         many_attendees = [
-            {"email": f"user{i}@example.com", "name": f"User {i}",
-             "response": "accepted", "self": False}
+            {
+                "email": f"user{i}@example.com",
+                "name": f"User {i}",
+                "response": "accepted",
+                "self": False,
+            }
             for i in range(250)
         ]
         event = _make_event(meta={"attendees": many_attendees})
         docs = self.parser.parse(event)
-        att_hints = [
-            h for h in docs[0].graph_hints if h.predicate == "ATTENDED_BY"
-        ]
+        att_hints = [h for h in docs[0].graph_hints if h.predicate == "ATTENDED_BY"]
         assert len(att_hints) == 200  # _MAX_ATTENDEES
 
     def test_registry_registration(self):
@@ -327,9 +309,7 @@ def _attachment(
     }
 
 
-_DOCX_MIME = (
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-)
+_DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
 
 class TestCalendarAttachmentsMetadataOnly:
@@ -358,6 +338,7 @@ class TestCalendarAttachmentsMetadataOnly:
     def test_emits_three_metadata_only_documents(self):
         """No Drive calls are made; sizes stay unknown but every attachment
         still surfaces as its own Document so search can find them."""
+
         # Patch the Drive fetcher seam to a sentinel that explodes when
         # called.  download_attachments=False must never reach this code path.
         def boom(_account, _file_id):
@@ -409,27 +390,19 @@ class TestCalendarAttachmentsMetadataOnly:
         docs = self.parser.parse(self._three_attachment_event())
         att_docs = [d for d in docs if d.node_label == "Attachment"]
         ids = {d.source_id for d in att_docs}
-        assert (
-            "google-calendar://personal/event/evt-123/attachment/drv-pdf" in ids
-        )
-        assert (
-            "google-calendar://personal/event/evt-123/attachment/drv-img" in ids
-        )
+        assert "google-calendar://personal/event/evt-123/attachment/drv-pdf" in ids
+        assert "google-calendar://personal/event/evt-123/attachment/drv-img" in ids
 
     def test_attached_to_edge_points_at_event(self):
         docs = self.parser.parse(self._three_attachment_event())
         att_docs = [d for d in docs if d.node_label == "Attachment"]
         for doc in att_docs:
-            attached = [
-                h for h in doc.graph_hints if h.predicate == "ATTACHED_TO"
-            ]
+            attached = [h for h in doc.graph_hints if h.predicate == "ATTACHED_TO"]
             assert len(attached) == 1
             edge = attached[0]
             assert edge.subject_id == doc.source_id
             assert edge.subject_label == "Attachment"
-            assert (
-                edge.object_id == "google-calendar://personal/event/evt-123"
-            )
+            assert edge.object_id == "google-calendar://personal/event/evt-123"
             assert edge.object_label == "CalendarEvent"
             assert edge.edge_props == {"account": "personal"}
 
@@ -469,15 +442,21 @@ class TestCalendarAttachmentsDownloadAndIndex:
                 "attachment_max_size_mb": 25,
                 "attachments": [
                     _attachment(
-                        "drv-pdf", "report.pdf", "application/pdf",
+                        "drv-pdf",
+                        "report.pdf",
+                        "application/pdf",
                         size_bytes=2048,
                     ),
                     _attachment(
-                        "drv-img", "photo.png", "image/png",
+                        "drv-img",
+                        "photo.png",
+                        "image/png",
                         size_bytes=4096,
                     ),
                     _attachment(
-                        "drv-doc", "spec.docx", _DOCX_MIME,
+                        "drv-doc",
+                        "spec.docx",
+                        _DOCX_MIME,
                         size_bytes=0,
                     ),
                 ],
@@ -495,7 +474,7 @@ class TestCalendarAttachmentsDownloadAndIndex:
         # plausible parsed bytes for each.
         parsed_for: list[str] = []
 
-        def fake_stream_and_parse(*, fetch, filename, mime, source_id=None):
+        def fake_stream_and_parse(*, fetch, filename, mime, source_id=None, **_kwargs):
             parsed_for.append(filename)
             fetch()  # exercise the closure to confirm the fetcher reached
             return ParsedAttachment(
@@ -523,21 +502,11 @@ class TestCalendarAttachmentsDownloadAndIndex:
         assert sorted(f for _, f in fetched) == ["drv-img", "drv-pdf"]
 
         att_docs_by_id = {
-            d.node_props["file_id"]: d
-            for d in docs
-            if d.node_label == "Attachment"
+            d.node_props["file_id"]: d for d in docs if d.node_label == "Attachment"
         }
-        assert (
-            att_docs_by_id["drv-pdf"].node_props["decision"]
-            == "download_and_index"
-        )
-        assert (
-            att_docs_by_id["drv-img"].node_props["decision"]
-            == "download_and_index"
-        )
-        assert (
-            att_docs_by_id["drv-doc"].node_props["decision"] == "metadata_only"
-        )
+        assert att_docs_by_id["drv-pdf"].node_props["decision"] == "download_and_index"
+        assert att_docs_by_id["drv-img"].node_props["decision"] == "download_and_index"
+        assert att_docs_by_id["drv-doc"].node_props["decision"] == "metadata_only"
 
         # Indexed attachments carry their parsed text.
         assert "parsed report.pdf" in att_docs_by_id["drv-pdf"].text
@@ -547,7 +516,7 @@ class TestCalendarAttachmentsDownloadAndIndex:
         def fake_fetcher(_account, _file_id):
             return lambda: b""
 
-        def boom(*, fetch, filename, mime, source_id=None):
+        def boom(*, fetch, filename, mime, source_id=None, **_kwargs):
             raise AttachmentDownloadError(
                 f"404 not found: {filename}", source_id=source_id
             )
@@ -559,7 +528,9 @@ class TestCalendarAttachmentsDownloadAndIndex:
                 "attachment_max_size_mb": 25,
                 "attachments": [
                     _attachment(
-                        "drv-pdf", "deleted.pdf", "application/pdf",
+                        "drv-pdf",
+                        "deleted.pdf",
+                        "application/pdf",
                         size_bytes=2048,
                     )
                 ],
@@ -573,7 +544,9 @@ class TestCalendarAttachmentsDownloadAndIndex:
                 fake_fetcher,
             ),
             patch.object(
-                calendar_parser_module, "stream_and_parse", boom,
+                calendar_parser_module,
+                "stream_and_parse",
+                boom,
             ),
         ):
             docs = self.parser.parse(evt)
@@ -584,13 +557,12 @@ class TestCalendarAttachmentsDownloadAndIndex:
 
     def test_unsupported_mime_parse_error_falls_back_to_metadata_only(self):
         """Unexpected parser errors must downgrade to metadata-only, not crash."""
+
         def fake_fetcher(_account, _file_id):
             return lambda: b""
 
-        def boom(*, fetch, filename, mime, source_id=None):
-            raise AttachmentParseError(
-                f"refused {mime}", source_id=source_id
-            )
+        def boom(*, fetch, filename, mime, source_id=None, **_kwargs):
+            raise AttachmentParseError(f"refused {mime}", source_id=source_id)
 
         evt = _make_event(
             meta={
@@ -599,7 +571,9 @@ class TestCalendarAttachmentsDownloadAndIndex:
                 "attachment_max_size_mb": 25,
                 "attachments": [
                     _attachment(
-                        "drv-x", "weird.pdf", "application/pdf",
+                        "drv-x",
+                        "weird.pdf",
+                        "application/pdf",
                         size_bytes=1024,
                     )
                 ],
@@ -613,7 +587,9 @@ class TestCalendarAttachmentsDownloadAndIndex:
                 fake_fetcher,
             ),
             patch.object(
-                calendar_parser_module, "stream_and_parse", boom,
+                calendar_parser_module,
+                "stream_and_parse",
+                boom,
             ),
         ):
             docs = self.parser.parse(evt)
@@ -632,7 +608,9 @@ class TestCalendarAttachmentsDownloadAndIndex:
                 "attachment_max_size_mb": 1,
                 "attachments": [
                     _attachment(
-                        "drv-mystery", "huge.pdf", "application/pdf",
+                        "drv-mystery",
+                        "huge.pdf",
+                        "application/pdf",
                         size_bytes=0,
                     )
                 ],
@@ -644,7 +622,9 @@ class TestCalendarAttachmentsDownloadAndIndex:
             raise AssertionError("unknown-size attachment must stay metadata-only")
 
         with patch.object(
-            calendar_parser_module, "_build_drive_fetcher", boom,
+            calendar_parser_module,
+            "_build_drive_fetcher",
+            boom,
         ):
             docs = self.parser.parse(evt)
 
@@ -704,11 +684,13 @@ class TestCrossAccount:
             },
         )
         att_personal = next(
-            h for h in self.parser.parse(event_personal)[0].graph_hints
+            h
+            for h in self.parser.parse(event_personal)[0].graph_hints
             if h.predicate == "ATTENDED_BY"
         )
         att_work = next(
-            h for h in self.parser.parse(event_work)[0].graph_hints
+            h
+            for h in self.parser.parse(event_work)[0].graph_hints
             if h.predicate == "ATTENDED_BY"
         )
 
@@ -744,20 +726,20 @@ class TestCrossAccount:
             },
         )
         att_personal = next(
-            h for h in self.parser.parse(event_personal)[0].graph_hints
+            h
+            for h in self.parser.parse(event_personal)[0].graph_hints
             if h.predicate == "ATTENDED_BY"
         )
         att_work = next(
-            h for h in self.parser.parse(event_work)[0].graph_hints
+            h
+            for h in self.parser.parse(event_work)[0].graph_hints
             if h.predicate == "ATTENDED_BY"
         )
 
         assert att_personal.object_id == (
             "google-calendar://personal/event/evt-A/attendee/0"
         )
-        assert att_work.object_id == (
-            "google-calendar://work/event/evt-B/attendee/0"
-        )
+        assert att_work.object_id == ("google-calendar://work/event/evt-B/attendee/0")
         assert att_personal.object_id != att_work.object_id
         assert att_personal.object_merge_key == "source_id"
         assert att_work.object_merge_key == "source_id"

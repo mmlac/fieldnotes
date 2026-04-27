@@ -20,6 +20,7 @@ Slack message permalink, Calendar event).
 from __future__ import annotations
 
 import logging
+import threading
 from dataclasses import dataclass, field
 from typing import Any, Callable, Literal
 
@@ -30,6 +31,18 @@ from .base import GraphHint
 log = logging.getLogger(__name__)
 
 AttachmentDecision = Literal["download_and_index", "metadata_only"]
+
+
+# Defaults for PDF-bomb defenses applied by ``_parse_pdf_bytes``.
+# A 25 MB input PDF can expand to gigabytes during text extraction
+# (zip-bomb-style nested streams, millions of empty pages, single pages
+# with megabytes of text), so we cap pages, per-page text length, and
+# wallclock parse time. Per-source config (``attachment_pdf_max_pages``,
+# ``attachment_pdf_per_page_chars``, ``attachment_pdf_timeout_seconds``)
+# overrides these.
+DEFAULT_PDF_MAX_PAGES: int = 1000
+DEFAULT_PDF_PER_PAGE_CHARS: int = 1_000_000
+DEFAULT_PDF_TIMEOUT_SECONDS: int = 60
 
 
 # Default allowlist of MIME types we know how to index.  Extending this
@@ -149,6 +162,9 @@ def stream_and_parse(
     *,
     vision_extractor: VisionExtractor | None = None,
     source_id: str | None = None,
+    pdf_max_pages: int = DEFAULT_PDF_MAX_PAGES,
+    pdf_per_page_chars: int = DEFAULT_PDF_PER_PAGE_CHARS,
+    pdf_timeout_seconds: int = DEFAULT_PDF_TIMEOUT_SECONDS,
 ) -> ParsedAttachment:
     """Fetch attachment bytes, parse them, and discard.
 
@@ -169,6 +185,12 @@ def stream_and_parse(
         source_id: Parent source identifier (Gmail message id, Slack ts,
             Calendar event id) — propagated onto raised errors for log
             correlation.
+        pdf_max_pages: PDFs with more pages raise
+            :class:`AttachmentParseError` before any text extraction.
+        pdf_per_page_chars: Per-page text is truncated to this many
+            characters; the rest of the page is silently dropped.
+        pdf_timeout_seconds: Wallclock cap on the entire PDF parse;
+            exceeded parses raise :class:`AttachmentParseError`.
 
     Returns:
         A :class:`ParsedAttachment` carrying the parsed text plus optional
@@ -195,7 +217,14 @@ def stream_and_parse(
         ) from exc
 
     if mime == "application/pdf":
-        return _parse_pdf_bytes(data, filename=filename, source_id=source_id)
+        return _parse_pdf_bytes(
+            data,
+            filename=filename,
+            source_id=source_id,
+            max_pages=pdf_max_pages,
+            per_page_chars=pdf_per_page_chars,
+            timeout_seconds=pdf_timeout_seconds,
+        )
     if mime.startswith("image/"):
         return _parse_image_bytes(
             data,
@@ -218,30 +247,77 @@ def _parse_pdf_bytes(
     *,
     filename: str,
     source_id: str | None,
+    max_pages: int = DEFAULT_PDF_MAX_PAGES,
+    per_page_chars: int = DEFAULT_PDF_PER_PAGE_CHARS,
+    timeout_seconds: int = DEFAULT_PDF_TIMEOUT_SECONDS,
 ) -> ParsedAttachment:
-    """Extract text from PDF bytes via pymupdf, in-memory.
+    """Extract text from PDF bytes via pymupdf, in-memory, with bomb guards.
 
     pymupdf opens the PDF from a bytes stream — no temp file is written.
+
+    Three defenses against malicious / pathological inputs:
+
+    * ``max_pages`` — refuse documents with more pages than this. ``page_count``
+      is cheap to read and lets us bail before enumerating the pages.
+    * ``per_page_chars`` — truncate each page's extracted text to this length.
+      Caps memory regardless of how many text streams the page nests.
+    * ``timeout_seconds`` — wallclock cap on the entire parse. The parse runs
+      on a daemon worker thread; if it doesn't finish in time the caller gets
+      :class:`AttachmentParseError` while the orphan thread eventually drops
+      its references and releases memory.
     """
-    try:
-        doc = pymupdf.open(stream=data, filetype="pdf")
-    except (
-        pymupdf.FileDataError,
-        pymupdf.EmptyFileError,
-        ValueError,
-        RuntimeError,
-    ) as exc:
+    holder: dict[str, Any] = {}
+
+    def _worker() -> None:
+        try:
+            try:
+                doc = pymupdf.open(stream=data, filetype="pdf")
+            except (
+                pymupdf.FileDataError,
+                pymupdf.EmptyFileError,
+                ValueError,
+                RuntimeError,
+            ) as exc:
+                raise AttachmentParseError(
+                    f"PDF parse failed for {filename!r}: {exc}",
+                    source_id=source_id,
+                ) from exc
+
+            try:
+                page_count = doc.page_count
+                if page_count > max_pages:
+                    raise AttachmentParseError(
+                        f"PDF {filename!r} has too many pages: "
+                        f"{page_count} > {max_pages}",
+                        source_id=source_id,
+                    )
+                pages: list[str] = []
+                for page in doc:
+                    text = page.get_text()
+                    if len(text) > per_page_chars:
+                        text = text[:per_page_chars]
+                    pages.append(text)
+                holder["value"] = ParsedAttachment(text="\n".join(pages))
+            finally:
+                doc.close()
+        except BaseException as exc:
+            holder["error"] = exc
+
+    t = threading.Thread(
+        target=_worker,
+        name=f"pdf-parse-{filename}",
+        daemon=True,
+    )
+    t.start()
+    t.join(timeout=timeout_seconds)
+    if t.is_alive():
         raise AttachmentParseError(
-            f"PDF parse failed for {filename!r}: {exc}",
+            f"PDF parse for {filename!r} exceeded timeout {timeout_seconds}s",
             source_id=source_id,
-        ) from exc
-
-    try:
-        pages = [page.get_text() for page in doc]
-    finally:
-        doc.close()
-
-    return ParsedAttachment(text="\n".join(pages))
+        )
+    if "error" in holder:
+        raise holder["error"]
+    return holder["value"]
 
 
 def _parse_image_bytes(

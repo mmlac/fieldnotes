@@ -314,6 +314,11 @@ class GoogleCalendarParser(BaseParser):
         download_attachments: bool = bool(meta.get("download_attachments", False))
         indexable: list[str] = list(meta.get("attachment_indexable_mimetypes", []))
         max_size_mb: int = int(meta.get("attachment_max_size_mb", 25))
+        pdf_max_pages: int = int(meta.get("attachment_pdf_max_pages", 1000))
+        pdf_per_page_chars: int = int(
+            meta.get("attachment_pdf_per_page_chars", 1_000_000)
+        )
+        pdf_timeout_seconds: int = int(meta.get("attachment_pdf_timeout_seconds", 60))
 
         if attachments_meta:
             body = self._augment_text_with_attachments(body, attachments_meta)
@@ -329,6 +334,9 @@ class GoogleCalendarParser(BaseParser):
             download_attachments=download_attachments,
             indexable=indexable,
             max_size_mb=max_size_mb,
+            pdf_max_pages=pdf_max_pages,
+            pdf_per_page_chars=pdf_per_page_chars,
+            pdf_timeout_seconds=pdf_timeout_seconds,
         )
 
         event_doc = ParsedDocument(
@@ -384,6 +392,9 @@ class GoogleCalendarParser(BaseParser):
         download_attachments: bool,
         indexable: list[str],
         max_size_mb: int,
+        pdf_max_pages: int = 1000,
+        pdf_per_page_chars: int = 1_000_000,
+        pdf_timeout_seconds: int = 60,
     ) -> list[ParsedDocument]:
         """Emit one ParsedDocument per attachment.
 
@@ -441,6 +452,9 @@ class GoogleCalendarParser(BaseParser):
                         filename=title or file_id,
                         mime=mime,
                         source_id=att_source_id,
+                        pdf_max_pages=pdf_max_pages,
+                        pdf_per_page_chars=pdf_per_page_chars,
+                        pdf_timeout_seconds=pdf_timeout_seconds,
                     )
                     text = parsed.text
                     description = parsed.description

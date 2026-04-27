@@ -18,6 +18,7 @@ import weakref
 import pymupdf
 import pytest
 
+from worker.parsers import attachments as attachments_mod
 from worker.parsers.attachments import (
     DEFAULT_INDEXABLE_MIMETYPES,
     AttachmentDownloadError,
@@ -243,6 +244,93 @@ class TestStreamAndParsePDF:
                 source_id="msg-123",
             )
         assert exc.value.source_id == "msg-123"
+
+    def test_normal_doc_unaffected_by_default_caps(self) -> None:
+        # Sanity: a normal small PDF passes through with all three default
+        # caps in place, no truncation or timeout. (Fixture from fn-abr.)
+        pdf = _tiny_pdf_bytes("normal document, well under all caps")
+        result = stream_and_parse(
+            fetch=lambda: pdf,
+            filename="report.pdf",
+            mime="application/pdf",
+        )
+        assert "normal document" in result.text
+
+    def test_pdf_too_many_pages_raises_parse_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Stub pymupdf.open to return a fake doc whose page_count exceeds
+        # the cap.  We don't synthesize 2000 real pages — that would slow
+        # the test for no extra coverage.
+        class _FakeDoc:
+            page_count = 5_000
+
+            def __iter__(self):  # pragma: no cover - guard fires first
+                raise AssertionError("page enumeration should not run")
+
+            def close(self) -> None:
+                pass
+
+        monkeypatch.setattr(
+            attachments_mod.pymupdf,
+            "open",
+            lambda **_kwargs: _FakeDoc(),
+        )
+
+        with pytest.raises(AttachmentParseError) as exc:
+            stream_and_parse(
+                fetch=lambda: b"%PDF-1.4 stub",
+                filename="bomb.pdf",
+                mime="application/pdf",
+                source_id="msg-bomb",
+                pdf_max_pages=1000,
+            )
+        assert "too many pages" in str(exc.value)
+        assert exc.value.source_id == "msg-bomb"
+
+    def test_pdf_per_page_text_is_truncated(self) -> None:
+        # Build a real one-page PDF whose extracted text is comfortably
+        # longer than the per-page cap, then assert the parser truncated it.
+        long_body = "abcdefghij " * 200  # > 1 KB of extractable text
+        pdf = _tiny_pdf_bytes(long_body)
+
+        cap = 50
+        result = stream_and_parse(
+            fetch=lambda: pdf,
+            filename="long.pdf",
+            mime="application/pdf",
+            pdf_per_page_chars=cap,
+        )
+        # The parser concatenates pages with a newline; for a single-page
+        # PDF the result text must not exceed the cap.
+        assert len(result.text) <= cap
+
+    def test_pdf_timeout_raises_parse_error(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Stub pymupdf.open to sleep longer than the configured timeout;
+        # parse must abandon and raise AttachmentParseError.
+        import time
+
+        def _slow_open(**_kwargs):
+            time.sleep(2.0)
+            raise AssertionError("should have been abandoned by timeout")
+
+        monkeypatch.setattr(attachments_mod.pymupdf, "open", _slow_open)
+
+        # threading.Thread.join() accepts a float timeout; the parser's
+        # int annotation is operator-facing — passing a fractional value
+        # here keeps the test fast.
+        with pytest.raises(AttachmentParseError) as exc:
+            stream_and_parse(
+                fetch=lambda: b"%PDF-1.4 stub",
+                filename="slow.pdf",
+                mime="application/pdf",
+                source_id="msg-slow",
+                pdf_timeout_seconds=0.2,  # type: ignore[arg-type]
+            )
+        assert "exceeded timeout" in str(exc.value)
+        assert exc.value.source_id == "msg-slow"
 
 
 class TestStreamAndParseImage:

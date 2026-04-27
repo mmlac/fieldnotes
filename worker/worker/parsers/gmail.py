@@ -391,6 +391,9 @@ class GmailParser(BaseParser):
         download_attachments = bool(meta.get("download_attachments", False))
         indexable = list(meta.get("attachment_indexable_mimetypes") or [])
         max_size_mb = int(meta.get("attachment_max_size_mb", 25))
+        pdf_max_pages = int(meta.get("attachment_pdf_max_pages", 1000))
+        pdf_per_page_chars = int(meta.get("attachment_pdf_per_page_chars", 1_000_000))
+        pdf_timeout_seconds = int(meta.get("attachment_pdf_timeout_seconds", 60))
         client_secrets_path = meta.get("client_secrets_path")
 
         parent_url = build_parent_url("gmail", thread_id=thread_id) if thread_id else ""
@@ -432,6 +435,9 @@ class GmailParser(BaseParser):
                         filename=filename,
                         mime=mime,
                         source_id=att_source_id,
+                        pdf_max_pages=pdf_max_pages,
+                        pdf_per_page_chars=pdf_per_page_chars,
+                        pdf_timeout_seconds=pdf_timeout_seconds,
                     )
                 except (AttachmentDownloadError, AttachmentParseError) as exc:
                     logger.warning(
