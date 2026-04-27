@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -60,6 +61,8 @@ DEFAULT_MAX_INITIAL_DAYS = 90
 DEFAULT_WINDOW_MAX_TOKENS = 512
 DEFAULT_WINDOW_GAP_SECONDS = 1800
 DEFAULT_WINDOW_OVERLAP = 3
+DEFAULT_USERS_REFRESH_INTERVAL = 3600
+USERS_PAGE_SIZE = 200
 HISTORY_PAGE_SIZE = 200
 TOKEN_CHARS_PER_TOKEN = 4  # rough estimator: ~4 chars per token
 
@@ -476,6 +479,7 @@ class SlackSource(PythonSource):
         self._window_max_tokens = DEFAULT_WINDOW_MAX_TOKENS
         self._window_gap_seconds = DEFAULT_WINDOW_GAP_SECONDS
         self._window_overlap_messages = DEFAULT_WINDOW_OVERLAP
+        self._users_refresh_interval = DEFAULT_USERS_REFRESH_INTERVAL
         self._download_attachments = False
         self._attachment_indexable_mimetypes: list[str] = list(
             DEFAULT_INDEXABLE_MIMETYPES
@@ -492,6 +496,13 @@ class SlackSource(PythonSource):
         # In-memory map of (channel_id, ts) → emitted document source_id.
         # Used to translate edits/deletes into delete-before-rewrite.
         self._ts_to_doc: dict[tuple[str, str], str] = {}
+        # Workspace user directory: {user_id: full users.list member dict}.
+        # Populated by _refresh_users_cache and stamped onto every emitted
+        # IngestEvent's meta as 'users_info' so the parser can resolve
+        # @mentions and message authors to real names + emails without
+        # making per-event Slack API calls.
+        self._users_cache: dict[str, dict[str, Any]] = {}
+        self._users_cache_refreshed_at: float = 0.0
         # Most recent open window per channel: (channel_id, first_ts) →
         # last emitted source_id.  Lets a polling cycle close a previously
         # open window cleanly when a new burst arrives.
@@ -523,6 +534,9 @@ class SlackSource(PythonSource):
         )
         self._window_overlap_messages = int(
             cfg.get("window_overlap_messages", DEFAULT_WINDOW_OVERLAP)
+        )
+        self._users_refresh_interval = int(
+            cfg.get("users_refresh_interval_seconds", DEFAULT_USERS_REFRESH_INTERVAL)
         )
         # SlackSourceConfig.download_attachments is canonical; the legacy
         # 'download_files' alias is promoted in worker.config and never
@@ -673,6 +687,71 @@ class SlackSource(PythonSource):
         return client, team_id, team_domain
 
     # ------------------------------------------------------------------
+    # Users cache (workspace directory for parser author/mention rendering)
+    # ------------------------------------------------------------------
+
+    def _refresh_users_cache(self) -> None:
+        """Page ``users.list`` and rebuild the in-memory user directory.
+
+        Slack's ``users.list`` is Tier 2 (~20 calls/min); per-event fetches
+        would burn the budget instantly, so we page once and cache the
+        result.  Missing ``users:read.email`` simply means user entries
+        come back without a profile email — the parser already degrades
+        gracefully (no merge by email, no crash), so we keep the entry.
+
+        On API or transport errors we leave the previous cache in place
+        rather than blanking it out — partial real-name rendering beats
+        rendering everyone as @Uxxx.
+        """
+        if self._client is None:
+            return
+        members: list[dict[str, Any]] = []
+        cursor: str | None = None
+        while True:
+            kwargs: dict[str, Any] = {"limit": USERS_PAGE_SIZE}
+            if cursor:
+                kwargs["cursor"] = cursor
+            try:
+                resp = self._client.users_list(**kwargs)
+            except SlackApiError as exc:
+                logger.warning("users.list failed: %s", exc)
+                return
+            if not isinstance(resp, dict):
+                return
+            page = resp.get("members")
+            if not isinstance(page, list):
+                return
+            members.extend(m for m in page if isinstance(m, dict))
+            metadata = resp.get("response_metadata")
+            next_cursor = ""
+            if isinstance(metadata, dict):
+                nc = metadata.get("next_cursor")
+                if isinstance(nc, str):
+                    next_cursor = nc
+            if not next_cursor:
+                break
+            cursor = next_cursor
+
+        new_cache: dict[str, dict[str, Any]] = {}
+        for m in members:
+            uid = m.get("id")
+            if isinstance(uid, str) and uid:
+                new_cache[uid] = m
+        self._users_cache = new_cache
+        self._users_cache_refreshed_at = time.monotonic()
+        logger.info("Slack users cache refreshed: %d users", len(new_cache))
+
+    def _maybe_refresh_users_cache(self) -> None:
+        """Refresh on first use and whenever the configured interval expires."""
+        if self._client is None:
+            return
+        now = time.monotonic()
+        last = self._users_cache_refreshed_at
+        if last > 0 and (now - last) < self._users_refresh_interval:
+            return
+        self._refresh_users_cache()
+
+    # ------------------------------------------------------------------
     # Conversation discovery
     # ------------------------------------------------------------------
 
@@ -721,6 +800,7 @@ class SlackSource(PythonSource):
         is_initial_cycle: bool = False,
     ) -> None:
         """Backfill or incremental poll for a single conversation."""
+        await asyncio.to_thread(self._maybe_refresh_users_cache)
         cid = channel.get("id", "")
         entry = team_cursor.get(cid)
         is_backfill = entry is None or not entry.get("latest_ts")
@@ -800,6 +880,7 @@ class SlackSource(PythonSource):
                 self._attachment_indexable_mimetypes
             )
             ev["meta"]["attachment_max_size_mb"] = self._attachment_max_size_mb
+            ev["meta"]["users_info"] = self._users_cache
             SOURCE_WATCHER_EVENTS.labels(
                 source_type="slack",
                 event_type=ev["operation"],
@@ -990,6 +1071,7 @@ class SlackSource(PythonSource):
                         operation="modified",
                         team_domain=self._team_domain,
                     )
+                    rebuilt["meta"]["users_info"] = self._users_cache
                     queue.enqueue(rebuilt)
                     for sub in [parent, *replies]:
                         ts = sub.get("ts", "")
@@ -1003,6 +1085,7 @@ class SlackSource(PythonSource):
                 )
                 if rebuilt:
                     rebuilt["operation"] = "modified"
+                    rebuilt["meta"]["users_info"] = self._users_cache
                     queue.enqueue(rebuilt)
                     for ts_iter in rebuilt["meta"].get("message_ts", []):
                         self._ts_to_doc[(cid, ts_iter)] = rebuilt["source_id"]

@@ -191,6 +191,7 @@ class SlackSourceConfig:
     window_max_tokens: int = 512
     window_gap_seconds: int = 1800
     window_overlap_messages: int = 3
+    users_refresh_interval_seconds: int = 3600
     download_attachments: bool = False
     attachment_indexable_mimetypes: list[str] = field(
         default_factory=lambda: list(DEFAULT_INDEXABLE_MIMETYPES)
@@ -539,6 +540,19 @@ def _parse_slack_config(settings: dict[str, Any]) -> SlackSourceConfig:
             raise ValueError(
                 f"[{section}] window_overlap_messages must be in [0, 10], got {v}"
             )
+    if "users_refresh_interval_seconds" in settings:
+        _check_type(
+            section,
+            "users_refresh_interval_seconds",
+            settings["users_refresh_interval_seconds"],
+            int,
+        )
+        v = settings["users_refresh_interval_seconds"]
+        if not 60 <= v <= 86_400:
+            raise ValueError(
+                f"[{section}] users_refresh_interval_seconds must be in "
+                f"[60, 86400], got {v}"
+            )
     if "download_files" in settings:
         _check_type(section, "download_files", settings["download_files"], bool)
     if "download_attachments" in settings:
@@ -585,6 +599,10 @@ def _parse_slack_config(settings: dict[str, Any]) -> SlackSourceConfig:
         window_max_tokens=settings.get("window_max_tokens", defaults.window_max_tokens),
         window_gap_seconds=settings.get(
             "window_gap_seconds", defaults.window_gap_seconds
+        ),
+        users_refresh_interval_seconds=settings.get(
+            "users_refresh_interval_seconds",
+            defaults.users_refresh_interval_seconds,
         ),
         window_overlap_messages=settings.get(
             "window_overlap_messages", defaults.window_overlap_messages

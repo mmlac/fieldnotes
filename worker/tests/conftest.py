@@ -75,6 +75,15 @@ def fake_slack_client() -> MagicMock:
     client.conversations_history.side_effect = _history
     client.conversations_replies.side_effect = _replies
     client.users_info.side_effect = _users_info
+    # The Slack source caches users.list at startup so the parser can
+    # resolve <@Uxxx> mentions and message authors to real names + emails
+    # without a per-event API call.  The fake routes the canned user
+    # directory through users.list shape (members[] + paginated cursor).
+    client.users_list.return_value = {
+        "ok": True,
+        "members": list(users.values()),
+        "response_metadata": {"next_cursor": ""},
+    }
     return client
 
 

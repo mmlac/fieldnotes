@@ -301,6 +301,16 @@ class TestSlackEndToEnd:
         events = _ingest_once(source, queue)
         assert events, "fake source produced no events"
 
+        # fn-dob: every event must carry users_info populated by the
+        # source's users.list cache — NOT by direct test injection.  The
+        # email-keyed Person merges below depend on this dict.
+        for ev in events:
+            users_info = ev["meta"].get("users_info") or {}
+            assert "U-ALICE" in users_info, (
+                "users_info missing U-ALICE — source did not populate cache"
+            )
+            assert users_info["U-ALICE"]["profile"]["email"] == "alice@gmail.com"
+
         kinds = sorted(ev["meta"]["kind"] for ev in events)
         # 1 thread + ≥2 windows in #engineering (45-minute quiet gap) + 1 DM window.
         assert kinds.count("thread") == 1

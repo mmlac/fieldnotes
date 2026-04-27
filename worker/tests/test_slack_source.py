@@ -787,6 +787,202 @@ class TestSlackSourceDownloadAttachments:
         assert not hasattr(source, "_download_files")
 
 
+# ---------------------------------------------------------------------------
+# Users cache (workspace user directory) — fn-dob
+# ---------------------------------------------------------------------------
+
+
+def _users_list_response(
+    members: list[dict[str, Any]], *, next_cursor: str = ""
+) -> dict[str, Any]:
+    return {
+        "ok": True,
+        "members": members,
+        "response_metadata": {"next_cursor": next_cursor},
+    }
+
+
+class TestUsersCache:
+    """Slack source must populate IngestEvent.meta['users_info'] from a
+    cached users.list call (fn-dob).  Without this cache the parser
+    falls back to '@Uxxx' rendering and Person nodes can't merge with
+    Gmail/Calendar by canonical email.
+    """
+
+    def test_populates_on_refresh(self) -> None:
+        """Single page of 5 users → cache holds 5 entries keyed by id."""
+        source = SlackSource()
+        source.configure({})
+        _seed_source(source)
+        members = [
+            {
+                "id": f"U{i}",
+                "name": f"u{i}",
+                "real_name": f"User {i}",
+                "profile": {
+                    "real_name": f"User {i}",
+                    "email": f"user{i}@example.com",
+                },
+            }
+            for i in range(5)
+        ]
+        source._client.users_list.return_value = _users_list_response(members)
+
+        source._refresh_users_cache()
+
+        assert len(source._users_cache) == 5
+        assert source._users_cache["U0"]["profile"]["email"] == "user0@example.com"
+
+    def test_paginates(self) -> None:
+        """Three pages of users.list → cache merges all entries."""
+        source = SlackSource()
+        source.configure({})
+        _seed_source(source)
+        page1 = [{"id": "U1", "profile": {"email": "u1@e.com"}}]
+        page2 = [{"id": "U2", "profile": {"email": "u2@e.com"}}]
+        page3 = [{"id": "U3", "profile": {"email": "u3@e.com"}}]
+        source._client.users_list.side_effect = [
+            _users_list_response(page1, next_cursor="cur2"),
+            _users_list_response(page2, next_cursor="cur3"),
+            _users_list_response(page3, next_cursor=""),
+        ]
+
+        source._refresh_users_cache()
+
+        assert sorted(source._users_cache) == ["U1", "U2", "U3"]
+        # Pagination chained the cursors correctly.
+        cursors_seen = [
+            call.kwargs.get("cursor")
+            for call in source._client.users_list.call_args_list
+        ]
+        # First call has no cursor; subsequent calls forward next_cursor.
+        assert cursors_seen == [None, "cur2", "cur3"]
+
+    def test_handles_missing_email_scope(self) -> None:
+        """``users:read.email`` missing → entries lack profile.email; the
+        parser already degrades to name-only (no exception)."""
+        source = SlackSource()
+        source.configure({})
+        _seed_source(source)
+        # When the token lacks users:read.email, Slack returns members
+        # without an email field on the profile (or with it empty).  The
+        # cache must still hold the entry — the parser handles the gap.
+        members = [
+            {
+                "id": "U-NOEMAIL",
+                "name": "anon",
+                "real_name": "Anon User",
+                "profile": {"real_name": "Anon User", "display_name": "anon"},
+            }
+        ]
+        source._client.users_list.return_value = _users_list_response(members)
+
+        source._refresh_users_cache()
+
+        cached = source._users_cache["U-NOEMAIL"]
+        assert cached["profile"].get("email") in (None, "")
+        assert cached["real_name"] == "Anon User"
+
+    def test_refresh_interval(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Within the interval window → no refetch.  After it elapses → refetch."""
+        source = SlackSource()
+        source.configure({"users_refresh_interval_seconds": 60})
+        _seed_source(source)
+        source._client.users_list.return_value = _users_list_response(
+            [{"id": "U1", "profile": {"email": "u1@e.com"}}]
+        )
+
+        clock = {"now": 1000.0}
+        monkeypatch.setattr("worker.sources.slack.time.monotonic", lambda: clock["now"])
+
+        source._maybe_refresh_users_cache()
+        assert source._client.users_list.call_count == 1
+
+        # 30s elapsed — under the 60s interval, no extra call.
+        clock["now"] = 1030.0
+        source._maybe_refresh_users_cache()
+        assert source._client.users_list.call_count == 1
+
+        # 70s elapsed since last refresh — interval elapsed, refetch.
+        clock["now"] = 1100.0
+        source._maybe_refresh_users_cache()
+        assert source._client.users_list.call_count == 2
+
+    def test_api_error_preserves_previous_cache(self) -> None:
+        """A transient SlackApiError must not blank the cache."""
+        from slack_sdk.errors import SlackApiError
+
+        source = SlackSource()
+        source.configure({})
+        _seed_source(source)
+        source._users_cache = {"U-OLD": {"id": "U-OLD"}}
+        source._client.users_list.side_effect = SlackApiError("rate_limited", {})
+
+        source._refresh_users_cache()
+
+        assert source._users_cache == {"U-OLD": {"id": "U-OLD"}}
+
+
+@pytest.mark.asyncio
+class TestUsersCacheInEvents:
+    async def test_e2e_uses_real_users_cache(self) -> None:
+        """End-to-end: the source's users.list call IS the source of the
+        ``users_info`` dict on every emitted IngestEvent.  No test
+        injection required.
+        """
+        source = SlackSource()
+        source.configure({})
+        _seed_source(source)
+        source._client.users_list.return_value = _users_list_response(
+            [
+                {
+                    "id": "U-ALICE",
+                    "name": "alice",
+                    "real_name": "Alice Example",
+                    "profile": {
+                        "real_name": "Alice Example",
+                        "email": "alice@example.com",
+                    },
+                }
+            ]
+        )
+        ch = _channel("C1", "general")
+        source._client.conversations_history.return_value = {
+            "messages": [_msg(100.0, "hi everyone", user="U-ALICE")],
+            "has_more": False,
+            "response_metadata": {"next_cursor": ""},
+        }
+
+        queue = _ListQueue()
+        await source._poll_conversation(ch, {}, queue)
+
+        assert queue.enqueued, "no events emitted"
+        ev = queue.enqueued[0]
+        users_info = ev["meta"].get("users_info") or {}
+        assert "U-ALICE" in users_info
+        assert users_info["U-ALICE"]["profile"]["email"] == "alice@example.com"
+
+    async def test_poll_triggers_first_refresh(self) -> None:
+        """``_poll_conversation`` must lazily populate the cache when empty."""
+        source = SlackSource()
+        source.configure({})
+        _seed_source(source)
+        source._client.users_list.return_value = _users_list_response(
+            [{"id": "U1", "profile": {"email": "u1@e.com"}}]
+        )
+        source._client.conversations_history.return_value = {
+            "messages": [],
+            "has_more": False,
+            "response_metadata": {"next_cursor": ""},
+        }
+        ch = _channel("C1")
+
+        await source._poll_conversation(ch, {}, _ListQueue())
+
+        assert source._client.users_list.called
+        assert "U1" in source._users_cache
+
+
 @pytest.mark.asyncio
 async def test_cursor_is_persisted_atomically(tmp_path: Path) -> None:
     """Acceptance criterion 5: cursor is per-conversation, atomic, and survives restart."""
