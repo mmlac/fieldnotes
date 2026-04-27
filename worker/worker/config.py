@@ -631,21 +631,80 @@ def _parse_slack_config(settings: dict[str, Any]) -> SlackSourceConfig:
     return cfg
 
 
+# Leaf config keys recognised under the legacy single-account shape.
+# Used by ``_detect_old_multiaccount_shape`` to distinguish "user wrote
+# the old shape" from "user wrote a sub-table whose name we don't know".
+_GMAIL_LEAF_KEYS: frozenset[str] = frozenset(
+    {
+        "enabled",
+        "client_secrets_path",
+        "poll_interval_seconds",
+        "max_initial_threads",
+        "label_filter",
+        "download_attachments",
+        "attachment_indexable_mimetypes",
+        "attachment_max_size_mb",
+    }
+)
+_CALENDAR_LEAF_KEYS: frozenset[str] = frozenset(
+    {
+        "enabled",
+        "client_secrets_path",
+        "poll_interval_seconds",
+        "max_initial_days",
+        "calendar_ids",
+        "download_attachments",
+        "attachment_indexable_mimetypes",
+        "attachment_max_size_mb",
+    }
+)
+_SOURCE_LEAF_KEYS: dict[str, frozenset[str]] = {
+    "gmail": _GMAIL_LEAF_KEYS,
+    "google_calendar": _CALENDAR_LEAF_KEYS,
+}
+
+
 def _detect_old_multiaccount_shape(source: str, settings: dict[str, Any]) -> None:
     """Reject the legacy single-table ``[sources.<source>]`` shape.
 
-    In the new multi-account schema every direct child of ``sources.gmail``
-    or ``sources.google_calendar`` is itself a table (an account section).
-    A scalar at this level means the user wrote the old shape.
+    The new multi-account schema places every account under a sub-table
+    (``[sources.<source>.<account>]``). The legacy shape is only flagged
+    when a *known leaf config key* (e.g. ``client_secrets_path``) appears
+    as a direct child with a non-dict value. Empty tables are tolerated
+    (with a warning) and account sub-tables are ignored.
     """
-    for v in settings.values():
-        if not isinstance(v, dict):
-            raise MigrationRequiredError(
-                "Multi-account schema is required. Run "
-                "`fieldnotes migrate gmail-multiaccount` to clean old data, "
-                f"then update your config to [sources.{source}.<account>] "
-                "form. See README."
+    leaf_keys = _SOURCE_LEAF_KEYS.get(source, frozenset())
+    offending = sorted(
+        k for k, v in settings.items() if k in leaf_keys and not isinstance(v, dict)
+    )
+    if not offending:
+        if not settings:
+            logger.warning(
+                "[sources.%s] is empty; treating as if absent. Add accounts "
+                "as [sources.%s.<account>] sub-tables or remove the empty "
+                "section header.",
+                source,
+                source,
             )
+        return
+
+    has_account_subtables = any(isinstance(v, dict) for v in settings.values())
+    if has_account_subtables:
+        raise MigrationRequiredError(
+            f"[sources.{source}] is ambiguous: the section mixes account "
+            f"sub-tables with legacy top-level keys "
+            f"({', '.join(offending)}). Move those keys into a "
+            f"[sources.{source}.<account>] sub-table (or remove them) "
+            f"before running."
+        )
+    raise MigrationRequiredError(
+        f"[sources.{source}] uses the legacy single-account shape "
+        f"(found leaf keys: {', '.join(offending)}). "
+        f"Multi-account schema is required. Run "
+        f"`fieldnotes migrate gmail-multiaccount` to clean old data, "
+        f"then update your config to [sources.{source}.<account>] "
+        f"form. See README."
+    )
 
 
 def _validate_account_name(source: str, account: str) -> None:

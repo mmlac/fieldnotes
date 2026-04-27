@@ -946,6 +946,87 @@ class TestParseGmailMultiAccount:
         assert "Multi-account schema is required" in msg
         assert "fieldnotes migrate gmail-multiaccount" in msg
         assert "[sources.gmail.<account>]" in msg
+        assert "client_secrets_path" in msg
+        assert "poll_interval_seconds" in msg
+
+    def test_detect_old_shape_pure_old(self) -> None:
+        """Only [sources.gmail] with leaf keys -> raises pure-old message."""
+        with pytest.raises(MigrationRequiredError) as exc_info:
+            _parse(
+                {
+                    "sources": {
+                        "gmail": {
+                            "client_secrets_path": "/s.json",
+                            "label_filter": "INBOX",
+                        }
+                    }
+                }
+            )
+        msg = str(exc_info.value)
+        assert "legacy single-account shape" in msg
+        assert "client_secrets_path" in msg
+        assert "label_filter" in msg
+
+    def test_detect_old_shape_pure_new(self) -> None:
+        """Only [sources.gmail.<account>.*] sub-tables -> no raise."""
+        cfg = _parse(
+            {
+                "sources": {
+                    "gmail": {
+                        "personal": {"client_secrets_path": "/p.json"},
+                        "work": {"client_secrets_path": "/w.json"},
+                    }
+                }
+            }
+        )
+        assert set(cfg.gmail.keys()) == {"personal", "work"}
+
+    def test_detect_old_shape_mixed(self) -> None:
+        """Both shapes present -> raises ambiguous message naming triggers."""
+        with pytest.raises(MigrationRequiredError) as exc_info:
+            _parse(
+                {
+                    "sources": {
+                        "gmail": {
+                            "personal": {"client_secrets_path": "/p.json"},
+                            "client_secrets_path": "/stray.json",
+                            "label_filter": "INBOX",
+                        }
+                    }
+                }
+            )
+        msg = str(exc_info.value)
+        assert "ambiguous" in msg
+        assert "client_secrets_path" in msg
+        assert "label_filter" in msg
+        assert "[sources.gmail.<account>]" in msg
+
+    def test_detect_old_shape_empty_table(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Empty [sources.gmail] -> warn, do not raise; treated as absent."""
+        with caplog.at_level("WARNING", logger="worker.config"):
+            cfg = _parse({"sources": {"gmail": {}}})
+        assert cfg.gmail == {}
+        assert any("[sources.gmail] is empty" in rec.message for rec in caplog.records)
+
+    def test_no_false_positive_from_comments(self, tmp_path: Path) -> None:
+        """tomllib strips comments; '# [sources.gmail]' must not trigger."""
+        cfg_text = (
+            "[neo4j]\n"
+            'password = "x"\n'
+            "\n"
+            "# Old shape (commented out for reference):\n"
+            "# [sources.gmail]\n"
+            '# client_secrets_path = "/old.json"\n'
+            "\n"
+            "[sources.gmail.personal]\n"
+            'client_secrets_path = "/new.json"\n'
+        )
+        path = tmp_path / "config.toml"
+        path.write_text(cfg_text)
+        cfg = load_config(path)
+        assert "personal" in cfg.gmail
 
     # -- Type validation per-account --
 
