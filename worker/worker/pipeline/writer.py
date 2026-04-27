@@ -626,6 +626,7 @@ class Writer:
 
             # Create SAME_AS edges between Person nodes with the same email.
             # Group by email first to avoid a cartesian product across all Person nodes.
+            # Skip pairs blocked by a user-curated NEVER_SAME_AS edge.
             session.run(
                 """
                 MATCH (p:Person)
@@ -636,6 +637,7 @@ class Writer:
                 UNWIND persons AS b
                 WITH a, b
                 WHERE id(a) < id(b)
+                  AND NOT (a)-[:NEVER_SAME_AS]-(b)
                 MERGE (a)-[:SAME_AS]->(b)
                 """
             )
@@ -676,7 +678,9 @@ class Writer:
                 UNWIND persons AS a
                 UNWIND persons AS b
                 WITH a, b
-                WHERE id(a) < id(b) AND NOT (a)-[:SAME_AS]-(b)
+                WHERE id(a) < id(b)
+                  AND NOT (a)-[:SAME_AS]-(b)
+                  AND NOT (a)-[:NEVER_SAME_AS]-(b)
                 MERGE (a)-[r:SAME_AS]->(b)
                 SET r.match_type = 'slack_user_id',
                     r.cross_source = true,
@@ -760,6 +764,7 @@ class Writer:
                 MATCH (a:Person {name: pair.name_a})
                 MATCH (b:Person {name: pair.name_b})
                 WHERE NOT (a)-[:SAME_AS]-(b)
+                  AND NOT (a)-[:NEVER_SAME_AS]-(b)
                   AND id(a) <> id(b)
                 MERGE (a)-[r:SAME_AS]->(b)
                 SET r.confidence = pair.confidence,
@@ -853,6 +858,7 @@ class Writer:
                 MATCH (e:Entity {name: pair.entity_name})
                 MATCH (p:Person {name: pair.person_name})
                 WHERE NOT (e)-[:SAME_AS]-(p)
+                  AND NOT (e)-[:NEVER_SAME_AS]-(p)
                 MERGE (e)-[r:SAME_AS]->(p)
                 SET r.confidence = pair.confidence,
                     r.match_type = 'entity_person_bridge',
@@ -973,6 +979,7 @@ class Writer:
                     MATCH (a:Entity {name: m.name_a})
                     MATCH (b:Entity {name: m.name_b})
                     WHERE NOT (a)-[:SAME_AS]-(b)
+                      AND NOT (a)-[:NEVER_SAME_AS]-(b)
                       AND id(a) <> id(b)
                     MERGE (a)-[r:SAME_AS]->(b)
                     SET r.confidence = m.confidence,
@@ -1095,7 +1102,9 @@ class Writer:
                 UNWIND persons AS a
                 UNWIND persons AS b
                 WITH a, b
-                WHERE id(a) < id(b) AND NOT (a)-[:SAME_AS]-(b)
+                WHERE id(a) < id(b)
+                  AND NOT (a)-[:SAME_AS]-(b)
+                  AND NOT (a)-[:NEVER_SAME_AS]-(b)
                 MERGE (a)-[r:SAME_AS]->(b)
                 SET r.confidence = 1.0,
                     r.match_type = 'self_identity',
@@ -1117,6 +1126,7 @@ class Writer:
                 MATCH path = (a:Person {is_self: true})-[:SAME_AS*2..4]-(b:Person {is_self: true})
                 WHERE id(a) < id(b)
                   AND NOT (a)-[:SAME_AS]-(b)
+                  AND NOT (a)-[:NEVER_SAME_AS]-(b)
                   AND ALL(node IN nodes(path) WHERE node.is_self = true)
                 WITH DISTINCT a, b
                 MERGE (a)-[r:SAME_AS]->(b)
@@ -1183,13 +1193,21 @@ class Writer:
 
     @_neo4j_retry
     def _close_same_as_transitive_neo4j(self) -> int:
-        """Run transitive closure in Neo4j via variable-length SAME_AS paths."""
+        """Run transitive closure in Neo4j via variable-length SAME_AS paths.
+
+        ``NEVER_SAME_AS`` dominates closure: if A↔B and B↔C exist but the
+        user has installed a ``NEVER_SAME_AS`` block between A and C, the
+        closure step does *not* materialise A↔C.  The check is on the
+        endpoints only — split() removes the SAME_AS edge before adding
+        NEVER_SAME_AS, so a path traversing a blocked pair cannot exist.
+        """
         with self._neo4j_driver.session() as session:
             result = session.run(
                 """
                 MATCH (a)-[:SAME_AS*2..4]-(b)
                 WHERE id(a) < id(b)
                   AND NOT (a)-[:SAME_AS]-(b)
+                  AND NOT (a)-[:NEVER_SAME_AS]-(b)
                 WITH DISTINCT a, b
                 MERGE (a)-[r:SAME_AS]->(b)
                 SET r.match_type = 'transitive_closure',

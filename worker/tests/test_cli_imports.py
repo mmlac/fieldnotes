@@ -116,6 +116,18 @@ def _probe_timeline(mod: Any) -> None:
     assert mod._fmt_timestamp("2025-01-01T12:34:56Z").startswith("2025-01-01")
 
 
+def _probe_persons(mod: Any) -> None:
+    # Identifier parsing is the runtime-canary for the persons handlers —
+    # it pulls in the whole curation package via re-export.
+    from worker.curation import parse_identifier
+
+    assert parse_identifier("alice@example.com").email == "alice@example.com"
+    assert hasattr(mod, "run_inspect")
+    assert hasattr(mod, "run_split")
+    assert hasattr(mod, "run_confirm")
+    assert hasattr(mod, "run_merge")
+
+
 _PROBES: dict[str, Callable[[Any], None]] = {
     "ask": _probe_ask,
     "cluster": _probe_cluster,
@@ -124,6 +136,7 @@ _PROBES: dict[str, Callable[[Any], None]] = {
     "display": _probe_display,
     "history": _probe_history,
     "migrate": _probe_migrate,
+    "persons": _probe_persons,
     "queue": _probe_queue,
     "reformulator": _probe_reformulator,
     "stream": _probe_stream,

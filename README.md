@@ -1065,6 +1065,12 @@ fieldnotes [-c CONFIG] [-v] <command>
   - `--limit` — Maximum suggestions. Default: 20.
   - `--json` — Structured JSON output.
 
+**`persons {inspect|split|confirm|merge}`** — Curate the Person identity graph. The reconcile chain (email → slack → fuzzy name → entity-bridge → cross-source → transitive closure → self-identity) makes mistakes over time; these subcommands let you fix and pin merges. Identifiers are emails (`alice@example.com`), slack ids (`slack:T123/U456`), or exact display names. Pass `--json` for machine-readable output. Every mutation appends to `<data_dir>/curation_audit.jsonl` so reversals are traceable.
+  - `persons inspect <id>` — Show every `SAME_AS` and `NEVER_SAME_AS` edge incident on the matched Person, with `match_type`, `confidence`, and direction.
+  - `persons split <id> <member>` — Break the `SAME_AS` edge between the cluster and `<member>` and install a `NEVER_SAME_AS` block so the next reconcile pass does not recreate the merge.
+  - `persons confirm <a> <b>` — Lock a good merge as user-confirmed. Writes `SAME_AS` with `match_type='user_confirmed'`, `confidence=1.0`. Reconcile steps treat user-confirmed edges as ground truth and never overwrite them.
+  - `persons merge <a> <b>` — Manual merge for cases the automated chain missed (different names, no shared email/slack id). Equivalent to `confirm` when no edge exists yet.
+
 **`digest [--since SINCE] [--summarize] [--json]`** — Summarize recent activity across all indexed sources. Returns aggregate counts per source type with top highlights, cross-source connections discovered, and new topics.
   - `--since` — Time range start. Default: `24h`. Same relative format as `timeline`.
   - `--summarize` — Generate an LLM-powered summary paragraph of the activity.

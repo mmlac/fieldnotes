@@ -490,6 +490,55 @@ def _build_parser() -> argparse.ArgumentParser:
         "migrate invocations.  Default: serialize.",
     )
 
+    # ── persons (curation) ─────────────────────────────────────────
+    persons_p = sub.add_parser(
+        "persons",
+        help="Curate person identity merges (inspect, split, confirm, merge)",
+    )
+    persons_p.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="Machine-readable JSON output",
+    )
+    persons_sub = persons_p.add_subparsers(dest="persons_command")
+
+    inspect_p = persons_sub.add_parser(
+        "inspect",
+        help="Show all SAME_AS / NEVER_SAME_AS edges incident on a Person",
+    )
+    inspect_p.add_argument(
+        "identifier",
+        help=(
+            "Person identifier: email (alice@example.com), "
+            "slack id (slack:T123/U456), or exact name"
+        ),
+    )
+
+    split_p = persons_sub.add_parser(
+        "split",
+        help=(
+            "Break a SAME_AS edge between a cluster and one member, then "
+            "block the merge with NEVER_SAME_AS"
+        ),
+    )
+    split_p.add_argument("identifier", help="Cluster member identifier")
+    split_p.add_argument("member", help="The member to split off (email/slack/name)")
+
+    confirm_p = persons_sub.add_parser(
+        "confirm",
+        help="Lock a good merge as user-confirmed (immutable to reconcile)",
+    )
+    confirm_p.add_argument("a", help="First identifier")
+    confirm_p.add_argument("b", help="Second identifier")
+
+    merge_cmd_p = persons_sub.add_parser(
+        "merge",
+        help="Manually merge two persons the automated chain missed",
+    )
+    merge_cmd_p.add_argument("a", help="First identifier")
+    merge_cmd_p.add_argument("b", help="Second identifier")
+
     # ── topics ──────────────────────────────────────────────────────
     topics_p = sub.add_parser("topics", help="Browse and inspect topics")
     topics_p.add_argument(
@@ -758,6 +807,51 @@ def main(argv: list[str] | None = None) -> int:
                 rerank=args.rerank,
                 rerank_top_k_pre=args.rerank_top_k,
             )
+        except Exception as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+
+    if args.command == "persons":
+        from worker.cli.persons import (
+            run_confirm,
+            run_inspect,
+            run_merge,
+            run_split,
+        )
+
+        try:
+            if args.persons_command == "inspect":
+                return run_inspect(
+                    identifier=args.identifier,
+                    config_path=args.config,
+                    json_output=args.json_output,
+                )
+            if args.persons_command == "split":
+                return run_split(
+                    identifier=args.identifier,
+                    member=args.member,
+                    config_path=args.config,
+                    json_output=args.json_output,
+                )
+            if args.persons_command == "confirm":
+                return run_confirm(
+                    a=args.a,
+                    b=args.b,
+                    config_path=args.config,
+                    json_output=args.json_output,
+                )
+            if args.persons_command == "merge":
+                return run_merge(
+                    a=args.a,
+                    b=args.b,
+                    config_path=args.config,
+                    json_output=args.json_output,
+                )
+            print(
+                "Usage: fieldnotes persons {inspect,split,confirm,merge}",
+                file=sys.stderr,
+            )
+            return 1
         except Exception as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1

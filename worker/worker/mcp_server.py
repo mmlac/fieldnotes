@@ -289,6 +289,81 @@ TOOLS: list[Tool] = [
         },
     ),
     Tool(
+        name="persons_inspect",
+        description=(
+            "Show all SAME_AS / NEVER_SAME_AS edges incident on a Person. "
+            "Use this to audit the identity chain before splitting or "
+            "confirming a merge. Identifier may be an email "
+            "(alice@example.com), a slack id (slack:T123/U456), or an "
+            "exact display name."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "identifier": {
+                    "type": "string",
+                    "description": "Email, slack:T../U.. id, or exact name",
+                },
+            },
+            "required": ["identifier"],
+        },
+    ),
+    Tool(
+        name="persons_split",
+        description=(
+            "Break a SAME_AS edge between a person cluster and one of "
+            "its members and install a NEVER_SAME_AS block so the next "
+            "reconcile pass does not recreate the merge."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "identifier": {
+                    "type": "string",
+                    "description": "Identifier of the cluster member to split from",
+                },
+                "member": {
+                    "type": "string",
+                    "description": "Identifier of the member to split off",
+                },
+            },
+            "required": ["identifier", "member"],
+        },
+    ),
+    Tool(
+        name="persons_confirm",
+        description=(
+            "Lock a good merge as user-confirmed. Writes a SAME_AS edge "
+            "with match_type='user_confirmed' and confidence=1.0 — "
+            "future reconcile runs treat it as ground truth and never "
+            "overwrite it."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "a": {"type": "string", "description": "First identifier"},
+                "b": {"type": "string", "description": "Second identifier"},
+            },
+            "required": ["a", "b"],
+        },
+    ),
+    Tool(
+        name="persons_merge",
+        description=(
+            "Manually merge two persons the automated chain missed "
+            "(different names, no shared email/slack id). Equivalent to "
+            "persons_confirm but used when no SAME_AS edge exists yet."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "a": {"type": "string", "description": "First identifier"},
+                "b": {"type": "string", "description": "Second identifier"},
+            },
+            "required": ["a", "b"],
+        },
+    ),
+    Tool(
         name="digest",
         description=(
             "Summarize recent activity across all indexed sources in a time window. "
@@ -484,6 +559,14 @@ class FieldnotesServer:
                 return self._handle_suggest_connections(arguments)
             if name == "digest":
                 return await self._handle_digest(arguments)
+            if name == "persons_inspect":
+                return self._handle_persons_inspect(arguments)
+            if name == "persons_split":
+                return self._handle_persons_split(arguments)
+            if name == "persons_confirm":
+                return self._handle_persons_confirm(arguments)
+            if name == "persons_merge":
+                return self._handle_persons_merge(arguments)
             raise ValueError(f"Unknown tool: {name}")
         except Exception:
             logger.exception("Tool %s failed", name)
@@ -1073,6 +1156,103 @@ class FieldnotesServer:
             ],
         }
         return [TextContent(type="text", text=_json.dumps(data, indent=2))]
+
+    # -- persons curation ---------------------------------------------------
+
+    def _handle_persons_inspect(self, arguments: dict) -> list[TextContent]:
+        identifier = arguments.get("identifier", "")
+        if not isinstance(identifier, str) or not identifier.strip():
+            return [
+                TextContent(
+                    type="text",
+                    text="error: 'identifier' must be a non-empty string",
+                )
+            ]
+        from dataclasses import asdict
+        import json as _json
+
+        from worker.curation import CurationError, PersonCurator
+
+        if self._graph_querier is None:
+            raise RuntimeError("Server not initialised — call _connect() first")
+
+        try:
+            curator = PersonCurator(self._graph_querier._driver)
+            result = curator.inspect(identifier)
+        except CurationError as exc:
+            return [TextContent(type="text", text=f"error: {exc}")]
+
+        payload = {
+            "focal": asdict(result.focal) if result.focal else None,
+            "same_as": [asdict(e) for e in result.same_as],
+            "never_same_as": [asdict(e) for e in result.never_same_as],
+        }
+        return [TextContent(type="text", text=_json.dumps(payload, indent=2))]
+
+    def _handle_persons_split(self, arguments: dict) -> list[TextContent]:
+        return self._run_persons_mutation(
+            arguments,
+            required=("identifier", "member"),
+            invoke=lambda c, args: c.split(args["identifier"], args["member"]),
+        )
+
+    def _handle_persons_confirm(self, arguments: dict) -> list[TextContent]:
+        return self._run_persons_mutation(
+            arguments,
+            required=("a", "b"),
+            invoke=lambda c, args: c.confirm(args["a"], args["b"]),
+        )
+
+    def _handle_persons_merge(self, arguments: dict) -> list[TextContent]:
+        return self._run_persons_mutation(
+            arguments,
+            required=("a", "b"),
+            invoke=lambda c, args: c.merge(args["a"], args["b"]),
+        )
+
+    def _run_persons_mutation(
+        self,
+        arguments: dict,
+        *,
+        required: tuple[str, ...],
+        invoke,
+    ) -> list[TextContent]:
+        import json as _json
+
+        from worker.curation import AuditLog, CurationError, PersonCurator
+
+        for key in required:
+            value = arguments.get(key, "")
+            if not isinstance(value, str) or not value.strip():
+                return [
+                    TextContent(
+                        type="text",
+                        text=f"error: {key!r} must be a non-empty string",
+                    )
+                ]
+
+        if self._graph_querier is None:
+            raise RuntimeError("Server not initialised — call _connect() first")
+
+        audit = AuditLog.from_data_dir(self._cfg.core.data_dir)
+        curator = PersonCurator(
+            self._graph_querier._driver,
+            audit=audit,
+            actor="mcp",
+        )
+        try:
+            result = invoke(curator, arguments)
+        except CurationError as exc:
+            return [TextContent(type="text", text=f"error: {exc}")]
+        return [
+            TextContent(
+                type="text",
+                text=_json.dumps(
+                    {"action": result.action, "detail": result.detail},
+                    indent=2,
+                ),
+            )
+        ]
 
     # -- run ----------------------------------------------------------------
 

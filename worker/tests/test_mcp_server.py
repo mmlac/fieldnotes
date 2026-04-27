@@ -39,6 +39,10 @@ class TestToolDefinitions:
             "timeline",
             "suggest_connections",
             "digest",
+            "persons_inspect",
+            "persons_split",
+            "persons_confirm",
+            "persons_merge",
         }
 
     def test_search_schema_requires_query(self) -> None:
@@ -153,7 +157,7 @@ class TestListTools:
         server = FieldnotesServer(cfg)
         result = await server._list_tools()
         assert result == TOOLS
-        assert len(result) == 9
+        assert len(result) == 13
 
 
 class TestCallToolErrors:
