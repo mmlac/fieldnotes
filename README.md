@@ -12,6 +12,7 @@ Fieldnotes is a personal knowledge graph that continuously indexes your digital 
 - [Installation](#installation)
 - [Quick Start](#quick-start)
 - [Configuration](#configuration)
+  - [Attachments](#attachments)
 - [Migrating from Single-Account](#migrating-from-single-account)
 - [Data Sources](#data-sources)
   - [Cross-Source Tag Unification](#cross-source-tag-unification-omnifocus--obsidian)
@@ -307,6 +308,9 @@ client_secrets_path = "~/.fieldnotes/credentials.json"
 poll_interval_seconds = 300
 max_initial_threads = 500
 label_filter = "INBOX"
+download_attachments = false           # opt-in: fetch + parse attachment bodies
+# attachment_indexable_mimetypes = [...] # override the default allowlist (see Attachments)
+# attachment_max_size_mb = 25           # inclusive upper bound; range [1..200]
 
 [sources.gmail.work]
 client_secrets_path = "~/.fieldnotes/credentials.json"
@@ -319,6 +323,9 @@ client_secrets_path = "~/.fieldnotes/credentials.json"
 poll_interval_seconds = 300
 max_initial_days = 90
 calendar_ids = ["primary"]
+download_attachments = false           # opt-in: also requires drive.readonly scope
+# attachment_indexable_mimetypes = [...] # override the default allowlist (see Attachments)
+# attachment_max_size_mb = 25           # inclusive upper bound; range [1..200]
 
 [sources.google_calendar.work]
 client_secrets_path = "~/.fieldnotes/credentials.json"
@@ -339,8 +346,15 @@ include_archived = false
 window_max_tokens = 512                # burst-window upper bound (token count) [128..4096]
 window_gap_seconds = 1800              # quiet-gap that closes a window (30 min) [60..86400]
 window_overlap_messages = 3            # whole-message overlap between windows [0..10]
-download_files = false                 # v1: skip file uploads (separate later bead)
+download_attachments = false           # opt-in: fetch + parse uploaded files
+# download_files = false               # legacy alias for download_attachments (deprecated)
+# attachment_indexable_mimetypes = [...] # override the default allowlist (see Attachments)
+# attachment_max_size_mb = 25           # inclusive upper bound; range [1..200]
 ```
+
+> **Drive scope requirement (Calendar):** `download_attachments = true` on a `[sources.google_calendar.<account>]` section requires the `https://www.googleapis.com/auth/drive.readonly` OAuth scope. See [Google Calendar OAuth Setup](#google-calendar-oauth-setup) for the walkthrough — flipping the knob on for an account whose token was issued without Drive raises a `ReauthRequiredError` until you delete `calendar_token-<account>.json` and re-run the consent flow.
+
+> **Slack key migration:** `download_files` predates the unified attachment knobs and is aliased to `download_attachments`. Existing configs continue to work; new configs should use `download_attachments`. If both keys are set, `download_attachments` wins and a warning is logged.
 
 #### Gmail OAuth Setup
 
@@ -370,6 +384,32 @@ Google Calendar uses the same OAuth credentials file and Google Cloud project as
 5. **Multiple accounts**: Add additional `[sources.google_calendar.<account>]` sections — one per Google identity you want to index. Account labels must match `^[a-z][a-z0-9_-]{0,30}$`. See also the [`[me]`](#me-self-identity) block below to declare your own emails so the graph treats them as a single self-Person.
 
 > **Tip:** The same `credentials.json` file works for both Gmail and Google Calendar across every account — they share one OAuth client. Each `(source, account)` pair has its own token file and consent flow.
+
+##### Drive scope (Calendar attachments)
+
+Calendar events frequently link to attachments stored on Google Drive (a `.pdf`
+brief, a `.png` agenda, etc.). Fetching their bytes requires the `drive.readonly`
+scope, which is **not** granted by default — the calendar adapter only requests
+it when `download_attachments = true` on at least one calendar account. Adding
+the scope to an existing install is a one-time setup:
+
+1. **Enable the Google Drive API**: In the same Google Cloud project, go to
+   *APIs & Services → Library*, search for "Google Drive API", and click *Enable*.
+2. **Add the Drive scope to consent**: Go to *APIs & Services → OAuth consent
+   screen → Edit App → Scopes* and add `https://www.googleapis.com/auth/drive.readonly`.
+3. **Flip the per-account knob**: Set `download_attachments = true` under each
+   `[sources.google_calendar.<account>]` section that should fetch attachments.
+4. **Re-run the install for affected accounts**: Delete
+   `~/.fieldnotes/data/calendar_token-<account>.json` for each calendar account
+   so the next daemon start re-runs the OAuth consent flow with the expanded
+   scope set. Tokens issued before the scope was added are rejected with a
+   `ReauthRequiredError` to fail loud rather than silently fall back to
+   metadata-only.
+
+> **Read-only:** The `drive.readonly` scope only lets fieldnotes *read* attachments
+> linked from calendar events — it does not list, modify, or upload anything in your
+> Drive. Bytes are streamed in-memory, parsed, and discarded (see
+> [Attachments](#attachments)).
 
 #### `[me]` Self-Identity
 
@@ -451,6 +491,92 @@ poll_interval_seconds = 21600   # default: 6 hours
 [sources.homebrew]
 poll_interval_seconds = 21600   # default: 6 hours
 ```
+
+### Attachments
+
+Gmail messages, Slack messages, and Google Calendar events can carry file
+attachments — PDFs, screenshots, plain-text logs, JSON dumps, the occasional
+`.docx` brief. Fieldnotes treats every attachment as a first-class document
+that's reachable from the parent message or event, but it indexes the *body*
+of each attachment only when it knows how to parse the format.
+
+#### Two-tier indexing
+
+Two independent decisions per attachment, made at fetch time by
+[`classify_attachment`](worker/worker/parsers/attachments.py):
+
+1. **Indexable (`download_and_index`)** — MIME type is on the per-source
+   `attachment_indexable_mimetypes` allowlist *and* size is at or below
+   `attachment_max_size_mb`. The bytes are downloaded in-memory, handed to the
+   matching parser (PDF → `pymupdf`, image → vision pipeline, text/JSON/YAML/CSV
+   → text loader), and the extracted content is chunked and embedded alongside
+   the parent.
+2. **Metadata-only** — anything else (unsupported MIME, oversize file, or fetch
+   disabled). The Attachment Document records filename, MIME, size, and a
+   parent link, but the body is never downloaded.
+
+The default allowlist mirrors the parsers we ship today:
+
+| Category   | MIME types |
+|------------|------------|
+| Documents  | `application/pdf`, `text/plain`, `text/markdown`, `text/csv` |
+| Structured | `application/json`, `application/yaml`, `application/x-yaml` |
+| Images     | `image/png`, `image/jpeg`, `image/gif`, `image/webp`, `image/heic`, `image/heif`, `image/tiff`, `image/bmp` |
+
+Override per source by setting `attachment_indexable_mimetypes` on the section.
+Adding a MIME type the worker can't parse just wastes bandwidth — keep the
+allowlist narrow.
+
+#### Stream-and-forget
+
+Attachments are fetched in-memory, parsed, then discarded. **No on-disk cache.**
+The downloader (see [`stream_and_parse`](worker/worker/parsers/attachments.py))
+takes a closure that returns the raw bytes, hands them to the parser, and
+releases them as soon as the parsed result is in hand. The parent message or
+event link is stored on the Attachment Document so search results can navigate
+back to the source: `mailto:`-style Gmail thread URL, Slack message permalink,
+or the Calendar event's `htmlLink`.
+
+#### Filename in body
+
+Before chunking, the parser weaves attachment filenames into the parent
+message or event text under an `Attachments:` section. That means semantic
+queries like *"the AWS architecture diagram alice sent"* hit the parent email
+even when the attached `.pptx` is metadata-only and never gets its own content
+chunks. The filename is part of the parent's embedding, not a separate index.
+
+#### Three-layer retrieval
+
+Each attached message/event ends up represented at three layers in the index:
+
+1. **Parent Document** — message/event chunks with the `Attachments:` section
+   stitched into the body, so filename matches surface the parent.
+2. **Attachment Document** — one per file, carrying filename + MIME + parent
+   URL. Always written, regardless of indexable status.
+3. **Attachment-content chunks** — only for `download_and_index` files. The
+   parsed text (PDF text, OCR + vision description for images, raw text for
+   text/JSON/YAML/CSV) is chunked, embedded, and linked back to the
+   Attachment Document.
+
+This three-layer structure means *"what did the spec say about quotas?"*
+matches the PDF body when it's indexable, *"the AWS diagram alice sent"* still
+matches the parent email even when the attachment is metadata-only, and
+*"that quarterly_review.docx Bob shared"* finds the parent message via the
+filename — even though the Word body is currently unparseable.
+
+#### Office formats — deferred
+
+Microsoft Office formats (`.docx`, `.xlsx`, `.pptx`) are intentionally **not**
+in the default allowlist: we don't ship parsers for them yet. They land as
+metadata-only Attachment Documents (filename + parent link only) so they
+remain discoverable via the filename-in-body path. A follow-up epic will add
+real parsers; once those land, you'll be able to opt in by appending the MIME
+types (`application/vnd.openxmlformats-officedocument.wordprocessingml.document`
+and friends) to `attachment_indexable_mimetypes` on the relevant source.
+
+> **Doctor:** `fieldnotes doctor` reports per-source attachment status (ON/OFF,
+> Drive scope present for Calendar) and a 24h failure counter, so you can see
+> at a glance whether attachment fetches are working.
 
 ### Features
 
@@ -1022,6 +1148,22 @@ Fieldnotes exposes tools over the [Model Context Protocol](https://modelcontextp
 
 The `source_type` parameter on `search`, `ask`, `timeline`, and `digest` accepts any configured source key — including `slack`.
 
+#### Searching attachments
+
+Because [Attachments](#attachments) are indexed across three layers (parent message/event, Attachment Document, and — for indexable formats — attachment-content chunks), the same `search` and `ask` tools cover both filename and content queries with no special syntax. Examples:
+
+```text
+# Filename-style queries hit the parent (filename is woven into its body)
+search("the AWS architecture diagram alice sent")
+search("quarterly_review.docx Bob shared in #leadership")
+
+# Content-style queries hit the attachment-content chunks for indexable MIMEs
+search("PDF page that mentions the Q3 quota carve-out")
+ask("what did the design brief say about retention?")
+```
+
+Filename queries work even when the attachment itself is metadata-only (e.g. an unparsed `.docx` or `.pptx`); content queries require the attachment to fall on the `attachment_indexable_mimetypes` allowlist.
+
 ### Claude Desktop Integration
 
 ```bash
@@ -1046,7 +1188,7 @@ This registers fieldnotes as an MCP server in Claude Desktop's configuration. Af
 
 ### Pipeline Stages
 
-1. **Parser** — Source-specific adapter extracts text, metadata, and graph hints (pre-known entities/edges) from raw content. Files with unsupported MIME types — or those matching `index_only_patterns` — get a metadata-only record (filename, extension, path, size) with a human-readable description so they remain discoverable via search.
+1. **Parser** — Source-specific adapter extracts text, metadata, and graph hints (pre-known entities/edges) from raw content. Files with unsupported MIME types — or those matching `index_only_patterns` — get a metadata-only record (filename, extension, path, size) with a human-readable description so they remain discoverable via search. **Attachments** on Gmail / Slack / Calendar items are routed through the same per-MIME parsers (PDF / vision / text loader) via the shared [`stream_and_parse`](worker/worker/parsers/attachments.py) helper — see [Attachments](#attachments) for the indexable/metadata-only split and parent-link semantics.
 2. **Chunker** — Sentence-aware splitter produces ~512-token chunks with 64-token overlap. Short chunks are merged to avoid fragmentation. Slack documents opt into a *whole-message overlap* mode (`chunk_strategy={"mode": "message_overlap"}`) so chunk boundaries fall on message gaps and never split a message mid-text.
 3. **Embedder** — Generates 768-dim vectors via the `embed` role model. Batches 64 texts per call.
 4. **Extractor** — LLM extracts named entities (typed: Person, Technology, etc.) and relationship triples from each chunk. Falls back to `extract_fallback` role on JSON parse errors.
