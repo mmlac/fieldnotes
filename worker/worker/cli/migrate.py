@@ -49,16 +49,41 @@ logger = logging.getLogger(__name__)
 
 _ACCOUNT_RE = re.compile(r"^[a-z][a-z0-9_-]{0,30}$")
 
-# Legacy doc-URI prefixes (no account segment).  Order matters for
-# detection-only — substitution uses the full prefix string and is
-# unambiguous because the account-namespaced form always has a slash
-# *before* the kind segment (e.g. ``gmail://<account>/thread/``).
+# Legacy source_id prefixes that need to be migrated to the
+# account-namespaced form.
+#
+# Real (pre-fn-otm) prefixes — verified against sources/gmail.py and
+# sources/calendar.py at commit 0bfeff8^:
+#
+#   ``gmail:{msg_id}``                Gmail message Document.source_id
+#   ``gmail-thread:{thread_id}``      Neo4j Thread node merge key
+#   ``gcal:{cal_id}:{evt_id}``        Calendar event Document.source_id
+#
+# Account-less URI-shape prefixes — never present in production but kept
+# in this list defensively so the rewriter accepts them as a no-op input
+# and the migrate code path remains exercisable from synthetic
+# fixtures:
+#
+#   ``gmail://thread/``  ``gmail://message/``
+#   ``google-calendar://event/``  ``google-calendar://series/``
+#
+# Note: ``gmail:`` is a strict string prefix of the new shape
+# ``gmail://``.  Every detector and rewrite path MUST explicitly exclude
+# the new shape, else it would re-migrate already-migrated rows into a
+# doubly-namespaced URI.
 _OLD_PREFIXES: tuple[str, ...] = (
+    "gmail:",
+    "gmail-thread:",
+    "gcal:",
     "gmail://thread/",
     "gmail://message/",
     "google-calendar://event/",
     "google-calendar://series/",
 )
+
+# Prefix that ``gmail:`` matches as a string-prefix but represents the new
+# (post-fn-otm) account-namespaced shape — must be excluded explicitly.
+_GMAIL_NEW_GUARD: str = "gmail://"
 
 
 # ── Data ──────────────────────────────────────────────────────────────
@@ -170,25 +195,97 @@ def resolve_account(
 # ── source_id rewriting ───────────────────────────────────────────────
 
 
+def is_legacy_source_id(sid: str) -> bool:
+    """Return True if *sid* uses one of the legacy shapes.
+
+    The ``gmail:`` prefix overlaps the new ``gmail://`` shape as a raw
+    string prefix; this helper applies the explicit guard.  The
+    account-less URI-shape prefixes (``gmail://thread/`` etc.) bypass
+    the guard so they continue to be recognised as legacy.
+    """
+    for prefix in _OLD_PREFIXES:
+        if not sid.startswith(prefix):
+            continue
+        if prefix == "gmail:" and sid.startswith(_GMAIL_NEW_GUARD):
+            continue
+        return True
+    return False
+
+
 def rewrite_source_id(old_sid: str, account: str) -> str | None:
     """Return the new-shape source_id for *old_sid*, or *None* if it
     doesn't match a legacy prefix.
 
     Examples:
-      ``gmail://thread/abc`` → ``gmail://<account>/thread/abc``
-      ``google-calendar://event/X/attendee/3`` →
-      ``google-calendar://<account>/event/X/attendee/3``
+      ``gmail:abc123`` → ``gmail://<account>/message/abc123``
+      ``gmail-thread:thr456`` → ``gmail://<account>/thread/thr456``
+      ``gcal:primary:evt123`` → ``google-calendar://<account>/event/evt123``
+
+    The calendar rewrite drops the ``{calendar_id}:`` segment to match the
+    post-fn-otm parser output (event_ids are unique within a Google
+    account; ``detect_calendar_collisions`` enforces this invariant).
+    Already-namespaced (``gmail://<account>/...``) inputs return None so
+    callers can skip them.
     """
-    for prefix in _OLD_PREFIXES:
-        if old_sid.startswith(prefix):
-            scheme, rest = prefix.split("://", 1)
-            kind = rest.rstrip("/")  # 'thread', 'message', 'event', 'series'
-            tail = old_sid[len(prefix):]
+    if not is_legacy_source_id(old_sid):
+        return None
+    if old_sid.startswith("gmail-thread:"):
+        tail = old_sid[len("gmail-thread:"):]
+        return f"gmail://{account}/thread/{tail}"
+    if old_sid.startswith("gcal:"):
+        tail = old_sid[len("gcal:"):]
+        # gcal:{cal_id}:{evt_id} — split off the calendar_id segment.
+        # Malformed (no colon) inputs are passed through as event_id.
+        if ":" in tail:
+            _cal_id, evt_id = tail.split(":", 1)
+        else:
+            evt_id = tail
+        return f"google-calendar://{account}/event/{evt_id}"
+    # Account-less URI-shape prefixes (defensive — never present in
+    # production data, but retained for the existing test fixtures and
+    # any hand-crafted recovery input).  These are uniform prefix swaps:
+    # the existing kind segment is preserved verbatim under {account}/.
+    for legacy_uri_prefix in (
+        "gmail://thread/",
+        "gmail://message/",
+        "google-calendar://event/",
+        "google-calendar://series/",
+    ):
+        if old_sid.startswith(legacy_uri_prefix):
+            scheme, rest = legacy_uri_prefix.split("://", 1)
+            kind = rest.rstrip("/")
+            tail = old_sid[len(legacy_uri_prefix):]
             return f"{scheme}://{account}/{kind}/{tail}"
+    if old_sid.startswith("gmail:"):
+        # Already filtered out gmail:// shape via is_legacy_source_id.
+        tail = old_sid[len("gmail:"):]
+        return f"gmail://{account}/message/{tail}"
     return None
 
 
 # ── Detection (read-only counts) ──────────────────────────────────────
+
+
+def _legacy_like_clause() -> tuple[str, list[str]]:
+    """Build a SQLite WHERE clause that matches every legacy prefix and
+    explicitly excludes the new ``gmail://`` shape.
+
+    Returns ``(clause, params)`` where *clause* is a parenthesised
+    expression suitable for ``WHERE {clause}`` and *params* are bound
+    LIKE patterns in declaration order.
+    """
+    parts: list[str] = []
+    params: list[str] = []
+    for prefix in _OLD_PREFIXES:
+        if prefix == "gmail:":
+            # Exclude the new-shape gmail:// URIs that share this prefix.
+            parts.append("(source_id LIKE ? AND source_id NOT LIKE ?)")
+            params.append(f"{prefix}%")
+            params.append(f"{_GMAIL_NEW_GUARD}%")
+        else:
+            parts.append("source_id LIKE ?")
+            params.append(f"{prefix}%")
+    return "(" + " OR ".join(parts) + ")", params
 
 
 def detect_queue_counts(db_path: Path) -> tuple[int, int]:
@@ -197,10 +294,9 @@ def detect_queue_counts(db_path: Path) -> tuple[int, int]:
         return 0, 0
     conn = sqlite3.connect(str(db_path))
     try:
-        like_clause = " OR ".join(["source_id LIKE ?"] * len(_OLD_PREFIXES))
-        params = [f"{p}%" for p in _OLD_PREFIXES]
+        clause, params = _legacy_like_clause()
         row_count = conn.execute(
-            f"SELECT count(*) FROM queue WHERE {like_clause}", params
+            f"SELECT count(*) FROM queue WHERE {clause}", params
         ).fetchone()[0]
         try:
             cursor_count = conn.execute(
@@ -213,20 +309,33 @@ def detect_queue_counts(db_path: Path) -> tuple[int, int]:
         conn.close()
 
 
+def _legacy_starts_with_clause(field: str) -> str:
+    """Build a Cypher fragment that matches *field* against every legacy
+    prefix and explicitly excludes the new ``gmail://`` shape.
+
+    *field* is a fully qualified Cypher identifier such as ``n.source_id``
+    or ``c.id``.
+    """
+    parts: list[str] = []
+    for prefix in _OLD_PREFIXES:
+        if prefix == "gmail:":
+            parts.append(
+                f"({field} STARTS WITH '{prefix}' "
+                f"AND NOT {field} STARTS WITH '{_GMAIL_NEW_GUARD}')"
+            )
+        else:
+            parts.append(f"{field} STARTS WITH '{prefix}'")
+    return "(" + " OR ".join(parts) + ")"
+
+
 def detect_neo4j_counts(session: Any) -> tuple[int, int, int]:
     """Return ``(documents, chunks, fallback_persons)`` to migrate.
 
     ``session`` is a Neo4j session (or a duck-typed mock with ``.run``).
     """
-    doc_clauses = " OR ".join(
-        f"n.source_id STARTS WITH '{p}'" for p in _OLD_PREFIXES
-    )
-    chunk_clauses = " OR ".join(
-        f"c.id STARTS WITH '{p}'" for p in _OLD_PREFIXES
-    )
-    person_clauses = " OR ".join(
-        f"p.source_id STARTS WITH '{p}'" for p in _OLD_PREFIXES
-    )
+    doc_clauses = _legacy_starts_with_clause("n.source_id")
+    chunk_clauses = _legacy_starts_with_clause("c.id")
+    person_clauses = _legacy_starts_with_clause("p.source_id")
 
     docs = _scalar(
         session,
@@ -276,20 +385,22 @@ def migrate_queue(db_path: Path, account: str) -> dict[str, int]:
         conn.execute("PRAGMA busy_timeout=5000")
         conn.execute("BEGIN IMMEDIATE")
         try:
+            # 1. Update queue.source_id for each legacy row.  The rewrite
+            #    is non-uniform across prefixes (gcal: drops a segment),
+            #    so we compute the new value in Python rather than via
+            #    string concatenation in SQL.
+            clause, params = _legacy_like_clause()
+            old_rows = conn.execute(
+                f"SELECT id, source_id FROM queue WHERE {clause}", params
+            ).fetchall()
             row_count = 0
-
-            # 1. Update queue.source_id for each old-shape prefix.
-            for prefix in _OLD_PREFIXES:
-                scheme, rest = prefix.split("://", 1)
-                kind = rest.rstrip("/")
+            for queue_id, old_sid in old_rows:
+                new_sid = rewrite_source_id(old_sid, account)
+                if new_sid is None:
+                    continue
                 cur = conn.execute(
-                    "UPDATE queue SET source_id = ? || substr(source_id, ?) "
-                    "WHERE source_id LIKE ?",
-                    (
-                        f"{scheme}://{account}/{kind}/",
-                        len(prefix) + 1,  # SQL substr is 1-indexed
-                        f"{prefix}%",
-                    ),
+                    "UPDATE queue SET source_id = ? WHERE id = ?",
+                    (new_sid, queue_id),
                 )
                 row_count += cur.rowcount
 
@@ -343,7 +454,15 @@ def migrate_neo4j(session: Any, account: str) -> dict[str, int]:
     """Rewrite source_id-shaped properties in Neo4j.
 
     Updates source nodes, ``Chunk.id``, and fallback ``Person`` nodes.
-    Each kind runs in its own transaction.
+
+    Two code paths:
+      * Uniform prefix swaps for prefixes whose new shape preserves the
+        original tail (``gmail-thread:``, ``gmail:``, the historical
+        URI-shape prefixes).  ``gmail:`` requires an explicit guard to
+        avoid re-migrating already-namespaced ``gmail://`` rows.
+      * Per-row read-then-write for ``gcal:`` since the new shape drops
+        the ``{calendar_id}:`` segment, which Cypher cannot express as a
+        constant-prefix substitution.
 
     Returns ``{"documents": D, "chunks": C, "persons": P}``.
     """
@@ -351,50 +470,148 @@ def migrate_neo4j(session: Any, account: str) -> dict[str, int]:
     chunks = 0
     persons = 0
 
+    # Uniform prefix-swap pass.
     for prefix in _OLD_PREFIXES:
-        scheme, rest = prefix.split("://", 1)
-        kind = rest.rstrip("/")
-        new_prefix = f"{scheme}://{account}/{kind}/"
-
-        # Source nodes (Email/Thread/CalendarEvent/CalendarSeries/etc.).
-        result = session.run(
-            "MATCH (n) WHERE n.source_id IS NOT NULL "
-            "AND n.source_id STARTS WITH $old_prefix "
-            "SET n.source_id = $new_prefix + substring(n.source_id, $cut) "
-            "RETURN count(n) AS c",
-            old_prefix=prefix,
-            new_prefix=new_prefix,
-            cut=len(prefix),
+        if prefix == "gcal:":
+            continue  # handled by the per-row pass below
+        new_prefix = _swap_new_prefix(prefix, account)
+        if new_prefix is None:
+            continue
+        guard = _GMAIL_NEW_GUARD if prefix == "gmail:" else None
+        docs += _swap_neo4j_prefix(
+            session, prefix, new_prefix, guard=guard,
+            match_clause="MATCH (n) WHERE n.source_id IS NOT NULL",
+            field="n.source_id",
         )
-        docs += _consume_count(result)
-
-        # Chunk nodes (id = {source_id}:chunk:{idx}; embeds source_id).
-        result = session.run(
-            "MATCH (c:Chunk) WHERE c.id IS NOT NULL "
-            "AND c.id STARTS WITH $old_prefix "
-            "SET c.id = $new_prefix + substring(c.id, $cut) "
-            "RETURN count(c) AS c",
-            old_prefix=prefix,
-            new_prefix=new_prefix,
-            cut=len(prefix),
+        chunks += _swap_neo4j_prefix(
+            session, prefix, new_prefix, guard=guard,
+            match_clause="MATCH (c:Chunk) WHERE c.id IS NOT NULL",
+            field="c.id",
         )
-        chunks += _consume_count(result)
-
-        # Fallback Person nodes (source_id is itself a doc URI for the
-        # display-name-only attendee fallback).  Re-MERGE so any same-key
-        # node already present collapses with this one.
-        result = session.run(
-            "MATCH (p:Person) WHERE p.source_id IS NOT NULL "
-            "AND p.source_id STARTS WITH $old_prefix "
-            "SET p.source_id = $new_prefix + substring(p.source_id, $cut) "
-            "RETURN count(p) AS c",
-            old_prefix=prefix,
-            new_prefix=new_prefix,
-            cut=len(prefix),
+        persons += _swap_neo4j_prefix(
+            session, prefix, new_prefix, guard=guard,
+            match_clause="MATCH (p:Person) WHERE p.source_id IS NOT NULL",
+            field="p.source_id",
         )
-        persons += _consume_count(result)
+
+    # gcal: per-row pass.  The rewrite drops the calendar_id segment so
+    # there is no fixed new-prefix to swap with.  We read matching sids,
+    # rewrite each in Python, and write them back one at a time.
+    docs += _rewrite_gcal_field(
+        session, account,
+        match_clause="MATCH (n) WHERE n.source_id IS NOT NULL",
+        field="n.source_id",
+    )
+    chunks += _rewrite_gcal_field(
+        session, account,
+        match_clause="MATCH (c:Chunk) WHERE c.id IS NOT NULL",
+        field="c.id",
+    )
+    persons += _rewrite_gcal_field(
+        session, account,
+        match_clause="MATCH (p:Person) WHERE p.source_id IS NOT NULL",
+        field="p.source_id",
+    )
 
     return {"documents": docs, "chunks": chunks, "persons": persons}
+
+
+def _swap_new_prefix(old_prefix: str, account: str) -> str | None:
+    """Return the new-shape prefix that replaces *old_prefix* via a
+    uniform string swap, or None if the prefix cannot be uniformly
+    swapped (``gcal:`` — handled separately).
+    """
+    if old_prefix == "gmail-thread:":
+        return f"gmail://{account}/thread/"
+    if old_prefix == "gmail:":
+        return f"gmail://{account}/message/"
+    if "://" in old_prefix:
+        scheme, rest = old_prefix.split("://", 1)
+        kind = rest.rstrip("/")
+        return f"{scheme}://{account}/{kind}/"
+    return None
+
+
+def _swap_neo4j_prefix(
+    session: Any,
+    old_prefix: str,
+    new_prefix: str,
+    *,
+    guard: str | None,
+    match_clause: str,
+    field: str,
+) -> int:
+    """Issue a single prefix-swap Cypher.  When *guard* is set, rows
+    starting with it are excluded (used for the ``gmail:`` vs
+    ``gmail://`` ambiguity).
+    """
+    if guard is None:
+        query = (
+            f"{match_clause} AND {field} STARTS WITH $old_prefix "
+            f"SET {field} = $new_prefix + substring({field}, $cut) "
+            f"RETURN count(*) AS c"
+        )
+        params: dict[str, Any] = {
+            "old_prefix": old_prefix,
+            "new_prefix": new_prefix,
+            "cut": len(old_prefix),
+        }
+    else:
+        query = (
+            f"{match_clause} AND {field} STARTS WITH $old_prefix "
+            f"AND NOT {field} STARTS WITH $guard "
+            f"SET {field} = $new_prefix + substring({field}, $cut) "
+            f"RETURN count(*) AS c"
+        )
+        params = {
+            "old_prefix": old_prefix,
+            "new_prefix": new_prefix,
+            "cut": len(old_prefix),
+            "guard": guard,
+        }
+    result = session.run(query, **params)
+    return _consume_count(result)
+
+
+def _rewrite_gcal_field(
+    session: Any,
+    account: str,
+    *,
+    match_clause: str,
+    field: str,
+) -> int:
+    """Rewrite ``gcal:{cal_id}:{evt_id}[...]`` values one row at a time.
+
+    Returns the count of rewrites performed.
+    """
+    read_query = (
+        f"{match_clause} AND {field} STARTS WITH 'gcal:' "
+        f"RETURN {field} AS sid"
+    )
+    result = session.run(read_query)
+    sids: list[str] = []
+    for rec in result:
+        try:
+            sid = rec["sid"]
+        except (KeyError, TypeError, IndexError):
+            try:
+                sid = rec[0]
+            except Exception:
+                continue
+        if isinstance(sid, str):
+            sids.append(sid)
+
+    write_query = (
+        f"{match_clause} AND {field} = $old SET {field} = $new"
+    )
+    n = 0
+    for old_sid in sids:
+        new_sid = rewrite_source_id(old_sid, account)
+        if new_sid is None:
+            continue
+        session.run(write_query, old=old_sid, new=new_sid)
+        n += 1
+    return n
 
 
 def migrate_qdrant(
@@ -557,10 +774,9 @@ def validate_post_pass(
         return [], []
     conn = sqlite3.connect(str(db_path))
     try:
-        like_clause = " OR ".join(["source_id LIKE ?"] * len(_OLD_PREFIXES))
-        params = [f"{p}%" for p in _OLD_PREFIXES]
+        clause, params = _legacy_like_clause()
         rows = conn.execute(
-            f"SELECT id, source_id FROM queue WHERE {like_clause}", params
+            f"SELECT id, source_id FROM queue WHERE {clause}", params
         ).fetchall()
         try:
             cursor_rows = conn.execute(
@@ -639,12 +855,21 @@ def detect_interleaved(
     account: str,
     db_path: Path | None = None,
 ) -> str | None:
-    """Return a non-empty error message if a partial new-shape migration
-    for *account* already exists, else *None*.
+    """Return a non-empty error message if migrating *account* would
+    collide with an existing migration in a way that requires manual
+    review, else *None*.
 
-    The caller refuses the migration when this returns a message.  The
-    check covers Neo4j (Documents with the new prefix) and the queue DB
-    (cursor key already promoted).
+    Neo4j: refuses if any Document already carries the new-shape prefix
+    for this account.  This catches the "two accounts converging" case
+    before the user wedges their graph.
+
+    queue.db cursors: refuses only when *both* a bare legacy cursor key
+    (``gmail`` / ``calendar``) and the matching new key
+    (``gmail:{account}`` / ``calendar:{account}``) exist
+    simultaneously.  The bare-key check that previously fired on the
+    new key alone misclassified the recovery state where a failed first
+    migration renamed cursors but never retagged source_ids — that is a
+    legitimate state to resume from, not interleaved.
     """
     new_prefixes = [
         f"gmail://{account}/thread/",
@@ -673,22 +898,91 @@ def detect_interleaved(
         try:
             try:
                 rows = conn.execute(
-                    "SELECT key FROM cursors WHERE key IN (?, ?)",
-                    (f"gmail:{account}", f"calendar:{account}"),
+                    "SELECT key FROM cursors WHERE key IN (?, ?, ?, ?)",
+                    (
+                        "gmail",
+                        "calendar",
+                        f"gmail:{account}",
+                        f"calendar:{account}",
+                    ),
                 ).fetchall()
             except sqlite3.OperationalError:
                 rows = []
         finally:
             conn.close()
-        if rows:
-            keys = ", ".join(r[0] for r in rows)
+        keys = {r[0] for r in rows}
+        conflicts = []
+        if "gmail" in keys and f"gmail:{account}" in keys:
+            conflicts.append(f"'gmail' + 'gmail:{account}'")
+        if "calendar" in keys and f"calendar:{account}" in keys:
+            conflicts.append(f"'calendar' + 'calendar:{account}'")
+        if conflicts:
             return (
-                f"Refused: cursor key(s) {{{keys}}} already exist for "
-                f"account={account!r}.  Interleaved migration detected — "
-                f"manual review required."
+                f"Refused: legacy and new cursor keys coexist "
+                f"({', '.join(conflicts)}).  Interleaved migration "
+                f"detected — manual review required."
             )
 
     return None
+
+
+def detect_calendar_collisions(
+    db_path: Path | None,
+    session: Any | None = None,
+) -> dict[str, set[str]]:
+    """Surface ``gcal:{calendar_id}:{event_id}`` source_ids whose
+    ``event_id`` appears under more than one ``calendar_id`` in the
+    target account.
+
+    Returns a mapping ``event_id -> {calendar_id_1, calendar_id_2, ...}``
+    containing only the colliding event_ids (sets of size >= 2).  An
+    empty mapping means the new-shape rewrite — which drops the
+    ``calendar_id`` segment — is unambiguous and safe.
+
+    Sources scanned:
+      - ``queue.source_id`` rows in *db_path* (if present)
+      - Neo4j Document nodes via *session* (if provided)
+    """
+    by_event: dict[str, set[str]] = {}
+
+    def _record(sid: str) -> None:
+        if not sid.startswith("gcal:"):
+            return
+        tail = sid[len("gcal:"):]
+        if ":" not in tail:
+            return
+        cal_id, evt_id = tail.split(":", 1)
+        by_event.setdefault(evt_id, set()).add(cal_id)
+
+    if db_path is not None and db_path.exists():
+        conn = sqlite3.connect(str(db_path))
+        try:
+            for (sid,) in conn.execute(
+                "SELECT source_id FROM queue WHERE source_id LIKE 'gcal:%'"
+            ):
+                if isinstance(sid, str):
+                    _record(sid)
+        finally:
+            conn.close()
+
+    if session is not None:
+        result = session.run(
+            "MATCH (n) WHERE n.source_id IS NOT NULL "
+            "AND n.source_id STARTS WITH 'gcal:' "
+            "RETURN n.source_id AS sid"
+        )
+        for rec in result:
+            try:
+                sid = rec["sid"]
+            except (KeyError, TypeError, IndexError):
+                try:
+                    sid = rec[0]
+                except Exception:
+                    continue
+            if isinstance(sid, str):
+                _record(sid)
+
+    return {evt: cals for evt, cals in by_event.items() if len(cals) > 1}
 
 
 # ── Public orchestrator ───────────────────────────────────────────────
@@ -838,6 +1132,34 @@ def _run_migrate_locked(
         if err is not None:
             print(err, file=sys.stderr)
             return 3
+
+    # 5a. Calendar event-id collision check.  The new shape drops the
+    # ``calendar_id`` segment from ``gcal:{cal_id}:{evt_id}``; if a
+    # single ``event_id`` appears under more than one ``calendar_id``,
+    # the rewrite would lossily merge two distinct documents.
+    collisions: dict[str, set[str]] = {}
+    if neo4j_session_factory is not None:
+        with neo4j_session_factory() as session:
+            collisions = detect_calendar_collisions(queue_db, session)
+    else:
+        collisions = detect_calendar_collisions(queue_db)
+    if collisions:
+        print(
+            "Refused: the same Google Calendar event_id appears under "
+            "multiple calendar_id values, so the new-shape rewrite "
+            "would collapse distinct documents:",
+            file=sys.stderr,
+        )
+        for evt_id, cal_ids in sorted(collisions.items()):
+            print(
+                f"  event_id={evt_id!r} calendar_ids={sorted(cal_ids)!r}",
+                file=sys.stderr,
+            )
+        print(
+            "Resolve manually before re-running migrate.",
+            file=sys.stderr,
+        )
+        return 6
 
     # 6. Confirmation.
     if not yes:
@@ -1084,7 +1406,7 @@ def _iter_old_shape_points(
             sid = payload.get("source_id") if isinstance(payload, dict) else None
             if not isinstance(sid, str):
                 continue
-            if any(sid.startswith(p) for p in _OLD_PREFIXES):
+            if is_legacy_source_id(sid):
                 yield point
 
         if next_offset is None:

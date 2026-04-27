@@ -13,10 +13,12 @@ from worker.cli import _build_parser
 from worker.cli.migrate import (
     MigrateLockHeld,
     acquire_migrate_lock,
+    detect_calendar_collisions,
     detect_interleaved,
     detect_neo4j_counts,
     detect_qdrant_count,
     detect_queue_counts,
+    is_legacy_source_id,
     migrate_config,
     migrate_files,
     migrate_neo4j,
@@ -134,78 +136,161 @@ class _FakeNeo4jSession:
         if "MATCH (n) WHERE n.source_id IS NOT NULL" in q and "RETURN count(n)" in q and "STARTS WITH" in q and "SET" not in q:
             count = sum(
                 1 for d in self.docs
-                if any(d["source_id"].startswith(p) for p in self._old_or_new_prefixes(q))
+                if self._matches_count_query(d["source_id"], q)
             )
             return _FakeNeo4jResult([{"_scalar": count}])
 
         if "MATCH (c:Chunk)" in q and "RETURN count(c)" in q and "SET" not in q:
             count = sum(
                 1 for c in self.chunks
-                if any(c["id"].startswith(p) for p in self._old_or_new_prefixes(q))
+                if self._matches_count_query(c["id"], q)
             )
             return _FakeNeo4jResult([{"_scalar": count}])
 
         if "MATCH (p:Person)" in q and "RETURN count(p)" in q and "SET" not in q:
             count = sum(
                 1 for p in self.persons
-                if any(p["source_id"].startswith(pref) for pref in self._old_or_new_prefixes(q))
+                if self._matches_count_query(p["source_id"], q)
             )
             return _FakeNeo4jResult([{"_scalar": count}])
 
-        # Mutation: SET source_id on source nodes.
-        if "MATCH (n) WHERE n.source_id" in q and "SET n.source_id" in q:
-            old_prefix = params["old_prefix"]
-            new_prefix = params["new_prefix"]
-            cut = params["cut"]
-            n = 0
+        # Read pass for gcal:: return matching sids.
+        if "RETURN n.source_id AS sid" in q:
+            sids = [d["source_id"] for d in self.docs
+                    if self._matches_starts_with(d["source_id"], q, params)]
+            return _FakeNeo4jResult([{"sid": s} for s in sids])
+        if "RETURN c.id AS sid" in q:
+            sids = [c["id"] for c in self.chunks
+                    if self._matches_starts_with(c["id"], q, params)]
+            return _FakeNeo4jResult([{"sid": s} for s in sids])
+        if "RETURN p.source_id AS sid" in q:
+            sids = [p["source_id"] for p in self.persons
+                    if self._matches_starts_with(p["source_id"], q, params)]
+            return _FakeNeo4jResult([{"sid": s} for s in sids])
+
+        # Per-row write pass for gcal:.
+        if "n.source_id = $old" in q and "SET n.source_id = $new" in q:
             for d in self.docs:
-                if d["source_id"].startswith(old_prefix):
-                    d["source_id"] = new_prefix + d["source_id"][cut:]
-                    n += 1
+                if d["source_id"] == params["old"]:
+                    d["source_id"] = params["new"]
+            return _FakeNeo4jResult([])
+        if "c.id = $old" in q and "SET c.id = $new" in q:
+            for c in self.chunks:
+                if c["id"] == params["old"]:
+                    c["id"] = params["new"]
+            return _FakeNeo4jResult([])
+        if "p.source_id = $old" in q and "SET p.source_id = $new" in q:
+            for p in self.persons:
+                if p["source_id"] == params["old"]:
+                    p["source_id"] = params["new"]
+            return _FakeNeo4jResult([])
+
+        # Prefix-swap mutation: SET source_id on source nodes.
+        if "MATCH (n) WHERE n.source_id" in q and "SET n.source_id" in q:
+            n = self._apply_prefix_swap(self.docs, "source_id", q, params)
             return _FakeNeo4jResult([{"c": n}])
 
         if "MATCH (c:Chunk)" in q and "SET c.id" in q:
-            old_prefix = params["old_prefix"]
-            new_prefix = params["new_prefix"]
-            cut = params["cut"]
-            n = 0
-            for c in self.chunks:
-                if c["id"].startswith(old_prefix):
-                    c["id"] = new_prefix + c["id"][cut:]
-                    n += 1
+            n = self._apply_prefix_swap(self.chunks, "id", q, params)
             return _FakeNeo4jResult([{"c": n}])
 
         if "MATCH (p:Person)" in q and "SET p.source_id" in q:
-            old_prefix = params["old_prefix"]
-            new_prefix = params["new_prefix"]
-            cut = params["cut"]
-            n = 0
-            for p in self.persons:
-                if p["source_id"].startswith(old_prefix):
-                    p["source_id"] = new_prefix + p["source_id"][cut:]
-                    n += 1
+            n = self._apply_prefix_swap(self.persons, "source_id", q, params)
             return _FakeNeo4jResult([{"c": n}])
 
         return _FakeNeo4jResult([])
 
     @staticmethod
+    def _matches_count_query(value: str, query: str) -> bool:
+        """Match *value* against the count query's STARTS WITH alternation.
+
+        Two distinct query shapes funnel through here:
+          * ``detect_neo4j_counts`` issues the legacy alternation that
+            encodes the ``gmail:`` vs ``gmail://`` guard.  Matches
+            production semantics by delegating to ``is_legacy_source_id``.
+          * ``detect_interleaved`` issues a flat OR of new-shape
+            prefixes with no ``AND NOT`` guard.  Falls through to a
+            simple positive-OR check.
+        """
+        if "AND NOT" in query:
+            return is_legacy_source_id(value)
+        positives, _ = _FakeNeo4jSession._split_starts_with(query)
+        return any(value.startswith(p) for p in positives)
+
+    @staticmethod
+    def _matches_starts_with(value: str, query: str, params: dict) -> bool:
+        """For single-prefix queries: True if *value* starts with any
+        STARTS WITH literal in *query* (and is not excluded by an
+        ``AND NOT ... STARTS WITH`` guard literal)."""
+        positives, guards = _FakeNeo4jSession._split_starts_with(query)
+        if not any(value.startswith(p) for p in positives):
+            return False
+        if any(value.startswith(g) for g in guards):
+            return False
+        return True
+
+    @staticmethod
+    def _split_starts_with(query: str) -> tuple[list[str], list[str]]:
+        """Return ``(positive_prefixes, guard_prefixes)`` extracted from
+        STARTS WITH literals in *query*.  A literal preceded by ``NOT``
+        is treated as a guard.
+        """
+        positives: list[str] = []
+        guards: list[str] = []
+        idx = 0
+        marker = "STARTS WITH '"
+        while True:
+            start = query.find(marker, idx)
+            if start == -1:
+                break
+            literal_start = start + len(marker)
+            end = query.find("'", literal_start)
+            if end == -1:
+                break
+            literal = query[literal_start:end]
+            preceding = query[max(0, start - 8):start]
+            if "NOT " in preceding:
+                guards.append(literal)
+            else:
+                positives.append(literal)
+            idx = end + 1
+        return positives, guards
+
+    @staticmethod
+    def _apply_prefix_swap(
+        rows: list[dict[str, Any]], key: str, query: str, params: dict
+    ) -> int:
+        old_prefix = params["old_prefix"]
+        new_prefix = params["new_prefix"]
+        cut = params["cut"]
+        guard = params.get("guard")
+        n = 0
+        for row in rows:
+            value = row[key]
+            if not value.startswith(old_prefix):
+                continue
+            if guard is not None and value.startswith(guard):
+                continue
+            row[key] = new_prefix + value[cut:]
+            n += 1
+        return n
+
+    @staticmethod
     def _old_or_new_prefixes(query: str) -> list[str]:
-        """Pull literal prefix strings out of the query (for count probes)."""
+        """Pull literal STARTS WITH prefix strings out of the query."""
         prefixes: list[str] = []
-        for needle in (
-            "gmail://",
-            "google-calendar://",
-        ):
-            idx = 0
-            while True:
-                start = query.find(f"'{needle}", idx)
-                if start == -1:
-                    break
-                end = query.find("'", start + 1)
-                if end == -1:
-                    break
-                prefixes.append(query[start + 1: end])
-                idx = end + 1
+        idx = 0
+        marker = "STARTS WITH '"
+        while True:
+            start = query.find(marker, idx)
+            if start == -1:
+                break
+            literal_start = start + len(marker)
+            end = query.find("'", literal_start)
+            if end == -1:
+                break
+            prefixes.append(query[literal_start:end])
+            idx = end + 1
         return prefixes
 
 
@@ -1506,3 +1591,382 @@ class TestMigrateQueueWAL:
             after.execute("ROLLBACK")
         finally:
             after.close()
+
+
+# ─── Real pre-fn-otm legacy URI shapes (fn-s5y) ─────────────────────
+
+
+def _seed_legacy_queue_db(
+    db_path: Path,
+    *,
+    gmail_count: int = 0,
+    gmail_thread_count: int = 0,
+    gcal_count: int = 0,
+    cal_id: str = "primary",
+    extra_rows: list[tuple[str, str, str]] | None = None,
+) -> None:
+    """Seed *db_path* with rows using the pre-fn-otm prefixes.
+
+    ``extra_rows`` is a list of ``(id, source_type, source_id)`` tuples
+    appended verbatim — used by the calendar-collision test to inject a
+    second calendar_id under the same event_id.
+    """
+    conn = sqlite3.connect(str(db_path))
+    conn.executescript(
+        """
+        CREATE TABLE queue (
+            id TEXT PRIMARY KEY,
+            source_type TEXT NOT NULL,
+            source_id TEXT NOT NULL,
+            operation TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            payload TEXT NOT NULL,
+            blob_path TEXT,
+            enqueued_at TEXT NOT NULL,
+            started_at TEXT,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            error TEXT
+        );
+        CREATE TABLE cursors (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        """
+    )
+
+    def _insert(row_id: str, source_type: str, sid: str) -> None:
+        payload = json.dumps({"id": row_id, "source_id": sid})
+        conn.execute(
+            "INSERT INTO queue "
+            "(id, source_type, source_id, operation, status, payload, "
+            " enqueued_at) "
+            "VALUES (?, ?, ?, 'created', 'pending', ?, "
+            "'2026-04-26T00:00:00Z')",
+            (row_id, source_type, sid, payload),
+        )
+
+    for i in range(gmail_count):
+        _insert(f"gm{i}", "gmail", f"gmail:M{i}")
+    for i in range(gmail_thread_count):
+        _insert(f"gt{i}", "gmail", f"gmail-thread:T{i}")
+    for i in range(gcal_count):
+        _insert(f"gc{i}", "calendar", f"gcal:{cal_id}:E{i}")
+    for row_id, source_type, sid in (extra_rows or []):
+        _insert(row_id, source_type, sid)
+
+    conn.execute(
+        "INSERT INTO cursors VALUES "
+        "('gmail', '{\"x\":1}', '2026-04-26T00:00:00Z')"
+    )
+    conn.execute(
+        "INSERT INTO cursors VALUES "
+        "('calendar', '{\"y\":2}', '2026-04-26T00:00:00Z')"
+    )
+    conn.commit()
+    conn.close()
+
+
+class TestRewriteRealLegacy:
+    """Real pre-fn-otm prefixes (gmail:, gmail-thread:, gcal:)."""
+
+    def test_rewrite_old_gmail_message(self) -> None:
+        assert rewrite_source_id("gmail:abc123", "default") == \
+            "gmail://default/message/abc123"
+
+    def test_rewrite_old_gmail_thread(self) -> None:
+        assert rewrite_source_id("gmail-thread:thr456", "default") == \
+            "gmail://default/thread/thr456"
+
+    def test_rewrite_old_gcal_event(self) -> None:
+        assert rewrite_source_id("gcal:primary:evt123", "default") == \
+            "google-calendar://default/event/evt123"
+
+    def test_rewrite_new_gmail_unchanged(self) -> None:
+        # Already-namespaced new-shape input is not legacy.
+        assert rewrite_source_id(
+            "gmail://default/message/abc123", "default"
+        ) is None
+
+    def test_rewrite_gmail_prefix_does_not_match_new_shape(self) -> None:
+        # ``gmail:`` is a string prefix of ``gmail://`` but the rewrite
+        # must not treat new-shape rows as legacy and double-namespace
+        # them.
+        assert rewrite_source_id("gmail://other/message/X", "default") is None
+        # The bare "gmail:" guard also means new-shape values are
+        # rejected by the legacy predicate.
+        assert is_legacy_source_id("gmail://other/message/X") is False
+        assert is_legacy_source_id("gmail:M1") is True
+
+
+class TestLegacyDryRun:
+    def test_dry_run_counts_legacy_docs(self, tmp_path: Path, capsys) -> None:
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        db = data_dir / "queue.db"
+        _seed_legacy_queue_db(db, gmail_count=100, gcal_count=100)
+
+        rc = run_migrate_gmail_multiaccount(
+            account="default",
+            yes=True,
+            dry_run=True,
+            data_dir=data_dir,
+            daemon_detector=lambda: (False, None),
+        )
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "queue.db rows:       200" in out
+        assert "Dry run" in out
+
+
+class TestLegacyFullMigrate:
+    def test_full_migrate_legacy_docs(self, tmp_path: Path) -> None:
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        db = data_dir / "queue.db"
+        _seed_legacy_queue_db(db, gmail_count=100, gcal_count=100)
+
+        rc = run_migrate_gmail_multiaccount(
+            account="default",
+            yes=True,
+            data_dir=data_dir,
+            daemon_detector=lambda: (False, None),
+        )
+        assert rc == 0
+
+        conn = sqlite3.connect(str(db))
+        try:
+            stray = conn.execute(
+                "SELECT count(*) FROM queue WHERE "
+                "(source_id LIKE 'gmail:%' AND source_id NOT LIKE 'gmail://%') "
+                "OR source_id LIKE 'gmail-thread:%' "
+                "OR source_id LIKE 'gcal:%'"
+            ).fetchone()[0]
+            new_gmail = conn.execute(
+                "SELECT count(*) FROM queue "
+                "WHERE source_id LIKE 'gmail://default/message/%'"
+            ).fetchone()[0]
+            new_gcal = conn.execute(
+                "SELECT count(*) FROM queue "
+                "WHERE source_id LIKE 'google-calendar://default/event/%'"
+            ).fetchone()[0]
+        finally:
+            conn.close()
+
+        assert stray == 0
+        assert new_gmail == 100
+        assert new_gcal == 100
+
+        rows, keys = validate_post_pass(db)
+        assert rows == []
+        assert keys == []
+
+
+class TestLegacyIdempotency:
+    def test_idempotency_after_legacy_migration(self, tmp_path: Path) -> None:
+        db = tmp_path / "queue.db"
+        _seed_legacy_queue_db(
+            db, gmail_count=10, gmail_thread_count=5, gcal_count=10,
+        )
+
+        first = migrate_queue(db, "default")
+        assert first["rows"] == 25
+        assert first["cursors"] == 2
+
+        second = migrate_queue(db, "default")
+        assert second == {"rows": 0, "cursors": 0}
+
+
+class TestCalendarCollision:
+    def test_calendar_event_id_collision_across_calendars(
+        self, tmp_path: Path, capsys
+    ) -> None:
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        db = data_dir / "queue.db"
+        _seed_legacy_queue_db(
+            db,
+            gcal_count=1,
+            cal_id="cal1",
+            extra_rows=[
+                ("c2", "calendar", "gcal:cal2:E0"),
+            ],
+        )
+
+        rc = run_migrate_gmail_multiaccount(
+            account="default",
+            yes=True,
+            data_dir=data_dir,
+            daemon_detector=lambda: (False, None),
+        )
+        assert rc == 6
+        err = capsys.readouterr().err
+        assert "event_id" in err
+        assert "cal1" in err
+        assert "cal2" in err
+
+        # No mutations on refusal.
+        conn = sqlite3.connect(str(db))
+        try:
+            sids = {r[0] for r in conn.execute(
+                "SELECT source_id FROM queue"
+            )}
+        finally:
+            conn.close()
+        assert "gcal:cal1:E0" in sids
+        assert "gcal:cal2:E0" in sids
+
+    def test_no_collision_when_event_ids_disjoint(self, tmp_path: Path) -> None:
+        db = tmp_path / "queue.db"
+        _seed_legacy_queue_db(
+            db,
+            gcal_count=1,
+            cal_id="cal1",
+            extra_rows=[
+                ("c2", "calendar", "gcal:cal2:E1"),
+            ],
+        )
+        # Both events have distinct ids (E0, E1) so no collision.
+        assert detect_calendar_collisions(db) == {}
+
+
+class TestPartialFirstRunRecovery:
+    def test_partial_first_run_recovery(self, tmp_path: Path) -> None:
+        """User's actual recovery state: previous broken run renamed
+        cursor keys and deleted cursor JSON files but did NOT retag any
+        Documents (its imagined-only prefix list missed them).  A
+        re-run with the corrected detector must succeed without firing
+        the interleaved-migration refusal.
+        """
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        db = data_dir / "queue.db"
+        _seed_legacy_queue_db(db, gmail_count=3, gcal_count=2)
+
+        # Simulate the post-failed-first-run state of queue.db: cursor
+        # keys promoted to ``gmail:default`` / ``calendar:default`` (but
+        # source_ids untouched).
+        conn = sqlite3.connect(str(db))
+        conn.execute("UPDATE cursors SET key = 'gmail:default' WHERE key = 'gmail'")
+        conn.execute(
+            "UPDATE cursors SET key = 'calendar:default' WHERE key = 'calendar'"
+        )
+        conn.commit()
+        conn.close()
+
+        # detect_interleaved must NOT refuse this state.
+        sess = _FakeNeo4jSession()
+        sess.docs.append({"source_id": "gmail:M0"})
+        sess.docs.append({"source_id": "gcal:primary:E0"})
+        assert detect_interleaved(sess, "default", db_path=db) is None
+
+        # Full run completes cleanly.
+        rc = run_migrate_gmail_multiaccount(
+            account="default",
+            yes=True,
+            data_dir=data_dir,
+            daemon_detector=lambda: (False, None),
+            neo4j_session_factory=lambda: sess,
+        )
+        assert rc == 0
+
+        # Documents retagged.
+        sids = {d["source_id"] for d in sess.docs}
+        assert "gmail://default/message/M0" in sids
+        assert "google-calendar://default/event/E0" in sids
+
+
+class TestPostPassScansLegacy:
+    def test_post_pass_scans_legacy_prefixes(self, tmp_path: Path) -> None:
+        db = tmp_path / "queue.db"
+        _seed_legacy_queue_db(db)
+        # Insert legacy rows AFTER migrate — these must be flagged.
+        conn = sqlite3.connect(str(db))
+        conn.execute(
+            "INSERT INTO queue "
+            "(id, source_type, source_id, operation, status, payload, "
+            " enqueued_at) "
+            "VALUES ('late_g', 'gmail', 'gmail:LATE', "
+            "'created', 'pending', '{}', '2026-04-26T01:00:00Z')"
+        )
+        conn.execute(
+            "INSERT INTO queue "
+            "(id, source_type, source_id, operation, status, payload, "
+            " enqueued_at) "
+            "VALUES ('late_c', 'calendar', 'gcal:primary:LATE', "
+            "'created', 'pending', '{}', '2026-04-26T01:00:00Z')"
+        )
+        conn.execute(
+            "INSERT INTO queue "
+            "(id, source_type, source_id, operation, status, payload, "
+            " enqueued_at) "
+            "VALUES ('late_t', 'gmail', 'gmail-thread:LATE', "
+            "'created', 'pending', '{}', '2026-04-26T01:00:00Z')"
+        )
+        # New-shape row must NOT be flagged.
+        conn.execute(
+            "INSERT INTO queue "
+            "(id, source_type, source_id, operation, status, payload, "
+            " enqueued_at) "
+            "VALUES ('new_g', 'gmail', 'gmail://default/message/OK', "
+            "'created', 'pending', '{}', '2026-04-26T01:00:00Z')"
+        )
+        conn.commit()
+        conn.close()
+
+        rows, _ = validate_post_pass(db)
+        sids = {sid for _id, sid in rows}
+        assert "gmail:LATE" in sids
+        assert "gcal:primary:LATE" in sids
+        assert "gmail-thread:LATE" in sids
+        assert "gmail://default/message/OK" not in sids
+
+
+class TestNeo4jLegacyMigration:
+    def test_neo4j_chunk_id_retagged(self) -> None:
+        sess = _FakeNeo4jSession()
+        sess.docs.append({"source_id": "gmail:M1"})
+        sess.docs.append({"source_id": "gcal:primary:E1"})
+        sess.chunks.append({"id": "gmail:M1:chunk:0"})
+        sess.chunks.append({"id": "gmail:M1:chunk:1"})
+        sess.chunks.append({"id": "gcal:primary:E1:chunk:0"})
+        sess.chunks.append({"id": "gmail-thread:T1:chunk:0"})
+
+        out = migrate_neo4j(sess, "default")
+
+        chunk_ids = {c["id"] for c in sess.chunks}
+        assert "gmail://default/message/M1:chunk:0" in chunk_ids
+        assert "gmail://default/message/M1:chunk:1" in chunk_ids
+        assert "google-calendar://default/event/E1:chunk:0" in chunk_ids
+        assert "gmail://default/thread/T1:chunk:0" in chunk_ids
+        assert out["chunks"] == 4
+
+
+class TestQdrantLegacyMigration:
+    def test_qdrant_payload_legacy_retagged(self) -> None:
+        client = _FakeQdrantClient()
+        client.add(1, "gmail:M1")
+        client.add(2, "gcal:primary:E1")
+        client.add(3, "gmail-thread:T1")
+        client.add(4, "slack://team/T/channel/C/ts/1.0", source_type="slack")
+        client.add(5, "gmail://default/message/already")
+
+        before = {pid: list(p.vector) for pid, p in client.points.items()}
+
+        out = migrate_qdrant(client, "fieldnotes", "default", batch=2)
+
+        assert out == {"points": 3}
+        assert client.points[1].payload["source_id"] == \
+            "gmail://default/message/M1"
+        assert client.points[2].payload["source_id"] == \
+            "google-calendar://default/event/E1"
+        assert client.points[3].payload["source_id"] == \
+            "gmail://default/thread/T1"
+        # Untouched: slack and already-namespaced gmail.
+        assert client.points[4].payload["source_id"] == \
+            "slack://team/T/channel/C/ts/1.0"
+        assert client.points[5].payload["source_id"] == \
+            "gmail://default/message/already"
+        # Vectors preserved.
+        for pid, vec in before.items():
+            assert client.points[pid].vector == vec
