@@ -59,6 +59,7 @@ class Person:
     slack_user_id: str | None = None
     team_id: str | None = None
     source_id: str | None = None
+    is_self: bool = False
 
 
 @dataclass
@@ -151,6 +152,7 @@ def _person_from_row(row: dict[str, Any]) -> Person:
         slack_user_id=row.get("slack_user_id"),
         team_id=row.get("team_id"),
         source_id=row.get("source_id"),
+        is_self=bool(row.get("is_self") or False),
     )
 
 
@@ -176,7 +178,8 @@ def _canonical_for_id(tx: Any, person_id: int) -> Person | None:
                p.name AS name,
                p.slack_user_id AS slack_user_id,
                p.team_id AS team_id,
-               p.source_id AS source_id
+               p.source_id AS source_id,
+               COALESCE(p.is_self, false) AS is_self
         ORDER BY deg DESC, id(p) ASC
         LIMIT 1
         """,

@@ -1184,6 +1184,7 @@ Fieldnotes exposes tools over the [Model Context Protocol](https://modelcontextp
 | `timeline(since?, until?, source_type?, limit?)` | Chronological activity feed across all sources within a time range |
 | `suggest_connections(source_id?, source_type?, threshold?, limit?, cross_source?)` | Find semantically similar but unlinked documents across the knowledge graph |
 | `digest(since?, summarize?)` | Aggregate activity summary with per-source counts, highlights, and new connections |
+| `person(identifier, since?, limit?, summary?, meeting_id?)` | Profile a person: recent interactions, topics, related people, open tasks, files, identity cluster (resolution: email → slack-user → fuzzy name) |
 | `list_topics(source?)` | List topics (`all`, `cluster`, or `user`) with document counts |
 | `show_topic(name)` | Topic details: description, documents, related entities and topics |
 | `topic_gaps()` | Cluster-discovered topics missing from your manual taxonomy |

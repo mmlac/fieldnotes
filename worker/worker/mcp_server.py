@@ -20,6 +20,7 @@ import logging
 import re
 import signal
 from pathlib import Path
+from typing import Any
 
 import anyio
 from mcp.server import Server
@@ -51,6 +52,8 @@ from worker.query.timeline import (
     VALID_SOURCE_TYPES as _TIMELINE_SOURCE_TYPES,
 )
 from worker.query.digest import DigestQuerier
+from worker.query._time import parse_relative_time
+from worker.query.person import PersonProfile, get_profile
 
 logger = logging.getLogger(__name__)
 
@@ -364,6 +367,61 @@ TOOLS: list[Tool] = [
         },
     ),
     Tool(
+        name="person",
+        description=(
+            "Profile a person from the user's knowledge graph. Returns "
+            "recent interactions, top topics, related people, open tasks, "
+            "files mentioning them, and the person's identity cluster. "
+            "Resolution order: email (e.g. 'alice@example.com') → "
+            "slack-user prefix (e.g. 'slack-user:<team>/<user>') → "
+            "fuzzy name match. Ambiguous name matches return a "
+            "disambiguation error listing candidates so the caller can "
+            "retry with an email."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "identifier": {
+                    "type": "string",
+                    "description": (
+                        "Email, slack-user:<team>/<user>, or name fragment"
+                    ),
+                },
+                "since": {
+                    "type": "string",
+                    "description": (
+                        "Time window for recent interactions: ISO 8601 or "
+                        "relative ('30d', '7d', '24h'). Default: '30d'"
+                    ),
+                    "default": "30d",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": (
+                        "Maximum recent interactions to return (default: 10)"
+                    ),
+                    "default": 10,
+                },
+                "summary": {
+                    "type": "boolean",
+                    "description": (
+                        "Include an LLM-generated 'next_brief' field. Not "
+                        "yet implemented — currently returns an error."
+                    ),
+                    "default": False,
+                },
+                "meeting_id": {
+                    "type": "string",
+                    "description": (
+                        "Optional source_id of a calendar event used to "
+                        "scope the summary brief (only with summary=true)."
+                    ),
+                },
+            },
+            "required": ["identifier"],
+        },
+    ),
+    Tool(
         name="digest",
         description=(
             "Summarize recent activity across all indexed sources in a time window. "
@@ -567,6 +625,8 @@ class FieldnotesServer:
                 return self._handle_persons_confirm(arguments)
             if name == "persons_merge":
                 return self._handle_persons_merge(arguments)
+            if name == "person":
+                return self._handle_person(arguments)
             raise ValueError(f"Unknown tool: {name}")
         except Exception:
             logger.exception("Tool %s failed", name)
@@ -1113,6 +1173,50 @@ class FieldnotesServer:
         text = await loop.run_in_executor(self._executor, _run)
         return [TextContent(type="text", text=text)]
 
+    def _handle_person(self, arguments: dict) -> list[TextContent]:
+        identifier = arguments.get("identifier", "")
+        if not isinstance(identifier, str) or not identifier.strip():
+            return [_person_error("'identifier' must be a non-empty string")]
+
+        since_str = arguments.get("since", "30d")
+        if not isinstance(since_str, str) or not since_str.strip():
+            since_str = "30d"
+
+        try:
+            limit = max(1, min(int(arguments.get("limit", 10)), 1000))
+        except (TypeError, ValueError):
+            limit = 10
+
+        if bool(arguments.get("summary", False)):
+            return [
+                _person_error(
+                    "summary=True is not yet implemented (blocked on fn-364.4)"
+                )
+            ]
+
+        try:
+            since = parse_relative_time(since_str)
+        except ValueError as exc:
+            return [_person_error(f"Invalid 'since': {exc}")]
+
+        result = get_profile(identifier, since, limit=limit, neo4j_cfg=self._cfg.neo4j)
+
+        if result is None:
+            return [_person_error(f"No Person found for {identifier!r}")]
+        if isinstance(result, list):
+            candidates = [{"name": p.name, "email": p.email} for p in result]
+            return [
+                _person_error(
+                    f"Ambiguous identifier {identifier!r}: "
+                    f"{len(result)} candidates — refine using an email "
+                    "or slack-user prefix",
+                    candidates=candidates,
+                )
+            ]
+
+        payload = _person_profile_to_dict(identifier.strip(), result)
+        return [TextContent(type="text", text=json.dumps(payload, default=str))]
+
     def _handle_suggest_connections(self, arguments: dict) -> list[TextContent]:
         source_id: str | None = arguments.get("source_id") or None
         source_type: str | None = arguments.get("source_type") or None
@@ -1328,6 +1432,86 @@ class FieldnotesServer:
 
         # Wrap original stream to replay *first*, then forward everything.
         return _PrefixedReceiveStream(first, read_stream)
+
+
+def _person_error(message: str, **extra: Any) -> TextContent:
+    payload: dict[str, Any] = {"error": True, "message": message}
+    payload.update(extra)
+    return TextContent(type="text", text=json.dumps(payload, default=str))
+
+
+def _person_profile_to_dict(identifier: str, profile: PersonProfile) -> dict:
+    p = profile.person
+    last_seen = (
+        profile.recent_interactions[0].timestamp
+        if profile.recent_interactions
+        else None
+    )
+    sources_present: set[str] = {
+        i.source_type for i in profile.recent_interactions if i.source_type
+    }
+    if profile.open_tasks:
+        sources_present.add("omnifocus")
+    if profile.files:
+        sources_present.add("file")
+
+    return {
+        "identifier": identifier,
+        "resolved": {
+            "name": p.name,
+            "email": p.email,
+            "is_self": bool(p.is_self),
+        },
+        "sources_present": sorted(sources_present),
+        "last_seen": last_seen,
+        "total_interactions": len(profile.recent_interactions),
+        "recent_interactions": [
+            {
+                "timestamp": i.timestamp,
+                "source_type": i.source_type,
+                "title": i.title,
+                "snippet": i.snippet,
+                "edge_kind": i.edge_kind,
+            }
+            for i in profile.recent_interactions
+        ],
+        "top_topics": [
+            {"topic_name": t.topic_name, "doc_count": t.doc_count}
+            for t in profile.top_topics
+        ],
+        "related_people": [
+            {
+                "name": r.name,
+                "email": r.email,
+                "shared_count": r.shared_count,
+            }
+            for r in profile.related_people
+        ],
+        "open_tasks": [
+            {
+                "title": t.title,
+                "project": t.project,
+                "tags": list(t.tags),
+                "due": t.due,
+                "defer": t.defer,
+                "flagged": t.flagged,
+            }
+            for t in profile.open_tasks
+        ],
+        "files_mentioning": [
+            {"path": f.path, "mtime": f.mtime, "source": f.source}
+            for f in profile.files
+        ],
+        "identity_cluster": [
+            {
+                "member": m.member,
+                "match_type": m.match_type,
+                "confidence": m.confidence,
+                "cross_source": m.cross_source,
+            }
+            for m in profile.identity_cluster
+        ],
+    }
 
 
 def run_server(config_path: Path | None = None) -> None:
