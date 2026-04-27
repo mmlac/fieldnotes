@@ -40,6 +40,7 @@ from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 
 from worker.metrics import (
+    SLACK_DELETE_EVENTS_SKIPPED,
     SOURCE_WATCHER_EVENTS,
     WATCHER_ACTIVE,
     WATCHER_LAST_EVENT_TIMESTAMP,
@@ -1210,6 +1211,16 @@ class SlackSource(PythonSource):
                     or ""
                 )
             if not target_ts:
+                if subtype == "message_deleted":
+                    logger.warning(
+                        "Slack message_deleted event missing target ts "
+                        "(channel=%s, event_ts=%s, subtype=%s) — delete "
+                        "cannot be applied; stale doc may remain in index",
+                        cid,
+                        m.get("ts", ""),
+                        subtype,
+                    )
+                    SLACK_DELETE_EVENTS_SKIPPED.labels(reason="missing_ts").inc()
                 continue
             doc_id = self._ts_to_doc.get((cid, target_ts))
             if not doc_id:

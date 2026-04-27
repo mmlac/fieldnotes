@@ -1190,20 +1190,14 @@ class TestAccountNameReservedWords:
             match=rf"sources\.{source}.*account name {reserved!r} is reserved",
         ):
             _parse(
-                {
-                    "sources": {
-                        source: {reserved: {"client_secrets_path": "/s.json"}}
-                    }
-                }
+                {"sources": {source: {reserved: {"client_secrets_path": "/s.json"}}}}
             )
 
     @pytest.mark.parametrize(
         "name", ["gmail-work", "gmail2", "mygmail", "calendar-personal", "myslack"]
     )
     def test_adjacent_names_allowed(self, name: str) -> None:
-        cfg = _parse(
-            {"sources": {"gmail": {name: {"client_secrets_path": "/s.json"}}}}
-        )
+        cfg = _parse({"sources": {"gmail": {name: {"client_secrets_path": "/s.json"}}}})
         assert name in cfg.gmail
 
     def test_default_account_name_allowed(self) -> None:
@@ -2195,3 +2189,35 @@ class TestDoctorAttachmentFailureCounter:
         assert "Attachment failures (last 24h)" in out
         assert "gmail: 2 attachment fetch failure(s)" in out
         assert "slack: 1 attachment fetch failure(s)" in out
+
+
+class TestDoctorSlackDeleteSkipCounter:
+    """worker_slack_delete_events_skipped_total surfacing in doctor (fn-2n0)."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_counter(self):
+        from worker.metrics import SLACK_DELETE_EVENTS_SKIPPED
+
+        SLACK_DELETE_EVENTS_SKIPPED.clear()
+        yield
+        SLACK_DELETE_EVENTS_SKIPPED.clear()
+
+    def test_doctor_silent_when_no_skips(self, capsys) -> None:
+        from worker.doctor import check_slack_delete_skips
+
+        check_slack_delete_skips()
+        out = capsys.readouterr().out
+        assert "Slack delete events" not in out
+        assert "unprocessable" not in out
+
+    def test_doctor_surfaces_skipped_deletes_when_nonzero(self, capsys) -> None:
+        from worker.doctor import check_slack_delete_skips
+        from worker.metrics import SLACK_DELETE_EVENTS_SKIPPED
+
+        SLACK_DELETE_EVENTS_SKIPPED.labels(reason="missing_ts").inc(3)
+
+        check_slack_delete_skips()
+        out = capsys.readouterr().out
+        assert "Slack delete events" in out
+        assert "3 delete event(s) were unprocessable" in out
+        assert "missing_ts" in out

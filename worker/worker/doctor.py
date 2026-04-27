@@ -288,6 +288,41 @@ def check_attachment_failures() -> None:
         _warn(f"{source_type}: {n} attachment fetch failure(s)")
 
 
+def _collect_slack_delete_skips() -> dict[str, float]:
+    """Sum ``worker_slack_delete_events_skipped_total`` samples by reason."""
+    from worker.metrics import SLACK_DELETE_EVENTS_SKIPPED
+
+    totals: dict[str, float] = {}
+    for metric in SLACK_DELETE_EVENTS_SKIPPED.collect():
+        for sample in metric.samples:
+            if not sample.name.endswith("_total"):
+                continue
+            reason = sample.labels.get("reason", "")
+            if not reason:
+                continue
+            totals[reason] = totals.get(reason, 0.0) + sample.value
+    return {k: v for k, v in totals.items() if v > 0}
+
+
+def check_slack_delete_skips() -> None:
+    """Surface unprocessable Slack delete events when the counter is non-zero.
+
+    A non-zero count means real Slack deletions could not be propagated to
+    the index — stale Documents may remain in Neo4j+Qdrant.  Doctor reports
+    but does not fail (runtime condition, not config health).
+    """
+    totals = _collect_slack_delete_skips()
+    if not totals:
+        return
+    print("\nSlack delete events")
+    for reason in sorted(totals):
+        n = int(totals[reason])
+        _warn(
+            f"Slack: {n} delete event(s) were unprocessable "
+            f"(reason={reason}) in the last 24h — investigate"
+        )
+
+
 def check_me(me: MeConfig | None) -> int:
     """Print [me] block status. Returns 0 always (the block is optional)."""
     if me is None:
@@ -546,6 +581,9 @@ def doctor(config_path: Path | None = None) -> int:
 
     # ── 6f. Attachment failure counters ─────────────────────────────
     check_attachment_failures()
+
+    # ── 6g. Slack delete-event skip counter ─────────────────────────
+    check_slack_delete_skips()
 
     # ── 7. Reranker ──────────────────────────────────────────────────
     print("\nReranker")

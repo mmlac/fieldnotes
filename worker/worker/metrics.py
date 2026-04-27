@@ -200,6 +200,16 @@ SLACK_RATE_LIMIT_HITS = Counter(
     registry=REGISTRY,
 )
 
+SLACK_DELETE_EVENTS_SKIPPED = Counter(
+    "worker_slack_delete_events_skipped_total",
+    "Slack message_deleted events that were dropped without emitting a "
+    "delete IngestEvent. Each increment means a real Slack deletion left "
+    "stale state in Neo4j+Qdrant that the worker was unable to clean up. "
+    "Surfaced by 'fieldnotes doctor' when non-zero.",
+    ["reason"],
+    registry=REGISTRY,
+)
+
 # ---------------------------------------------------------------------------
 # Pipeline histograms
 # ---------------------------------------------------------------------------

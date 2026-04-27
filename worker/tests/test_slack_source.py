@@ -633,6 +633,109 @@ class TestSlackSourcePolling:
 
 
 # ---------------------------------------------------------------------------
+# message_deleted with missing target_ts (fn-2n0)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+class TestMessageDeletedMissingTs:
+    """A real Slack deletion that arrives without any of the fallback ts
+    fields would silently leave a stale Document in Neo4j+Qdrant.  The
+    source must surface the loss via WARNING + Prometheus counter."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_counter(self):
+        from worker.metrics import SLACK_DELETE_EVENTS_SKIPPED
+
+        SLACK_DELETE_EVENTS_SKIPPED.clear()
+        yield
+        SLACK_DELETE_EVENTS_SKIPPED.clear()
+
+    async def test_message_deleted_with_ts_processed_normally(self) -> None:
+        """Standard deletion event with previous_message.ts present →
+        emits delete IngestEvent and does NOT increment the skip counter."""
+        from worker.metrics import SLACK_DELETE_EVENTS_SKIPPED
+
+        source = SlackSource()
+        source.configure({})
+        _seed_source(source)
+        ch = _channel("C1", "general")
+        original = _doc_id_window("T1", "C1", "100.000000", "100.000000")
+        source._ts_to_doc[("C1", "100.000000")] = original
+
+        deleted_msg = {
+            "subtype": "message_deleted",
+            "ts": "200.000000",
+            "previous_message": {
+                "ts": "100.000000",
+                "user": "U1",
+                "text": "to be deleted",
+            },
+        }
+
+        queue = _ListQueue()
+        await source._handle_edits_and_deletes(ch, [deleted_msg], queue)
+
+        ops = [e["operation"] for e in queue.enqueued]
+        ids = [e["source_id"] for e in queue.enqueued]
+        assert "deleted" in ops
+        assert ids[ops.index("deleted")] == original
+
+        # Counter untouched on the happy path.
+        total = 0.0
+        for metric in SLACK_DELETE_EVENTS_SKIPPED.collect():
+            for s in metric.samples:
+                if s.name.endswith("_total"):
+                    total += s.value
+        assert total == 0.0
+
+    async def test_message_deleted_no_ts_logged_and_metric(self, caplog) -> None:
+        """Deletion event with all fallback fields absent → WARNING logged,
+        counter incremented, and NO IngestEvent emitted."""
+        import logging as stdlib_logging
+
+        from worker.metrics import SLACK_DELETE_EVENTS_SKIPPED
+
+        source = SlackSource()
+        source.configure({})
+        _seed_source(source)
+        ch = _channel("C1", "general")
+
+        # No previous_message, no deleted_ts — only the event ts on the
+        # outer envelope, which the resolver does not consult.
+        deleted_msg = {
+            "subtype": "message_deleted",
+            "ts": "200.000000",
+        }
+
+        queue = _ListQueue()
+        with caplog.at_level(stdlib_logging.WARNING, logger="worker.sources.slack"):
+            await source._handle_edits_and_deletes(ch, [deleted_msg], queue)
+
+        # Nothing enqueued — the deletion was lost, but loudly.
+        assert queue.enqueued == []
+
+        # WARNING surfaces the channel and the event ts.
+        warnings = [r for r in caplog.records if r.levelno >= stdlib_logging.WARNING]
+        assert any(
+            "message_deleted" in r.getMessage()
+            and "C1" in r.getMessage()
+            and "200.000000" in r.getMessage()
+            for r in warnings
+        ), (
+            f"expected WARNING about lost delete, got: {[r.getMessage() for r in warnings]}"
+        )
+
+        # Counter incremented under reason='missing_ts'.
+        total_missing = 0.0
+        for metric in SLACK_DELETE_EVENTS_SKIPPED.collect():
+            for s in metric.samples:
+                if s.name.endswith("_total") and s.labels.get("reason") == "missing_ts":
+                    total_missing += s.value
+        assert total_missing == 1.0
+
+
+# ---------------------------------------------------------------------------
 # System / empty-bot subtype filter (fn-dge)
 # ---------------------------------------------------------------------------
 
