@@ -19,12 +19,14 @@ Slack message permalink, Calendar event).
 
 from __future__ import annotations
 
+import io
 import logging
 import threading
 from dataclasses import dataclass, field
 from typing import Any, Callable, Literal
 
 import pymupdf
+from PIL import Image, UnidentifiedImageError
 
 from .base import GraphHint
 
@@ -43,6 +45,26 @@ AttachmentDecision = Literal["download_and_index", "metadata_only"]
 DEFAULT_PDF_MAX_PAGES: int = 1000
 DEFAULT_PDF_PER_PAGE_CHARS: int = 1_000_000
 DEFAULT_PDF_TIMEOUT_SECONDS: int = 60
+
+
+# Defaults for image-bomb defenses applied by ``_parse_image_bytes``.  A
+# crafted PNG/TIFF can declare huge dimensions and force Pillow to allocate
+# ~width*height*4 bytes on full decode (e.g. a 10000x10000 RGBA image
+# costs ~400 MB).  Pillow's own ``MAX_IMAGE_PIXELS`` defaults to ~89.5M and
+# only raises ``DecompressionBombWarning`` — we want a hard reject.  These
+# limits are checked from the lazy header (``Image.open(stream).size``)
+# *before* any rasterization.  Per-source config
+# (``attachment_image_max_pixels``, ``attachment_image_max_dimension``)
+# overrides these.
+DEFAULT_IMAGE_MAX_PIXELS: int = 25_000_000  # ~5000x5000
+DEFAULT_IMAGE_MAX_DIMENSION: int = 8_000
+
+# Align Pillow's own ``DecompressionBombError`` ceiling with our default
+# pixel cap so any code path that bypasses our explicit guard (e.g. a
+# direct ``PIL.Image.open(...).load()``) still trips Pillow's built-in
+# refusal rather than allocating hundreds of MB.  Operators tuning the
+# attachment knob above this default still get our explicit guard first.
+Image.MAX_IMAGE_PIXELS = DEFAULT_IMAGE_MAX_PIXELS
 
 
 # Default allowlist of MIME types we know how to index.  Extending this
@@ -165,6 +187,8 @@ def stream_and_parse(
     pdf_max_pages: int = DEFAULT_PDF_MAX_PAGES,
     pdf_per_page_chars: int = DEFAULT_PDF_PER_PAGE_CHARS,
     pdf_timeout_seconds: int = DEFAULT_PDF_TIMEOUT_SECONDS,
+    image_max_pixels: int = DEFAULT_IMAGE_MAX_PIXELS,
+    image_max_dimension: int = DEFAULT_IMAGE_MAX_DIMENSION,
 ) -> ParsedAttachment:
     """Fetch attachment bytes, parse them, and discard.
 
@@ -191,6 +215,12 @@ def stream_and_parse(
             characters; the rest of the page is silently dropped.
         pdf_timeout_seconds: Wallclock cap on the entire PDF parse;
             exceeded parses raise :class:`AttachmentParseError`.
+        image_max_pixels: Images whose ``width * height`` exceeds this are
+            rejected from the lazy header before any rasterization,
+            guarding against decompression-bomb inputs.
+        image_max_dimension: Images whose width or height exceeds this are
+            rejected (catches long-thin shapes that slip under
+            ``image_max_pixels``).
 
     Returns:
         A :class:`ParsedAttachment` carrying the parsed text plus optional
@@ -232,6 +262,8 @@ def stream_and_parse(
             filename=filename,
             source_id=source_id,
             vision_extractor=vision_extractor,
+            max_pixels=image_max_pixels,
+            max_dimension=image_max_dimension,
         )
     if mime.startswith("text/"):
         return _parse_text_bytes(data)
@@ -320,6 +352,62 @@ def _parse_pdf_bytes(
     return holder["value"]
 
 
+def _check_image_size(
+    data: bytes,
+    *,
+    max_pixels: int,
+    max_dimension: int,
+    filename: str,
+    source_id: str | None,
+) -> None:
+    """Reject decompression-bomb images before any full decode.
+
+    Inspects the lazy PIL header (``Image.open(stream).size``) — this
+    parses the image dimensions without rasterizing pixel data, so even a
+    multi-gigapixel declared image costs only a few KB of work to reject.
+
+    Raises
+    ------
+    AttachmentParseError
+        If the header is unreadable, dimensions are missing/invalid,
+        ``width * height`` exceeds ``max_pixels``, ``width`` or ``height``
+        exceeds ``max_dimension``, or Pillow itself raises
+        :class:`PIL.Image.DecompressionBombError`.
+    """
+    try:
+        with Image.open(io.BytesIO(data)) as img:
+            size = img.size
+    except Image.DecompressionBombError as exc:
+        raise AttachmentParseError(
+            f"image {filename!r} tripped Pillow decompression bomb guard: {exc}",
+            source_id=source_id,
+        ) from exc
+    except (UnidentifiedImageError, OSError, ValueError) as exc:
+        raise AttachmentParseError(
+            f"image {filename!r} header unreadable: {exc}",
+            source_id=source_id,
+        ) from exc
+
+    width, height = size
+    if width <= 0 or height <= 0:
+        raise AttachmentParseError(
+            f"image {filename!r} has invalid dimensions {width}x{height}",
+            source_id=source_id,
+        )
+    if width > max_dimension or height > max_dimension:
+        raise AttachmentParseError(
+            f"image {filename!r} dimension {width}x{height} exceeds "
+            f"per-side cap {max_dimension}",
+            source_id=source_id,
+        )
+    if width * height > max_pixels:
+        raise AttachmentParseError(
+            f"image {filename!r} pixel count {width * height} exceeds "
+            f"cap {max_pixels} ({width}x{height})",
+            source_id=source_id,
+        )
+
+
 def _parse_image_bytes(
     data: bytes,
     *,
@@ -327,6 +415,8 @@ def _parse_image_bytes(
     filename: str,
     source_id: str | None,
     vision_extractor: VisionExtractor | None,
+    max_pixels: int = DEFAULT_IMAGE_MAX_PIXELS,
+    max_dimension: int = DEFAULT_IMAGE_MAX_DIMENSION,
 ) -> ParsedAttachment:
     """Run image bytes through the vision pipeline in memory.
 
@@ -335,12 +425,26 @@ def _parse_image_bytes(
     If the caller did not provide a ``vision_extractor`` we cannot do
     anything useful with the bytes, so we surface :class:`AttachmentParseError`
     and let the caller fall through to metadata-only.
+
+    Before the bytes reach the extractor we apply the
+    :func:`_check_image_size` decompression-bomb guard.  A header-only
+    inspection rejects oversized images before either the vision model or
+    any downstream local PIL decode (e.g. EXIF) gets a chance to allocate
+    rasterized pixel buffers.
     """
     if vision_extractor is None:
         raise AttachmentParseError(
             f"no vision extractor available for image {filename!r} ({mime})",
             source_id=source_id,
         )
+
+    _check_image_size(
+        data,
+        max_pixels=max_pixels,
+        max_dimension=max_dimension,
+        filename=filename,
+        source_id=source_id,
+    )
 
     try:
         result = vision_extractor(data, mime)

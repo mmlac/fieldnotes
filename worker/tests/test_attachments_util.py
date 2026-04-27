@@ -15,8 +15,12 @@ import os
 import tempfile
 import weakref
 
+import io
+from unittest.mock import patch
+
 import pymupdf
 import pytest
+from PIL import Image
 
 from worker.parsers import attachments as attachments_mod
 from worker.parsers.attachments import (
@@ -199,6 +203,13 @@ def _tiny_pdf_bytes(text: str = "hello world from a test PDF") -> bytes:
         doc.close()
 
 
+def _tiny_png_bytes(width: int = 16, height: int = 16) -> bytes:
+    """Build a real in-memory PNG of the given dimensions."""
+    buf = io.BytesIO()
+    Image.new("RGB", (width, height), color=(123, 45, 67)).save(buf, format="PNG")
+    return buf.getvalue()
+
+
 class _FakeVisionResult:
     def __init__(
         self,
@@ -352,7 +363,7 @@ class TestStreamAndParseImage:
         before = _tempdir_snapshot()
 
         result = stream_and_parse(
-            fetch=lambda: b"\x89PNG\r\n\x1a\n" + b"\x00" * 64,
+            fetch=lambda: _tiny_png_bytes(),
             filename="cat.png",
             mime="image/png",
             vision_extractor=vision,
@@ -372,7 +383,7 @@ class TestStreamAndParseImage:
     def test_image_without_vision_extractor_raises_parse_error(self) -> None:
         with pytest.raises(AttachmentParseError) as exc:
             stream_and_parse(
-                fetch=lambda: b"\x89PNG",
+                fetch=lambda: _tiny_png_bytes(),
                 filename="x.png",
                 mime="image/png",
                 source_id="msg-9",
@@ -385,11 +396,136 @@ class TestStreamAndParseImage:
 
         with pytest.raises(AttachmentParseError):
             stream_and_parse(
-                fetch=lambda: b"\x89PNG",
+                fetch=lambda: _tiny_png_bytes(),
                 filename="x.png",
                 mime="image/png",
                 vision_extractor=boom,
             )
+
+
+class TestStreamAndParseImageBomb:
+    """Image-bomb defenses applied before the vision extractor runs."""
+
+    def _ok_extractor(self) -> "_FakeVisionResult":
+        return _FakeVisionResult(description="ok")
+
+    def test_image_normal_unaffected(self) -> None:
+        # 16x16 PNG well under both caps — vision_extractor must run.
+        called: dict[str, bool] = {}
+
+        def vision(_data: bytes, _mime: str) -> _FakeVisionResult:
+            called["yes"] = True
+            return _FakeVisionResult(description="cute")
+
+        result = stream_and_parse(
+            fetch=lambda: _tiny_png_bytes(16, 16),
+            filename="ok.png",
+            mime="image/png",
+            vision_extractor=vision,
+        )
+        assert called.get("yes") is True
+        assert result.description == "cute"
+
+    def test_image_too_many_pixels(self) -> None:
+        # Spoof Image.open(...).size to declare a 6000x5000 image: stays
+        # under the per-side cap (8000) but blows past the 25M pixel cap
+        # (= 30M).  Fixture would otherwise allocate ~120 MB on full decode.
+        png = _tiny_png_bytes(16, 16)
+
+        class _FakeImg:
+            size = (6_000, 5_000)
+
+            def __enter__(self) -> "_FakeImg":
+                return self
+
+            def __exit__(self, *_a: object) -> None:
+                return None
+
+        with patch.object(attachments_mod.Image, "open", lambda _stream: _FakeImg()):
+            with pytest.raises(AttachmentParseError) as exc:
+                stream_and_parse(
+                    fetch=lambda: png,
+                    filename="bomb.png",
+                    mime="image/png",
+                    vision_extractor=lambda *_: _FakeVisionResult(),
+                    source_id="msg-bomb",
+                )
+        assert "pixel count" in str(exc.value)
+        assert exc.value.source_id == "msg-bomb"
+
+    def test_image_too_long_dimension(self) -> None:
+        # 100x20000 stays under DEFAULT_IMAGE_MAX_PIXELS (25M) but exceeds
+        # DEFAULT_IMAGE_MAX_DIMENSION (8000) on the height axis.
+        png = _tiny_png_bytes(16, 16)
+
+        class _FakeImg:
+            size = (100, 20_000)
+
+            def __enter__(self) -> "_FakeImg":
+                return self
+
+            def __exit__(self, *_a: object) -> None:
+                return None
+
+        with patch.object(attachments_mod.Image, "open", lambda _stream: _FakeImg()):
+            with pytest.raises(AttachmentParseError) as exc:
+                stream_and_parse(
+                    fetch=lambda: png,
+                    filename="thin.png",
+                    mime="image/png",
+                    vision_extractor=lambda *_: _FakeVisionResult(),
+                    source_id="msg-thin",
+                )
+        assert "per-side cap" in str(exc.value)
+        assert exc.value.source_id == "msg-thin"
+
+    def test_image_decompression_bomb(self) -> None:
+        # Pillow itself raises DecompressionBombError when MAX_IMAGE_PIXELS
+        # is exceeded by a wide margin.  The guard must surface this as
+        # AttachmentParseError rather than letting it propagate raw.
+        def _bomb(_stream: object) -> object:
+            raise attachments_mod.Image.DecompressionBombError("100M pixels")
+
+        png = _tiny_png_bytes(16, 16)
+        with patch.object(attachments_mod.Image, "open", _bomb):
+            with pytest.raises(AttachmentParseError) as exc:
+                stream_and_parse(
+                    fetch=lambda: png,
+                    filename="evil.png",
+                    mime="image/png",
+                    vision_extractor=lambda *_: _FakeVisionResult(),
+                    source_id="msg-evil",
+                )
+        assert "decompression bomb" in str(exc.value).lower()
+        assert exc.value.source_id == "msg-evil"
+
+    def test_image_max_pixels_kwarg_overrides_default(self) -> None:
+        # Operator-supplied tighter cap rejects the 16x16 fixture.
+        with pytest.raises(AttachmentParseError) as exc:
+            stream_and_parse(
+                fetch=lambda: _tiny_png_bytes(16, 16),
+                filename="tiny.png",
+                mime="image/png",
+                vision_extractor=lambda *_: _FakeVisionResult(),
+                source_id="msg-tight",
+                image_max_pixels=10,
+            )
+        assert "pixel count" in str(exc.value)
+        assert exc.value.source_id == "msg-tight"
+
+    def test_image_unreadable_header_raises_parse_error(self) -> None:
+        # Bytes that are not a recognizable image at all — header parse
+        # fails inside the guard rather than the extractor.
+        with pytest.raises(AttachmentParseError) as exc:
+            stream_and_parse(
+                fetch=lambda: b"not an image",
+                filename="garbage.png",
+                mime="image/png",
+                vision_extractor=lambda *_: _FakeVisionResult(),
+                source_id="msg-junk",
+            )
+        assert "unreadable" in str(exc.value)
+        assert exc.value.source_id == "msg-junk"
 
 
 class TestStreamAndParseText:

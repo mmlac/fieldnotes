@@ -17,6 +17,12 @@ from typing import Any
 
 from worker.models.base import CompletionRequest, CompletionResponse
 from worker.models.resolver import ModelRegistry, ResolvedModel
+from worker.parsers.attachments import (
+    DEFAULT_IMAGE_MAX_DIMENSION,
+    DEFAULT_IMAGE_MAX_PIXELS,
+    AttachmentParseError,
+    _check_image_size,
+)
 from worker.pipeline.chunker import Chunk
 
 logger = logging.getLogger(__name__)
@@ -60,6 +66,9 @@ def extract_image(
     image_bytes: bytes,
     model: ResolvedModel,
     mime_type: str = "image/png",
+    *,
+    max_pixels: int = DEFAULT_IMAGE_MAX_PIXELS,
+    max_dimension: int = DEFAULT_IMAGE_MAX_DIMENSION,
 ) -> VisionResult:
     """Extract structured information from an image using a multimodal model.
 
@@ -71,6 +80,14 @@ def extract_image(
         A resolved multimodal model (from the 'vision' role).
     mime_type:
         MIME type of the image (e.g. "image/png", "image/jpeg").
+    max_pixels:
+        Reject images whose ``width * height`` exceeds this from the lazy
+        PIL header before any decode or LLM round-trip; defends against
+        decompression-bomb inputs that would otherwise force the local
+        EXIF / vision-queue paths to allocate hundreds of MB.
+    max_dimension:
+        Reject images whose width or height exceeds this; catches
+        long-thin shapes that slip under the pixel-count cap.
 
     Returns
     -------
@@ -78,6 +95,18 @@ def extract_image(
         Extracted description, visible text, and entities.
         Returns empty result on unrecoverable failure.
     """
+    try:
+        _check_image_size(
+            image_bytes,
+            max_pixels=max_pixels,
+            max_dimension=max_dimension,
+            filename="<vision-input>",
+            source_id=None,
+        )
+    except AttachmentParseError as exc:
+        logger.warning("Vision rejected oversized image: %s", exc)
+        return VisionResult()
+
     b64 = base64.b64encode(image_bytes).decode("ascii")
 
     req = CompletionRequest(

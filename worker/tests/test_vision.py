@@ -7,13 +7,20 @@ a live multimodal backend.
 from __future__ import annotations
 
 import base64
+import io
 import json
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
+from PIL import Image
 
 from worker.models.base import CompletionResponse
 from worker.models.resolver import ResolvedModel
+from worker.parsers import attachments as attachments_mod
+from worker.parsers.attachments import (
+    DEFAULT_IMAGE_MAX_DIMENSION,
+    DEFAULT_IMAGE_MAX_PIXELS,
+)
 from worker.pipeline.vision import (
     ENTITY_CONFIDENCE,
     SYSTEM_PROMPT,
@@ -31,7 +38,15 @@ from worker.pipeline.vision import (
 # Fixtures
 # ------------------------------------------------------------------
 
-SAMPLE_IMAGE = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64  # fake PNG header
+
+def _real_png(width: int = 16, height: int = 16) -> bytes:
+    """Build a real in-memory PNG of the given dimensions."""
+    buf = io.BytesIO()
+    Image.new("RGB", (width, height), color=(7, 8, 9)).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+SAMPLE_IMAGE = _real_png()
 
 
 def _json_response(data: dict) -> CompletionResponse:
@@ -186,6 +201,78 @@ class TestExtractImage:
         model = _mock_model(resp)
         result = extract_image(SAMPLE_IMAGE, model)
         assert result == VisionResult()
+
+
+class TestExtractImageBombGuard:
+    """The decompression-bomb guard: short-circuits before the LLM call.
+
+    A successful guard rejection returns ``VisionResult()`` (empty) rather
+    than raising — the bead's contract is graceful degradation in the
+    vision pipeline; the attachments pipeline is the layer that surfaces
+    AttachmentParseError to its caller.
+    """
+
+    def test_image_too_many_pixels_returns_empty(self) -> None:
+        model = _mock_model(_json_response(_full_response()))
+
+        class _FakeImg:
+            size = (6_000, 5_000)  # 30M pixels > 25M cap
+
+            def __enter__(self) -> "_FakeImg":
+                return self
+
+            def __exit__(self, *_a: object) -> None:
+                return None
+
+        with patch.object(attachments_mod.Image, "open", lambda _stream: _FakeImg()):
+            result = extract_image(SAMPLE_IMAGE, model)
+
+        assert result == VisionResult()
+        # LLM must not have been invoked on a bomb input.
+        model.complete.assert_not_called()
+
+    def test_image_too_long_dimension_returns_empty(self) -> None:
+        model = _mock_model(_json_response(_full_response()))
+
+        class _FakeImg:
+            size = (100, 20_000)
+
+            def __enter__(self) -> "_FakeImg":
+                return self
+
+            def __exit__(self, *_a: object) -> None:
+                return None
+
+        with patch.object(attachments_mod.Image, "open", lambda _stream: _FakeImg()):
+            result = extract_image(SAMPLE_IMAGE, model)
+
+        assert result == VisionResult()
+        model.complete.assert_not_called()
+
+    def test_image_decompression_bomb_returns_empty(self) -> None:
+        model = _mock_model(_json_response(_full_response()))
+
+        def _bomb(_stream: object) -> object:
+            raise Image.DecompressionBombError("100M pixels")
+
+        with patch.object(attachments_mod.Image, "open", _bomb):
+            result = extract_image(SAMPLE_IMAGE, model)
+
+        assert result == VisionResult()
+        model.complete.assert_not_called()
+
+    def test_image_normal_unaffected(self) -> None:
+        # Real 16x16 PNG passes the guard and reaches the LLM.
+        model = _mock_model(_json_response(_full_response()))
+        result = extract_image(_real_png(16, 16), model)
+        assert result.description == "A screenshot of a terminal running Python code."
+        model.complete.assert_called_once()
+
+    def test_default_caps_are_module_constants(self) -> None:
+        # Pin the contract: defaults match the attachments-side config so
+        # operator tunings don't need two parallel knobs.
+        assert DEFAULT_IMAGE_MAX_PIXELS == 25_000_000
+        assert DEFAULT_IMAGE_MAX_DIMENSION == 8_000
 
 
 # ------------------------------------------------------------------
