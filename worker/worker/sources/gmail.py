@@ -108,8 +108,61 @@ def _extract_body(payload: dict[str, Any]) -> tuple[str, str]:
     return "", mime
 
 
-def _build_ingest_event(msg: dict[str, Any], account: str = "") -> dict[str, Any]:
-    """Build an IngestEvent dict from a Gmail API message resource."""
+def _extract_attachments(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Walk a Gmail message payload and collect attachment metadata.
+
+    Returns a list of ``{"filename", "mime_type", "size_bytes",
+    "attachment_id"}`` dicts for every part with a non-empty ``filename``
+    and a ``body.attachmentId``.  Inline parts that lack a filename are
+    ignored — they belong to the body recursion path in
+    :func:`_extract_body`.
+
+    Recurses into nested ``parts`` lists so forwarded emails with nested
+    multipart structure are walked exhaustively.  Deduplicates on
+    ``attachment_id`` so the same physical part referenced twice in the
+    payload doesn't yield two records.
+    """
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def walk(part: dict[str, Any]) -> None:
+        body = part.get("body") or {}
+        att_id = body.get("attachmentId")
+        filename = part.get("filename") or ""
+        if att_id and filename and att_id not in seen:
+            seen.add(att_id)
+            out.append(
+                {
+                    "filename": filename,
+                    "mime_type": part.get("mimeType", "application/octet-stream"),
+                    "size_bytes": int(body.get("size") or 0),
+                    "attachment_id": att_id,
+                }
+            )
+        for child in part.get("parts", []) or []:
+            walk(child)
+
+    walk(payload)
+    return out
+
+
+def _build_ingest_event(
+    msg: dict[str, Any],
+    account: str = "",
+    *,
+    download_attachments: bool = False,
+    attachment_indexable_mimetypes: list[str] | None = None,
+    attachment_max_size_mb: int = 25,
+    client_secrets_path: str | None = None,
+) -> dict[str, Any]:
+    """Build an IngestEvent dict from a Gmail API message resource.
+
+    Attachment knobs are folded into ``meta`` so the parser can apply the
+    download/policy decision without re-reading the source's config.  The
+    parser also gets ``client_secrets_path`` so it can rebuild an
+    authenticated Gmail client for the actual byte fetch when
+    ``download_attachments`` is true.
+    """
     payload = msg.get("payload", {})
     headers = payload.get("headers", [])
     subject = _header_value(headers, "Subject")
@@ -123,6 +176,7 @@ def _build_ingest_event(msg: dict[str, Any], account: str = "") -> dict[str, Any
     ).isoformat()
 
     body_text, body_mime = _extract_body(payload)
+    attachments = _extract_attachments(payload)
 
     meta: dict[str, Any] = {
         "message_id": msg["id"],
@@ -132,7 +186,17 @@ def _build_ingest_event(msg: dict[str, Any], account: str = "") -> dict[str, Any
         "sender_email": sender,
         "recipients": recipients,
         "account": account,
+        "attachments": attachments,
+        "download_attachments": download_attachments,
+        "attachment_indexable_mimetypes": list(
+            attachment_indexable_mimetypes
+            if attachment_indexable_mimetypes is not None
+            else []
+        ),
+        "attachment_max_size_mb": int(attachment_max_size_mb),
     }
+    if client_secrets_path:
+        meta["client_secrets_path"] = client_secrets_path
 
     return {
         "id": str(uuid.uuid4()),
@@ -163,6 +227,9 @@ class GmailSource(PythonSource):
         self._max_initial_threads: int = DEFAULT_MAX_INITIAL_THREADS
         self._label_filter: str | None = None
         self._client_secrets_path: Path | None = None
+        self._download_attachments: bool = False
+        self._attachment_indexable_mimetypes: list[str] = []
+        self._attachment_max_size_mb: int = 25
 
     def name(self) -> str:
         return "gmail"
@@ -209,6 +276,17 @@ class GmailSource(PythonSource):
                 "live in queue.db (cursors table, key 'gmail:<account>'); "
                 "remove this key from your config."
             )
+
+        # Attachment knobs.  Defaults match GmailAccountConfig: do NOT
+        # download by default; the indexable list and max_size_mb only
+        # take effect when download_attachments is true.
+        self._download_attachments = bool(cfg.get("download_attachments", False))
+        from worker.parsers.attachments import DEFAULT_INDEXABLE_MIMETYPES
+
+        self._attachment_indexable_mimetypes = list(
+            cfg.get("attachment_indexable_mimetypes") or DEFAULT_INDEXABLE_MIMETYPES
+        )
+        self._attachment_max_size_mb = int(cfg.get("attachment_max_size_mb", 25))
 
     async def start(
         self,
@@ -400,7 +478,16 @@ class GmailSource(PythonSource):
                         format="full",
                     ).execute(),
                 )
-                event = _build_ingest_event(msg, self._account)
+                event = _build_ingest_event(
+                    msg,
+                    self._account,
+                    download_attachments=self._download_attachments,
+                    attachment_indexable_mimetypes=self._attachment_indexable_mimetypes,
+                    attachment_max_size_mb=self._attachment_max_size_mb,
+                    client_secrets_path=str(self._client_secrets_path)
+                    if self._client_secrets_path
+                    else None,
+                )
                 if is_initial:
                     event["initial_scan"] = True
                 # Skip events already in the queue (pending/processing).
@@ -547,9 +634,13 @@ class GmailSource(PythonSource):
                     lambda: history_api.list(
                         userId="me",
                         startHistoryId=cursor,
-                        **({
-                            "labelId": self._label_filter,
-                        } if self._label_filter else {}),
+                        **(
+                            {
+                                "labelId": self._label_filter,
+                            }
+                            if self._label_filter
+                            else {}
+                        ),
                         historyTypes=["messageAdded"],
                     ).execute(),
                 ),
@@ -597,7 +688,16 @@ class GmailSource(PythonSource):
                         ),
                         timeout=API_CALL_TIMEOUT,
                     )
-                    event = _build_ingest_event(msg, self._account)
+                    event = _build_ingest_event(
+                        msg,
+                        self._account,
+                        download_attachments=self._download_attachments,
+                        attachment_indexable_mimetypes=self._attachment_indexable_mimetypes,
+                        attachment_max_size_mb=self._attachment_max_size_mb,
+                        client_secrets_path=str(self._client_secrets_path)
+                        if self._client_secrets_path
+                        else None,
+                    )
                     pending_events.append(event)
                     SOURCE_WATCHER_EVENTS.labels(
                         source_type="gmail",

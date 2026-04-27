@@ -1,5 +1,17 @@
 """Tests for the Gmail parser."""
 
+from __future__ import annotations
+
+from typing import Any
+
+import pytest
+
+from worker.parsers import gmail as gmail_parser_mod
+from worker.parsers.attachments import (
+    AttachmentDownloadError,
+    ParsedAttachment,
+)
+from worker.parsers.base import GraphHint
 from worker.parsers.gmail import GmailParser, _parse_email_address, _strip_html
 
 
@@ -218,6 +230,292 @@ class TestGmailParser:
         assert isinstance(parser, GmailParser)
 
 
+def _three_attachments() -> list[dict[str, Any]]:
+    return [
+        {
+            "filename": "report.pdf",
+            "mime_type": "application/pdf",
+            "size_bytes": 1_200_000,  # ~1.1 MB
+            "attachment_id": "att-pdf",
+        },
+        {
+            "filename": "screenshot.png",
+            "mime_type": "image/png",
+            "size_bytes": 220 * 1024,
+            "attachment_id": "att-png",
+        },
+        {
+            "filename": "logs.zip",
+            "mime_type": "application/zip",
+            "size_bytes": 100 * 1024,
+            "attachment_id": "att-zip",
+        },
+    ]
+
+
+def _event_with_attachments(
+    *,
+    download_attachments: bool,
+    indexable: list[str],
+    attachments: list[dict[str, Any]] | None = None,
+    max_size_mb: int = 25,
+) -> dict:
+    base = _make_event("Body of the email", mime_type="text/plain")
+    base["meta"]["attachments"] = (
+        attachments if attachments is not None else _three_attachments()
+    )
+    base["meta"]["download_attachments"] = download_attachments
+    base["meta"]["attachment_indexable_mimetypes"] = indexable
+    base["meta"]["attachment_max_size_mb"] = max_size_mb
+    base["meta"]["client_secrets_path"] = "/tmp/x.json"
+    return base
+
+
+class TestParserAttachmentsMetadataOnly:
+    def setup_method(self):
+        self.parser = GmailParser()
+
+    def test_download_disabled_emits_three_metadata_only_documents(self, monkeypatch):
+        """download_attachments=False ⇒ no fetch, three metadata-only docs."""
+        called: list[str] = []
+
+        def boom(**kwargs):
+            called.append(kwargs.get("filename", "?"))
+            raise AssertionError("stream_and_parse must NOT be called")
+
+        monkeypatch.setattr(gmail_parser_mod, "_stream_and_parse", boom)
+
+        event = _event_with_attachments(
+            download_attachments=False,
+            indexable=["application/pdf", "image/png"],
+        )
+        docs = self.parser.parse(event)
+
+        assert called == []  # no fetch closure ever invoked
+        # 1 parent + 3 attachments
+        assert len(docs) == 4
+        att_docs = [d for d in docs if d.node_label == "Attachment"]
+        assert len(att_docs) == 3
+        for d in att_docs:
+            assert d.node_props["indexed"] is False
+            assert d.node_props["parent_url"] == (
+                "https://mail.google.com/mail/?ui=2&view=cv&th=thread-456"
+            )
+            assert "content not indexed" in d.text
+
+    def test_parent_text_gains_attachments_section(self, monkeypatch):
+        monkeypatch.setattr(
+            gmail_parser_mod,
+            "_stream_and_parse",
+            lambda **kwargs: pytest.fail("must not fetch"),
+        )
+        event = _event_with_attachments(
+            download_attachments=False,
+            indexable=["application/pdf"],
+        )
+        docs = self.parser.parse(event)
+        parent = next(d for d in docs if d.node_label == "Email")
+        assert "Attachments:" in parent.text
+        assert "- report.pdf (PDF, 1.1 MB)" in parent.text
+        assert "- screenshot.png (PNG, 220.0 KB)" in parent.text
+        assert "- logs.zip (ZIP, 100.0 KB)" in parent.text
+        assert parent.node_props["has_attachments"] == 3
+
+    def test_zero_attachments_leaves_parent_text_unchanged(self):
+        event = _make_event("plain body", mime_type="text/plain")
+        event["meta"]["attachments"] = []
+        event["meta"]["download_attachments"] = False
+        docs = self.parser.parse(event)
+        assert len(docs) == 1
+        parent = docs[0]
+        assert parent.text == "plain body"
+        assert "Attachments:" not in parent.text
+        assert "has_attachments" not in parent.node_props
+
+
+class TestParserAttachmentsDownload:
+    def setup_method(self):
+        self.parser = GmailParser()
+
+    def test_download_path_calls_stream_and_parse_for_indexable(self, monkeypatch):
+        """PDF + PNG indexable → fetched; ZIP → metadata-only (not in allowlist)."""
+        calls: list[str] = []
+
+        def fake_stream(**kwargs):
+            calls.append(kwargs["filename"])
+            return ParsedAttachment(text=f"PARSED:{kwargs['filename']}")
+
+        monkeypatch.setattr(gmail_parser_mod, "_stream_and_parse", fake_stream)
+
+        event = _event_with_attachments(
+            download_attachments=True,
+            indexable=["application/pdf", "image/png"],
+        )
+        docs = self.parser.parse(event)
+
+        # PDF + PNG fetched, ZIP not.
+        assert sorted(calls) == ["report.pdf", "screenshot.png"]
+
+        att_docs = {
+            d.node_props["filename"]: d for d in docs if d.node_label == "Attachment"
+        }
+        assert att_docs["report.pdf"].node_props["indexed"] is True
+        assert att_docs["report.pdf"].text == "PARSED:report.pdf"
+        assert att_docs["screenshot.png"].node_props["indexed"] is True
+        assert att_docs["logs.zip"].node_props["indexed"] is False
+        assert "content not indexed" in att_docs["logs.zip"].text
+
+    def test_attached_to_edge_to_thread_for_each_attachment(self, monkeypatch):
+        monkeypatch.setattr(
+            gmail_parser_mod,
+            "_stream_and_parse",
+            lambda **kwargs: ParsedAttachment(text=""),
+        )
+        event = _event_with_attachments(
+            download_attachments=False,
+            indexable=[],
+        )
+        docs = self.parser.parse(event)
+        att_docs = [d for d in docs if d.node_label == "Attachment"]
+        for d in att_docs:
+            attached = [h for h in d.graph_hints if h.predicate == "ATTACHED_TO"]
+            assert len(attached) == 1
+            assert attached[0].object_id == "gmail://personal/thread/thread-456"
+            assert attached[0].object_label == "Thread"
+            assert attached[0].object_merge_key == "source_id"
+
+    def test_sent_by_edge_follows_parent_author(self, monkeypatch):
+        monkeypatch.setattr(
+            gmail_parser_mod,
+            "_stream_and_parse",
+            lambda **kwargs: ParsedAttachment(text=""),
+        )
+        event = _event_with_attachments(
+            download_attachments=False,
+            indexable=[],
+        )
+        docs = self.parser.parse(event)
+        att_docs = [d for d in docs if d.node_label == "Attachment"]
+        for d in att_docs:
+            sent_by = [h for h in d.graph_hints if h.predicate == "SENT_BY"]
+            assert len(sent_by) == 1
+            assert sent_by[0].object_id == "person:alice@example.com"
+            assert sent_by[0].object_merge_key == "email"
+            assert sent_by[0].edge_props == {"account": "personal"}
+
+    def test_fetch_failure_falls_through_to_metadata_only(self, monkeypatch):
+        """A download error on one attachment does not affect the others."""
+        seen: list[str] = []
+
+        def fake_stream(**kwargs):
+            seen.append(kwargs["filename"])
+            if kwargs["filename"] == "report.pdf":
+                raise AttachmentDownloadError(
+                    "network down", source_id=kwargs.get("source_id")
+                )
+            return ParsedAttachment(text=f"OK:{kwargs['filename']}")
+
+        monkeypatch.setattr(gmail_parser_mod, "_stream_and_parse", fake_stream)
+
+        event = _event_with_attachments(
+            download_attachments=True,
+            indexable=["application/pdf", "image/png"],
+        )
+        docs = self.parser.parse(event)
+
+        att_docs = {
+            d.node_props["filename"]: d for d in docs if d.node_label == "Attachment"
+        }
+        # PDF degraded gracefully.
+        assert att_docs["report.pdf"].node_props["indexed"] is False
+        assert "content not indexed" in att_docs["report.pdf"].text
+        # PNG still indexed.
+        assert att_docs["screenshot.png"].node_props["indexed"] is True
+        assert att_docs["screenshot.png"].text == "OK:screenshot.png"
+        # ZIP never even attempted.
+        assert att_docs["logs.zip"].node_props["indexed"] is False
+        assert sorted(seen) == ["report.pdf", "screenshot.png"]
+
+    def test_attachment_source_id_shape(self, monkeypatch):
+        monkeypatch.setattr(
+            gmail_parser_mod,
+            "_stream_and_parse",
+            lambda **kwargs: ParsedAttachment(text=""),
+        )
+        event = _event_with_attachments(
+            download_attachments=False,
+            indexable=[],
+        )
+        docs = self.parser.parse(event)
+        ids = sorted(d.source_id for d in docs if d.node_label == "Attachment")
+        assert ids == [
+            "gmail://personal/thread/thread-456/attachment/att-pdf",
+            "gmail://personal/thread/thread-456/attachment/att-png",
+            "gmail://personal/thread/thread-456/attachment/att-zip",
+        ]
+
+    def test_extracted_entities_become_attachment_graph_hints(self, monkeypatch):
+        """Entities returned by stream_and_parse propagate as GraphHints."""
+        hint = GraphHint(
+            subject_id="placeholder",
+            subject_label="Attachment",
+            predicate="MENTIONS",
+            object_id="Whiskers",
+            object_label="Person",
+            object_props={"name": "Whiskers"},
+            object_merge_key="name",
+            confidence=0.8,
+        )
+
+        monkeypatch.setattr(
+            gmail_parser_mod,
+            "_stream_and_parse",
+            lambda **kwargs: ParsedAttachment(text="parsed", extracted_entities=[hint]),
+        )
+        event = _event_with_attachments(
+            download_attachments=True,
+            indexable=["application/pdf"],
+            attachments=[
+                {
+                    "filename": "r.pdf",
+                    "mime_type": "application/pdf",
+                    "size_bytes": 1024,
+                    "attachment_id": "a-pdf",
+                }
+            ],
+        )
+        docs = self.parser.parse(event)
+        att = next(d for d in docs if d.node_label == "Attachment")
+        mentions = [h for h in att.graph_hints if h.predicate == "MENTIONS"]
+        assert len(mentions) == 1
+        assert mentions[0].object_id == "Whiskers"
+
+    def test_dedupe_by_attachment_id_within_event(self):
+        """Two records with the same attachment_id collapse to one Document."""
+        atts = [
+            {
+                "filename": "dup.pdf",
+                "mime_type": "application/pdf",
+                "size_bytes": 100,
+                "attachment_id": "same",
+            },
+            {
+                "filename": "dup.pdf",
+                "mime_type": "application/pdf",
+                "size_bytes": 100,
+                "attachment_id": "same",
+            },
+        ]
+        event = _event_with_attachments(
+            download_attachments=False,
+            indexable=[],
+            attachments=atts,
+        )
+        docs = GmailParser().parse(event)
+        att_docs = [d for d in docs if d.node_label == "Attachment"]
+        assert len(att_docs) == 1
+
+
 class TestCrossAccount:
     """Cross-account invariants required by the multi-account schema."""
 
@@ -238,11 +536,13 @@ class TestCrossAccount:
             meta={"thread_id": "shared-tid", "message_id": "m2"},
         )
         thread_personal = next(
-            h for h in self.parser.parse(event_personal)[0].graph_hints
+            h
+            for h in self.parser.parse(event_personal)[0].graph_hints
             if h.predicate == "PART_OF"
         )
         thread_work = next(
-            h for h in self.parser.parse(event_work)[0].graph_hints
+            h
+            for h in self.parser.parse(event_work)[0].graph_hints
             if h.predicate == "PART_OF"
         )
 
@@ -268,11 +568,13 @@ class TestCrossAccount:
             meta={"sender_email": "Alice <alice@example.com>"},
         )
         sent_personal = next(
-            h for h in self.parser.parse(event_personal)[0].graph_hints
+            h
+            for h in self.parser.parse(event_personal)[0].graph_hints
             if h.predicate == "SENT"
         )
         sent_work = next(
-            h for h in self.parser.parse(event_work)[0].graph_hints
+            h
+            for h in self.parser.parse(event_work)[0].graph_hints
             if h.predicate == "SENT"
         )
 
@@ -293,8 +595,7 @@ class TestCrossAccount:
             meta={"sender_email": "Markus <markus@example.com>"},
         )
         sent = next(
-            h for h in self.parser.parse(event)[0].graph_hints
-            if h.predicate == "SENT"
+            h for h in self.parser.parse(event)[0].graph_hints if h.predicate == "SENT"
         )
         assert sent.subject_merge_key == "email"
         assert sent.subject_props == {"email": "markus@example.com"}

@@ -2,16 +2,34 @@
 
 Strips HTML from email bodies, extracts structured metadata from Gmail
 IngestEvents, and produces GraphHints for Person/Email/Thread relationships.
+
+Also surfaces attachments: each attachment becomes its own ParsedDocument
+linked to the parent thread via ATTACHED_TO, with the policy decision
+(``download_and_index`` vs ``metadata_only``) applied per-attachment from
+the source's ``download_attachments`` knob.  Filenames are appended to the
+parent text in an ``Attachments:`` section so they're picked up by the
+chunker / embedder.
 """
 
 from __future__ import annotations
 
+import base64
+import binascii
 import logging
 from email.utils import parseaddr
-from typing import Any
+from pathlib import Path
+from typing import Any, Callable
 
 from bs4 import BeautifulSoup
 
+from .attachments import (
+    AttachmentDownloadError,
+    AttachmentParseError,
+    ParsedAttachment,
+    build_parent_url,
+    classify_attachment,
+    stream_and_parse,
+)
 from .base import BaseParser, GraphHint, ParsedDocument, canonicalize_email
 from .registry import register
 
@@ -19,6 +37,120 @@ logger = logging.getLogger(__name__)
 
 _MAX_HTML_BODY_SIZE = 10 * 1024 * 1024  # 10 MiB
 _MAX_RECIPIENTS = 100  # Cap recipients to prevent 100k graph hints per email
+
+
+# Test seam: ``stream_and_parse`` is monkeypatched in unit tests; the
+# default runtime hook calls the real helper.  Module-level so tests can
+# patch ``worker.parsers.gmail._stream_and_parse``.
+_stream_and_parse = stream_and_parse
+
+
+def _gmail_attachment_fetcher(
+    *,
+    account: str,
+    message_id: str,
+    attachment_id: str,
+    client_secrets_path: str | None,
+) -> Callable[[], bytes]:
+    """Return a zero-arg closure that fetches an attachment's bytes.
+
+    The closure builds a Gmail API client lazily (so tests that never
+    classify attachments as indexable don't pay the auth cost) and calls
+    ``users.messages.attachments.get`` followed by URL-safe base64
+    decode.  The ``client_secrets_path`` flows from the source's
+    ``configure()`` via the IngestEvent meta so the parser can rebuild
+    credentials per message.
+    """
+
+    def fetch() -> bytes:
+        if not client_secrets_path:
+            raise RuntimeError(
+                "Gmail attachment fetch requested but client_secrets_path "
+                "missing from event meta — source must populate it"
+            )
+        # Imports are local: callers that never run download paths should
+        # not pay googleapiclient/gmail_auth import cost at parser import.
+        from googleapiclient.discovery import build
+
+        from worker.sources.gmail_auth import get_credentials
+
+        creds = get_credentials(Path(client_secrets_path), account=account)
+        service = build("gmail", "v1", credentials=creds)
+        result = (
+            service.users()
+            .messages()
+            .attachments()
+            .get(userId="me", messageId=message_id, id=attachment_id)
+            .execute()
+        )
+        data = result.get("data", "")
+        if not data:
+            raise RuntimeError(
+                f"Gmail attachments.get returned no data for "
+                f"message {message_id} attachment {attachment_id}"
+            )
+        try:
+            return base64.urlsafe_b64decode(data + "==")
+        except (binascii.Error, ValueError) as exc:
+            raise RuntimeError(
+                f"malformed base64 in Gmail attachment {attachment_id}: {exc}"
+            ) from exc
+
+    return fetch
+
+
+_MIME_LABELS: dict[str, str] = {
+    "application/pdf": "PDF",
+    "application/zip": "ZIP",
+    "application/x-zip-compressed": "ZIP",
+    "application/msword": "DOC",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "DOCX",
+    "application/vnd.ms-excel": "XLS",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "XLSX",
+    "application/vnd.ms-powerpoint": "PPT",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation": "PPTX",
+    "image/png": "PNG",
+    "image/jpeg": "JPEG",
+    "image/gif": "GIF",
+    "image/webp": "WEBP",
+    "image/heic": "HEIC",
+    "image/heif": "HEIF",
+    "image/tiff": "TIFF",
+    "image/bmp": "BMP",
+    "text/plain": "TXT",
+    "text/markdown": "MD",
+    "text/csv": "CSV",
+    "application/json": "JSON",
+    "application/yaml": "YAML",
+    "application/x-yaml": "YAML",
+}
+
+
+def _mime_label(mime: str) -> str:
+    """Render a short uppercase label for an attachment MIME type."""
+    if mime in _MIME_LABELS:
+        return _MIME_LABELS[mime]
+    if "/" in mime:
+        return mime.split("/", 1)[1].upper()
+    return mime.upper() or "FILE"
+
+
+def _human_size(size_bytes: int) -> str:
+    """Render bytes as a short human-readable string (KB / MB / GB)."""
+    if size_bytes <= 0:
+        return "0 B"
+    for unit, divisor in (("GB", 1024**3), ("MB", 1024**2), ("KB", 1024)):
+        if size_bytes >= divisor:
+            return f"{size_bytes / divisor:.1f} {unit}"
+    return f"{size_bytes} B"
+
+
+def _render_attachment_bullet(att: dict[str, Any]) -> str:
+    return (
+        f"- {att.get('filename', '')} "
+        f"({_mime_label(att.get('mime_type', ''))}, "
+        f"{_human_size(int(att.get('size_bytes') or 0))})"
+    )
 
 
 def _strip_html(html: str) -> str:
@@ -157,8 +289,8 @@ class GmailParser(BaseParser):
         # PART_OF: Email → Thread.  Thread node is account-namespaced
         # because Gmail thread IDs are scoped to a mailbox — the same
         # thread_id in two accounts is two unrelated conversations.
+        thread_uri = f"gmail://{account}/thread/{thread_id}" if thread_id else ""
         if thread_id:
-            thread_uri = f"gmail://{account}/thread/{thread_id}"
             graph_hints.append(
                 GraphHint(
                     subject_id=source_id,
@@ -177,19 +309,219 @@ class GmailParser(BaseParser):
                 )
             )
 
-        return [
-            ParsedDocument(
-                source_type=self.source_type,
-                source_id=source_id,
-                operation=operation,
-                text=body,
-                node_label="Email",
-                node_props=node_props,
-                graph_hints=graph_hints,
-                source_metadata={
-                    "source_type": "email",
-                    "thread_id": thread_id,
-                    "account": account,
-                },
+        # --- Attachments -------------------------------------------------------
+        attachments_meta: list[dict[str, Any]] = list(meta.get("attachments") or [])
+        # Dedupe within a single message (same attachment_id appearing twice
+        # in nested parts).  Cross-message dedup happens via source_id MERGE
+        # in the writer — Documents with the same source_id collapse to one
+        # Neo4j node regardless of how many parse() calls emit them.
+        seen_att_ids: set[str] = set()
+        deduped: list[dict[str, Any]] = []
+        for att in attachments_meta:
+            aid = att.get("attachment_id")
+            if not aid or aid in seen_att_ids:
+                continue
+            seen_att_ids.add(aid)
+            deduped.append(att)
+
+        attachment_docs: list[ParsedDocument] = []
+        if deduped:
+            # Augment parent body with an Attachments: section BEFORE chunking
+            # so filenames are retrievable via the parent thread.
+            bullets = [_render_attachment_bullet(att) for att in deduped]
+            body = (
+                (body + "\n\n" if body else "") + "Attachments:\n" + "\n".join(bullets)
             )
-        ]
+            node_props["has_attachments"] = len(deduped)
+
+            attachment_docs = self._build_attachment_documents(
+                attachments=deduped,
+                account=account,
+                message_id=message_id,
+                thread_id=thread_id,
+                thread_uri=thread_uri,
+                sender_addr=sender_addr,
+                edge_props=edge_props,
+                meta=meta,
+            )
+
+        parent_doc = ParsedDocument(
+            source_type=self.source_type,
+            source_id=source_id,
+            operation=operation,
+            text=body,
+            node_label="Email",
+            node_props=node_props,
+            graph_hints=graph_hints,
+            source_metadata={
+                "source_type": "email",
+                "thread_id": thread_id,
+                "account": account,
+            },
+        )
+        return [parent_doc, *attachment_docs]
+
+    # ------------------------------------------------------------------
+    # Attachments
+    # ------------------------------------------------------------------
+
+    def _build_attachment_documents(
+        self,
+        *,
+        attachments: list[dict[str, Any]],
+        account: str,
+        message_id: str,
+        thread_id: str,
+        thread_uri: str,
+        sender_addr: str,
+        edge_props: dict[str, Any],
+        meta: dict[str, Any],
+    ) -> list[ParsedDocument]:
+        """Emit one ParsedDocument per attachment (indexed or metadata-only).
+
+        Each Document carries an ATTACHED_TO edge to the parent thread and
+        a SENT_BY edge to the sender Person (so attachment provenance is
+        queryable without traversing the email node).  Indexable
+        attachments fetch + parse on the fly via :func:`stream_and_parse`;
+        any download or parse error is logged and degrades cleanly to a
+        metadata-only Document — the parent message is still ingested.
+        """
+        download_attachments = bool(meta.get("download_attachments", False))
+        indexable = list(meta.get("attachment_indexable_mimetypes") or [])
+        max_size_mb = int(meta.get("attachment_max_size_mb", 25))
+        client_secrets_path = meta.get("client_secrets_path")
+
+        parent_url = build_parent_url("gmail", thread_id=thread_id) if thread_id else ""
+
+        norm_sender = canonicalize_email(sender_addr) if sender_addr else ""
+        docs: list[ParsedDocument] = []
+
+        for att in attachments:
+            filename = att.get("filename", "")
+            mime = att.get("mime_type", "application/octet-stream")
+            size_bytes = int(att.get("size_bytes") or 0)
+            attachment_id = att.get("attachment_id", "")
+
+            decision = (
+                classify_attachment(
+                    mime=mime,
+                    size_bytes=size_bytes,
+                    indexable=indexable,
+                    max_size_mb=max_size_mb,
+                )
+                if download_attachments
+                else "metadata_only"
+            )
+
+            att_source_id = (
+                f"gmail://{account}/thread/{thread_id}/attachment/{attachment_id}"
+            )
+
+            parsed: ParsedAttachment | None = None
+            if decision == "download_and_index":
+                try:
+                    parsed = _stream_and_parse(
+                        fetch=_gmail_attachment_fetcher(
+                            account=account,
+                            message_id=message_id,
+                            attachment_id=attachment_id,
+                            client_secrets_path=client_secrets_path,
+                        ),
+                        filename=filename,
+                        mime=mime,
+                        source_id=att_source_id,
+                    )
+                except (AttachmentDownloadError, AttachmentParseError) as exc:
+                    logger.warning(
+                        "Attachment %s on message %s fell back to metadata-only: %s",
+                        filename,
+                        message_id,
+                        exc,
+                    )
+                    parsed = None  # fall through to metadata-only render
+
+            if parsed is not None:
+                text = parsed.text or _metadata_only_description(
+                    filename, mime, size_bytes
+                )
+            else:
+                text = _metadata_only_description(filename, mime, size_bytes)
+
+            att_props: dict[str, Any] = {
+                "filename": filename,
+                "mime_type": mime,
+                "size_bytes": size_bytes,
+                "attachment_id": attachment_id,
+                "account": account,
+                "thread_id": thread_id,
+                "message_id": message_id,
+                "indexed": parsed is not None,
+            }
+            if parent_url:
+                att_props["parent_url"] = parent_url
+
+            att_hints: list[GraphHint] = []
+            if thread_uri:
+                att_hints.append(
+                    GraphHint(
+                        subject_id=att_source_id,
+                        subject_label="Attachment",
+                        predicate="ATTACHED_TO",
+                        object_id=thread_uri,
+                        object_label="Thread",
+                        object_props={
+                            "thread_id": thread_id,
+                            "account": account,
+                        },
+                        object_merge_key="source_id",
+                        edge_props=edge_props,
+                        confidence=1.0,
+                    )
+                )
+            if norm_sender:
+                # SENT_BY follows the parent's author so attachment
+                # provenance is queryable without traversing the Email.
+                att_hints.append(
+                    GraphHint(
+                        subject_id=att_source_id,
+                        subject_label="Attachment",
+                        predicate="SENT_BY",
+                        object_id=f"person:{norm_sender}",
+                        object_label="Person",
+                        object_props={"email": norm_sender},
+                        object_merge_key="email",
+                        edge_props=edge_props,
+                        confidence=1.0,
+                    )
+                )
+            if parsed is not None:
+                att_hints.extend(parsed.extracted_entities)
+
+            docs.append(
+                ParsedDocument(
+                    source_type=self.source_type,
+                    source_id=att_source_id,
+                    operation="created",
+                    text=text,
+                    mime_type=mime,
+                    node_label="Attachment",
+                    node_props=att_props,
+                    graph_hints=att_hints,
+                    source_metadata={
+                        "source_type": "email_attachment",
+                        "thread_id": thread_id,
+                        "account": account,
+                        "filename": filename,
+                        "indexed": parsed is not None,
+                    },
+                )
+            )
+
+        return docs
+
+
+def _metadata_only_description(filename: str, mime: str, size_bytes: int) -> str:
+    """Render the human-readable fallback text for non-indexable attachments."""
+    label = _mime_label(mime)
+    size = _human_size(size_bytes)
+    return f"{filename} ({label}, {size}) — content not indexed"

@@ -21,6 +21,8 @@ from _fake_queue import FakeQueue
 from worker.sources.gmail import (
     BACKFILL_PAGE_DELAY,
     GmailSource,
+    _build_ingest_event,
+    _extract_attachments,
     _extract_body,
     _extract_recipients,
 )
@@ -185,6 +187,172 @@ class TestExtractBody:
         text, mime = _extract_body(payload)
         assert text == ""
         assert mime == "text/plain"
+
+    def test_extract_attachments_from_mixed_payload(self) -> None:
+        """Source-side attachment walker collects (filename, mime, size, id)."""
+        payload = {
+            "mimeType": "multipart/mixed",
+            "body": {},
+            "parts": [
+                {
+                    "mimeType": "text/plain",
+                    "body": {"data": "aGVsbG8"},  # body, no attachment
+                },
+                {
+                    "mimeType": "application/pdf",
+                    "filename": "report.pdf",
+                    "body": {"size": 1024 * 1024, "attachmentId": "att-1"},
+                },
+                {
+                    "mimeType": "image/png",
+                    "filename": "screenshot.png",
+                    "body": {"size": 200 * 1024, "attachmentId": "att-2"},
+                },
+                {
+                    "mimeType": "application/zip",
+                    "filename": "logs.zip",
+                    "body": {"size": 100 * 1024, "attachmentId": "att-3"},
+                },
+            ],
+        }
+        atts = _extract_attachments(payload)
+        names = [a["filename"] for a in atts]
+        assert names == ["report.pdf", "screenshot.png", "logs.zip"]
+        ids = [a["attachment_id"] for a in atts]
+        assert ids == ["att-1", "att-2", "att-3"]
+        sizes = [a["size_bytes"] for a in atts]
+        assert sizes == [1024 * 1024, 200 * 1024, 100 * 1024]
+
+    def test_extract_attachments_skips_inline_parts_without_filename(self) -> None:
+        """Inline image without a filename is part of the body, not an attachment."""
+        payload = {
+            "mimeType": "multipart/related",
+            "body": {},
+            "parts": [
+                {
+                    "mimeType": "text/html",
+                    "body": {"data": "PHA+SGk8L3A+"},
+                },
+                {
+                    # An inline image has attachmentId but no filename.
+                    "mimeType": "image/png",
+                    "filename": "",
+                    "body": {"size": 5000, "attachmentId": "inline-1"},
+                },
+            ],
+        }
+        assert _extract_attachments(payload) == []
+
+    def test_extract_attachments_walks_nested_forwarded_email(self) -> None:
+        """Forwarded email with nested message/rfc822 still surfaces inner attachments."""
+        payload = {
+            "mimeType": "multipart/mixed",
+            "body": {},
+            "parts": [
+                {
+                    "mimeType": "text/plain",
+                    "body": {"data": "Zm9yd2FyZA"},
+                },
+                {
+                    "mimeType": "message/rfc822",
+                    "body": {},
+                    "parts": [
+                        {
+                            "mimeType": "multipart/mixed",
+                            "body": {},
+                            "parts": [
+                                {
+                                    "mimeType": "application/pdf",
+                                    "filename": "inner.pdf",
+                                    "body": {
+                                        "size": 4096,
+                                        "attachmentId": "deep-1",
+                                    },
+                                },
+                            ],
+                        },
+                    ],
+                },
+            ],
+        }
+        atts = _extract_attachments(payload)
+        assert len(atts) == 1
+        assert atts[0]["filename"] == "inner.pdf"
+        assert atts[0]["attachment_id"] == "deep-1"
+
+    def test_extract_attachments_dedupes_by_attachment_id(self) -> None:
+        """Same attachment_id appearing twice yields one record."""
+        payload = {
+            "mimeType": "multipart/mixed",
+            "parts": [
+                {
+                    "mimeType": "application/pdf",
+                    "filename": "dup.pdf",
+                    "body": {"size": 100, "attachmentId": "att-x"},
+                },
+                {
+                    "mimeType": "application/pdf",
+                    "filename": "dup.pdf",
+                    "body": {"size": 100, "attachmentId": "att-x"},
+                },
+            ],
+        }
+        assert len(_extract_attachments(payload)) == 1
+
+    def test_build_ingest_event_includes_attachments_meta(self) -> None:
+        """_build_ingest_event surfaces attachments + policy knobs in meta."""
+        msg = {
+            "id": "msg-1",
+            "threadId": "thr-1",
+            "internalDate": "1700000000000",
+            "payload": {
+                "mimeType": "multipart/mixed",
+                "headers": [
+                    {"name": "Subject", "value": "S"},
+                    {"name": "From", "value": "a@b.com"},
+                    {"name": "To", "value": "c@d.com"},
+                ],
+                "parts": [
+                    {
+                        "mimeType": "text/plain",
+                        "body": {"data": "aGVsbG8"},
+                    },
+                    {
+                        "mimeType": "application/pdf",
+                        "filename": "r.pdf",
+                        "body": {"size": 999, "attachmentId": "a-1"},
+                    },
+                ],
+            },
+        }
+        event = _build_ingest_event(
+            msg,
+            "personal",
+            download_attachments=True,
+            attachment_indexable_mimetypes=["application/pdf"],
+            attachment_max_size_mb=10,
+            client_secrets_path="/tmp/x.json",
+        )
+        meta = event["meta"]
+        assert meta["attachments"] == [
+            {
+                "filename": "r.pdf",
+                "mime_type": "application/pdf",
+                "size_bytes": 999,
+                "attachment_id": "a-1",
+            }
+        ]
+        assert meta["download_attachments"] is True
+        assert meta["attachment_indexable_mimetypes"] == ["application/pdf"]
+        assert meta["attachment_max_size_mb"] == 10
+        assert meta["client_secrets_path"] == "/tmp/x.json"
+
+    def test_build_ingest_event_default_attachments_empty(self) -> None:
+        """Message with no attachment parts yields meta['attachments'] == []."""
+        msg = _gmail_message("m-no-att", body_text="just a body")
+        event = _build_ingest_event(msg, "personal")
+        assert event["meta"]["attachments"] == []
+        assert event["meta"]["download_attachments"] is False
 
     def test_nested_multipart(self) -> None:
         """Nested multipart/mixed containing multipart/alternative."""
@@ -687,9 +855,7 @@ class TestBackfillIndexedCheck:
         def get_side_effect(**kwargs):
             get_calls.append(kwargs["id"])
             req = MagicMock()
-            req.execute.return_value = next(
-                m for m in msgs if m["id"] == kwargs["id"]
-            )
+            req.execute.return_value = next(m for m in msgs if m["id"] == kwargs["id"])
             return req
 
         api.get.side_effect = get_side_effect
@@ -740,9 +906,7 @@ class TestBackfillIndexedCheck:
         def get_side_effect(**kwargs):
             get_calls.append(kwargs["id"])
             req = MagicMock()
-            req.execute.return_value = next(
-                m for m in msgs if m["id"] == kwargs["id"]
-            )
+            req.execute.return_value = next(m for m in msgs if m["id"] == kwargs["id"])
             return req
 
         api.get.side_effect = get_side_effect
@@ -773,9 +937,7 @@ class TestBackfillIndexedCheck:
 
         def get_side_effect(**kwargs):
             req = MagicMock()
-            req.execute.return_value = next(
-                m for m in msgs if m["id"] == kwargs["id"]
-            )
+            req.execute.return_value = next(m for m in msgs if m["id"] == kwargs["id"])
             return req
 
         api.get.side_effect = get_side_effect
@@ -788,9 +950,7 @@ class TestBackfillIndexedCheck:
         source._label_filter = "INBOX"
 
         queue = _make_persistent_queue_mock()
-        await source._backfill(
-            api, queue, is_initial=True, indexed_check=boom
-        )
+        await source._backfill(api, queue, is_initial=True, indexed_check=boom)
 
         # Both messages should have been fetched despite the indexed_check failure.
         assert queue.enqueue.call_count == 2
@@ -841,10 +1001,12 @@ class TestMultiAccount:
 
     def test_configure_sets_account_and_source_id(self) -> None:
         source = GmailSource()
-        source.configure({
-            "account": "personal",
-            "client_secrets_path": "/tmp/x.json",
-        })
+        source.configure(
+            {
+                "account": "personal",
+                "client_secrets_path": "/tmp/x.json",
+            }
+        )
         assert source._account == "personal"
         assert source.source_id == "gmail:personal"
 
@@ -852,11 +1014,13 @@ class TestMultiAccount:
         """cursor_path is no longer a valid config key — cursors live in queue.db."""
         source = GmailSource()
         with pytest.raises(ValueError, match="queue.db"):
-            source.configure({
-                "account": "personal",
-                "client_secrets_path": "/tmp/x.json",
-                "cursor_path": "/tmp/whatever.json",
-            })
+            source.configure(
+                {
+                    "account": "personal",
+                    "client_secrets_path": "/tmp/x.json",
+                    "cursor_path": "/tmp/whatever.json",
+                }
+            )
 
     @pytest.mark.asyncio
     async def test_ingest_event_carries_account_metadata(self) -> None:
