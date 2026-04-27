@@ -298,7 +298,11 @@ def _stable_vector(text: str) -> list[float]:
 
 
 def _ingest_gmail(
-    account: str, messages_api: MagicMock, queue: PersistentQueue
+    account: str,
+    messages_api: MagicMock,
+    queue: PersistentQueue,
+    *,
+    download_attachments: bool = True,
 ) -> None:
     src = GmailSource()
     src.configure(
@@ -306,7 +310,7 @@ def _ingest_gmail(
             "account": account,
             "client_secrets_path": "/dev/null",
             "max_initial_threads": 5,
-            "download_attachments": True,
+            "download_attachments": download_attachments,
         }
     )
     asyncio.run(src._backfill(messages_api, queue, is_initial=True))
@@ -318,6 +322,8 @@ def _ingest_calendar(
     service: MagicMock,
     drive_service: MagicMock,
     queue: PersistentQueue,
+    *,
+    download_attachments: bool = True,
 ) -> None:
     src = GoogleCalendarSource()
     src.configure(
@@ -325,7 +331,7 @@ def _ingest_calendar(
             "account": account,
             "client_secrets_path": "/dev/null",
             "calendar_ids": [calendar_id],
-            "download_attachments": True,
+            "download_attachments": download_attachments,
         }
     )
     asyncio.run(
@@ -387,12 +393,17 @@ def _build_fake_slack_client() -> MagicMock:
     return client
 
 
-def _ingest_slack(client: MagicMock, queue: PersistentQueue) -> None:
+def _ingest_slack(
+    client: MagicMock,
+    queue: PersistentQueue,
+    *,
+    download_attachments: bool = True,
+) -> None:
     src = SlackSource()
     src.configure(
         {
             "poll_interval_seconds": 0,
-            "download_attachments": True,
+            "download_attachments": download_attachments,
         }
     )
     src._client = client
@@ -417,22 +428,32 @@ def _all_pending_events(queue: PersistentQueue) -> list[dict[str, Any]]:
     return [json.loads(r[0]) for r in rows]
 
 
-def _make_slack_parser(slack_failures: set[str] | None = None) -> SlackParser:
+def _make_slack_parser(
+    slack_failures: set[str] | None = None,
+    *,
+    fetcher: Any = None,
+) -> SlackParser:
     parser = SlackParser()
-    parser._fetcher = _make_slack_fetcher(slack_failures)
+    parser._fetcher = (
+        fetcher if fetcher is not None else _make_slack_fetcher(slack_failures)
+    )
     parser._vision_extractor = _fake_vision_extractor
     return parser
 
 
 def _write_event(
-    writer: Writer, ev: dict[str, Any], *, slack_failures: set[str] | None = None
+    writer: Writer,
+    ev: dict[str, Any],
+    *,
+    slack_failures: set[str] | None = None,
+    slack_fetcher: Any = None,
 ) -> None:
     if ev["source_type"] == "gmail":
         parser: Any = GmailParser()
     elif ev["source_type"] == "google_calendar":
         parser = GoogleCalendarParser()
     elif ev["source_type"] == "slack":
-        parser = _make_slack_parser(slack_failures)
+        parser = _make_slack_parser(slack_failures, fetcher=slack_fetcher)
     else:
         pytest.fail(f"unexpected source_type {ev['source_type']!r}")
 
@@ -457,6 +478,8 @@ def _ingest_and_write_all(
     queue: PersistentQueue,
     *,
     slack_failures: set[str] | None = None,
+    download_attachments: bool = True,
+    slack_fetcher: Any = None,
 ) -> None:
     """Drive Gmail + Slack + Calendar through the full pipeline."""
     gmail_api = make_fake_gmail_messages_api(_GMAIL_ACCOUNT + "_with_attachments")
@@ -469,12 +492,26 @@ def _ingest_and_write_all(
     )
     slack_client = _build_fake_slack_client()
 
-    _ingest_gmail(_GMAIL_ACCOUNT, gmail_api, queue)
-    _ingest_calendar(_CAL_ACCOUNT, "primary", cal_service, drive_service, queue)
-    _ingest_slack(slack_client, queue)
+    _ingest_gmail(
+        _GMAIL_ACCOUNT, gmail_api, queue, download_attachments=download_attachments
+    )
+    _ingest_calendar(
+        _CAL_ACCOUNT,
+        "primary",
+        cal_service,
+        drive_service,
+        queue,
+        download_attachments=download_attachments,
+    )
+    _ingest_slack(slack_client, queue, download_attachments=download_attachments)
 
     for ev in _all_pending_events(queue):
-        _write_event(writer, ev, slack_failures=slack_failures)
+        _write_event(
+            writer,
+            ev,
+            slack_failures=slack_failures,
+            slack_fetcher=slack_fetcher,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -922,4 +959,301 @@ class TestAttachmentsEndToEnd:
         )
         assert qdrant_after_count == qdrant_before_count, (
             "re-ingest duplicated Qdrant chunks"
+        )
+
+
+@_skip_services
+class TestDownloadAttachmentsOff:
+    """End-to-end coverage for ``download_attachments=False`` — the
+    production default and most-used config path.  No bytes are fetched;
+    each attachment becomes a metadata-only Attachment Document and the
+    parent body still surfaces filenames in its 'Attachments:' section so
+    a search for ``sample.pdf`` lands on the parent thread/event."""
+
+    def test_filename_only_embedding_path(
+        self,
+        writer: Writer,
+        neo4j_driver: Driver,
+        qdrant_client_: QdrantClient,
+        queue_db: PersistentQueue,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Counting wrappers around the Gmail/Drive factory functions:
+        # with download_attachments=False, the parser must never enter
+        # the download_and_index branch, so these factories must remain
+        # uncalled.  The wrapper still returns a working closure so that
+        # if the assertion ever flips we get a real fetch path to debug.
+        gmail_factory_calls = 0
+        drive_factory_calls = 0
+        gmail_inner = _make_gmail_attachment_fetcher_factory()
+        drive_inner = _make_drive_fetcher_factory()
+
+        def _gmail_factory(**kw: Any) -> Any:
+            nonlocal gmail_factory_calls
+            gmail_factory_calls += 1
+            return gmail_inner(**kw)
+
+        def _drive_factory(account: str, file_id: str) -> Any:
+            nonlocal drive_factory_calls
+            drive_factory_calls += 1
+            return drive_inner(account, file_id)
+
+        monkeypatch.setattr(
+            gmail_parser_mod, "_gmail_attachment_fetcher", _gmail_factory
+        )
+        monkeypatch.setattr(calendar_parser_mod, "_build_drive_fetcher", _drive_factory)
+
+        slack_fetch_calls = 0
+        slack_bytes_by_url = _build_slack_file_map()
+
+        def _slack_fetcher(url: str) -> bytes:
+            nonlocal slack_fetch_calls
+            slack_fetch_calls += 1
+            return slack_bytes_by_url[url]
+
+        _ingest_and_write_all(
+            writer,
+            queue_db,
+            download_attachments=False,
+            slack_fetcher=_slack_fetcher,
+        )
+
+        # 1) ZERO fetches across all three sources.
+        assert gmail_factory_calls == 0, (
+            f"Gmail attachment fetcher invoked {gmail_factory_calls}× with "
+            f"download_attachments=False"
+        )
+        assert drive_factory_calls == 0, (
+            f"Drive fetcher invoked {drive_factory_calls}× with "
+            f"download_attachments=False"
+        )
+        assert slack_fetch_calls == 0, (
+            f"Slack url_private_download fetcher invoked {slack_fetch_calls}× "
+            f"with download_attachments=False"
+        )
+
+        # 2) Each attachment produces ONE metadata-only Attachment
+        #    Document with no chunks under the attachment URI.
+        for att_sid in (
+            _GMAIL_PDF_SID,
+            _GMAIL_DOCX_SID,
+            _CAL_PDF_SID,
+            _CAL_DOCX_SID,
+            _SLACK_PNG_SID,
+            _SLACK_ZIP_SID,
+        ):
+            node = _node_props(neo4j_driver, att_sid)
+            assert node is not None, f"missing attachment node {att_sid!r}"
+            assert "Attachment" in node["__labels__"], (
+                f"node {att_sid!r} missing :Attachment label"
+            )
+            # Gmail/Slack carry an ``indexed`` flag; calendar uses
+            # ``decision``.  Both must say "metadata only" here.
+            if "decision" in node:
+                assert node["decision"] == "metadata_only", (
+                    f"calendar attachment {att_sid!r} not metadata_only: "
+                    f"{node['decision']!r}"
+                )
+            else:
+                assert node.get("indexed") is False, (
+                    f"attachment {att_sid!r} marked indexed under "
+                    f"download_attachments=False"
+                )
+
+            # Exactly one Attachment node per source_id (MERGE collapses
+            # duplicates, but assert it explicitly so a regression that
+            # widens the merge key is caught here).
+            with neo4j_driver.session() as session:
+                cnt = session.run(
+                    "MATCH (a:Attachment {source_id: $sid}) RETURN count(a) AS n",
+                    sid=att_sid,
+                ).single()["n"]
+            assert cnt == 1, (
+                f"expected exactly 1 Attachment node for {att_sid!r}, got {cnt}"
+            )
+
+            # No parsed file content under the attachment URI.  Gmail and
+            # Calendar metadata-only Documents render a synthetic
+            # 'content not indexed' description that DOES get chunked
+            # (short text → 1 chunk); Slack metadata-only Documents emit
+            # empty text and produce zero chunks.  In neither case do
+            # the parsed-file marker words ever land in Qdrant — that's
+            # the invariant we care about for "no content chunks".
+            chunks = _qdrant_chunks_for(qdrant_client_, att_sid)
+            joined = "\n".join(c.payload.get("text", "") for c in chunks)
+            for marker in (
+                "pdfattach-fixture-content",  # only in fixture PDF body
+                "png-fixture-visible-text",  # only in fake vision OCR
+            ):
+                assert marker not in joined, (
+                    f"parsed-file marker {marker!r} leaked into Qdrant "
+                    f"for {att_sid!r} under download_attachments=False"
+                )
+
+        # 3) parent_url is populated on every Attachment Document so the
+        #    UI can still link back to the source thread/message/event.
+        gmail_pdf = _node_props(neo4j_driver, _GMAIL_PDF_SID)
+        assert gmail_pdf is not None
+        assert gmail_pdf.get("parent_url") == (
+            f"https://mail.google.com/mail/?ui=2&view=cv&th={_GMAIL_THREAD_ID}"
+        )
+        gmail_docx = _node_props(neo4j_driver, _GMAIL_DOCX_SID)
+        assert gmail_docx is not None
+        assert gmail_docx.get("parent_url") == (
+            f"https://mail.google.com/mail/?ui=2&view=cv&th={_GMAIL_THREAD_ID}"
+        )
+        cal_pdf = _node_props(neo4j_driver, _CAL_PDF_SID)
+        assert cal_pdf is not None
+        assert cal_pdf.get("parent_url") == _CAL_HTML_LINK
+        cal_docx = _node_props(neo4j_driver, _CAL_DOCX_SID)
+        assert cal_docx is not None
+        assert cal_docx.get("parent_url") == _CAL_HTML_LINK
+        slack_png = _node_props(neo4j_driver, _SLACK_PNG_SID)
+        assert slack_png is not None
+        assert slack_png.get("parent_url") == (
+            f"https://{_TEAM_DOMAIN}.slack.com/archives/{_CHANNEL_ID}"
+            f"/p{_SLACK_TS_COMPACT}"
+        )
+        slack_zip = _node_props(neo4j_driver, _SLACK_ZIP_SID)
+        assert slack_zip is not None
+        assert slack_zip.get("parent_url") == (
+            f"https://{_TEAM_DOMAIN}.slack.com/archives/{_CHANNEL_ID}"
+            f"/p{_SLACK_TS_COMPACT}"
+        )
+
+        # 4) Parent body chunks carry an 'Attachments:' section with all
+        #    filenames present, so retrieval-by-filename still hops to
+        #    the parent even though the attachment itself has no content
+        #    chunks.  (Slack parent text augmentation is broken end-to-end
+        #    pending fn-a3p — the same caveat that applies to
+        #    TestAttachmentsEndToEnd applies here.)
+        for parent_sid, expected_filenames in (
+            (_GMAIL_PARENT_SID, ("sample.pdf", "sample.docx")),
+            (_CAL_PARENT_SID, ("sample.pdf", "sample.docx")),
+        ):
+            chunks = _qdrant_chunks_for(qdrant_client_, parent_sid)
+            assert chunks, f"no chunks for parent {parent_sid!r}"
+            joined = "\n".join(c.payload.get("text", "") for c in chunks)
+            assert "Attachments:" in joined, (
+                f"parent text missing 'Attachments:' section for "
+                f"{parent_sid!r}: {joined!r}"
+            )
+            for fn in expected_filenames:
+                assert fn in joined, (
+                    f"expected filename {fn!r} in parent {parent_sid!r}: {joined!r}"
+                )
+
+        # 5) Per-parent counters: ``intended`` matches the attachment
+        #    count, ``indexed`` is exactly zero.
+        for parent_sid in (_GMAIL_PARENT_SID, _CAL_PARENT_SID, _SLACK_PARENT_SID):
+            props = _node_props(neo4j_driver, parent_sid)
+            assert props is not None, f"missing parent node {parent_sid!r}"
+            intended = props.get("attachments_count_intended")
+            indexed = props.get("attachments_count_indexed")
+            metadata_only = props.get("attachments_count_metadata_only")
+            assert intended and intended >= 2, (
+                f"parent {parent_sid!r}: expected intended>=2, got {intended!r}"
+            )
+            assert indexed == 0, (
+                f"parent {parent_sid!r}: expected indexed=0 with "
+                f"download_attachments=False, got {indexed!r}"
+            )
+            assert metadata_only == intended, (
+                f"parent {parent_sid!r}: indexed=0 means metadata_only must "
+                f"equal intended (got intended={intended!r}, "
+                f"metadata_only={metadata_only!r})"
+            )
+            assert props.get("has_attachments") == intended
+
+    def test_idempotent_second_run(
+        self,
+        writer: Writer,
+        neo4j_driver: Driver,
+        qdrant_client_: QdrantClient,
+        queue_db: PersistentQueue,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Re-running ingest with download_attachments=False produces no
+        new Documents, edges, or Qdrant points — and never invokes any
+        fetcher on either pass."""
+
+        def _no_fetch(*_a: Any, **_kw: Any) -> Any:
+            raise AssertionError(
+                "fetcher factory called under download_attachments=False"
+            )
+
+        def _no_slack_fetch(_url: str) -> bytes:
+            raise AssertionError(
+                "slack fetcher called under download_attachments=False"
+            )
+
+        monkeypatch.setattr(gmail_parser_mod, "_gmail_attachment_fetcher", _no_fetch)
+        monkeypatch.setattr(calendar_parser_mod, "_build_drive_fetcher", _no_fetch)
+
+        all_sids = (
+            _GMAIL_PARENT_SID,
+            _GMAIL_PDF_SID,
+            _GMAIL_DOCX_SID,
+            _CAL_PARENT_SID,
+            _CAL_PDF_SID,
+            _CAL_DOCX_SID,
+            _SLACK_PARENT_SID,
+            _SLACK_PNG_SID,
+            _SLACK_ZIP_SID,
+        )
+
+        _ingest_and_write_all(
+            writer,
+            queue_db,
+            download_attachments=False,
+            slack_fetcher=_no_slack_fetch,
+        )
+
+        with neo4j_driver.session() as session:
+            doc_count_before = session.run(
+                "MATCH (n) WHERE n:Email OR n:Thread OR n:CalendarEvent "
+                "OR n:SlackMessage OR n:Attachment "
+                "RETURN count(n) AS n"
+            ).single()["n"]
+            edge_count_before = session.run(
+                "MATCH ()-[r:ATTACHED_TO]->() RETURN count(r) AS n"
+            ).single()["n"]
+        qdrant_before = sum(
+            len(_qdrant_chunks_for(qdrant_client_, sid)) for sid in all_sids
+        )
+
+        # Re-run with a fresh queue but identical fixtures.
+        queue2 = PersistentQueue(db_path=tmp_path / "queue2.db")
+        try:
+            _ingest_and_write_all(
+                writer,
+                queue2,
+                download_attachments=False,
+                slack_fetcher=_no_slack_fetch,
+            )
+        finally:
+            queue2.close()
+
+        with neo4j_driver.session() as session:
+            doc_count_after = session.run(
+                "MATCH (n) WHERE n:Email OR n:Thread OR n:CalendarEvent "
+                "OR n:SlackMessage OR n:Attachment "
+                "RETURN count(n) AS n"
+            ).single()["n"]
+            edge_count_after = session.run(
+                "MATCH ()-[r:ATTACHED_TO]->() RETURN count(r) AS n"
+            ).single()["n"]
+        qdrant_after = sum(
+            len(_qdrant_chunks_for(qdrant_client_, sid)) for sid in all_sids
+        )
+
+        assert doc_count_after == doc_count_before, (
+            "re-ingest created new Documents under download_attachments=False"
+        )
+        assert edge_count_after == edge_count_before, (
+            "re-ingest duplicated ATTACHED_TO edges under download_attachments=False"
+        )
+        assert qdrant_after == qdrant_before, (
+            "re-ingest duplicated Qdrant chunks under download_attachments=False"
         )
