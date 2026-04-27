@@ -12,9 +12,10 @@ Fieldnotes is a personal knowledge graph that continuously indexes your digital 
 - [Installation](#installation)
 - [Quick Start](#quick-start)
 - [Configuration](#configuration)
+- [Migrating from Single-Account](#migrating-from-single-account)
 - [Data Sources](#data-sources)
   - [Cross-Source Tag Unification](#cross-source-tag-unification-omnifocus--obsidian)
-  - [Cross-Source Person Linking](#cross-source-person-linking-gmail--google-calendar--obsidian)
+  - [Cross-Source Person Linking](#cross-source-person-linking-gmail--google-calendar--obsidian--slack)
   - [Person Extraction from Text and Tasks](#person-extraction-from-text-and-tasks)
   - [Entity Resolution Pipeline](#entity-resolution-pipeline)
 - [Interacting With Your Data](#interacting-with-your-data)
@@ -293,17 +294,37 @@ max_file_size = 104857600               # 100 MB
 vault_paths = ["~/obsidian-vault"]
 # index_only_patterns = ["attachments/"] # index filename only, skip content
 
-[sources.gmail]
+# Gmail and Google Calendar are configured per account. Each
+# `[sources.gmail.<account>]` / `[sources.google_calendar.<account>]`
+# section adds one mailbox or calendar. Account labels must match
+# `^[a-z][a-z0-9_-]{0,30}$` (e.g. `personal`, `work`, `clientx`). All
+# accounts can share a single `client_secrets_path` (one OAuth client
+# in your Google Cloud project) — each account gets its own token file
+# at `~/.fieldnotes/data/{gmail,calendar}_token-<account>.json`.
+
+[sources.gmail.personal]
+client_secrets_path = "~/.fieldnotes/credentials.json"
 poll_interval_seconds = 300
 max_initial_threads = 500
 label_filter = "INBOX"
-client_secrets_path = "~/.fieldnotes/credentials.json"
 
-[sources.google_calendar]
+[sources.gmail.work]
+client_secrets_path = "~/.fieldnotes/credentials.json"
+poll_interval_seconds = 300
+max_initial_threads = 500
+label_filter = "INBOX"
+
+[sources.google_calendar.personal]
+client_secrets_path = "~/.fieldnotes/credentials.json"
 poll_interval_seconds = 300
 max_initial_days = 90
 calendar_ids = ["primary"]
+
+[sources.google_calendar.work]
 client_secrets_path = "~/.fieldnotes/credentials.json"
+poll_interval_seconds = 300
+max_initial_days = 90
+calendar_ids = ["primary"]
 
 [sources.slack]
 enabled = false
@@ -330,9 +351,11 @@ Gmail indexing requires a Google Cloud OAuth2 credential. This is a one-time set
 3. **Configure the OAuth consent screen**: Go to *APIs & Services → OAuth consent screen*. Choose **External** as user type. Fill in the required app name and email fields. On the *Scopes* page, add `gmail.readonly`. On the *Test users* page, **add your own Gmail address**. Leave the app in **Testing** mode — this is sufficient for personal use and avoids Google's app verification process.
 4. **Create OAuth credentials**: Go to *APIs & Services → Credentials → Create Credentials → OAuth client ID*. Select **Desktop application** as the application type.
 5. **Download the credentials**: Click *Download JSON* and save it as `~/.fieldnotes/credentials.json` (or the path you set in `client_secrets_path`).
-6. **First run**: When the daemon starts with Gmail enabled, it will open your browser for a one-time consent screen. Approve read-only access (`gmail.readonly` scope). The resulting token is saved to `~/.fieldnotes/data/gmail_token.json` (mode `0600`) and refreshed automatically from then on.
+6. **First run**: When the daemon starts with Gmail enabled, it will open your browser for a one-time consent screen — once per configured account. Approve read-only access (`gmail.readonly` scope). The resulting token is saved to `~/.fieldnotes/data/gmail_token-<account>.json` (mode `0600`) and refreshed automatically from then on.
 
-> **Note:** If you're running fieldnotes as a system service (headless), complete the first OAuth flow manually with `fieldnotes serve --daemon` in a terminal before installing the service. The saved token will be reused.
+> **Note:** If you're running fieldnotes as a system service (headless), complete the first OAuth flow manually with `fieldnotes serve --daemon` in a terminal before installing the service. Each configured account triggers its own consent flow on first start; the saved tokens will be reused.
+
+> **Multi-account tip:** The same `client_secrets_path` (one Google Cloud OAuth client) works for any number of accounts — when the consent screen opens for each `[sources.gmail.<account>]` section, sign in with that account's Google identity. Per-account tokens land at `gmail_token-<account>.json` so they don't collide.
 
 > **Troubleshooting:** If the consent screen shows _"Access Blocked: \<AppName\> has not completed the Google verification process"_, the `credentials.json` file belongs to a different Google Cloud project that was published but never verified. Create your own project following the steps above — step 3 (consent screen) is the most commonly missed part.
 
@@ -342,10 +365,31 @@ Google Calendar uses the same OAuth credentials file and Google Cloud project as
 
 1. **Enable the Google Calendar API**: In the same Google Cloud project, go to *APIs & Services → Library*, search for "Google Calendar API", and click *Enable*.
 2. **Add the Calendar scope**: Go to *APIs & Services → OAuth consent screen → Edit App → Scopes* and add `calendar.events.readonly`. (If you set up Gmail and Calendar at the same time, add both scopes in one go.)
-3. **First run**: When the daemon starts with Google Calendar enabled, it will open your browser for a one-time consent screen. Approve read-only access (`calendar.events.readonly` scope). The token is saved to `~/.fieldnotes/data/calendar_token.json` (mode `0600`) and refreshed automatically.
-3. **Multiple calendars**: Set `calendar_ids` to a list of calendar IDs. Use `"primary"` for your main calendar. Other calendars can be found in Google Calendar settings under *Settings for other calendars → Integrate calendar → Calendar ID*.
+3. **First run**: When the daemon starts with Google Calendar enabled, it will open your browser for a one-time consent screen per configured account. Approve read-only access (`calendar.events.readonly` scope). The token is saved to `~/.fieldnotes/data/calendar_token-<account>.json` (mode `0600`) and refreshed automatically.
+4. **Multiple calendars per account**: Set `calendar_ids` to a list of calendar IDs. Use `"primary"` for the account's main calendar. Other calendars can be found in Google Calendar settings under *Settings for other calendars → Integrate calendar → Calendar ID*.
+5. **Multiple accounts**: Add additional `[sources.google_calendar.<account>]` sections — one per Google identity you want to index. Account labels must match `^[a-z][a-z0-9_-]{0,30}$`. See also the [`[me]`](#me-self-identity) block below to declare your own emails so the graph treats them as a single self-Person.
 
-> **Tip:** The same `credentials.json` file works for both Gmail and Google Calendar — they share the OAuth client, but each source has its own token file and consent flow.
+> **Tip:** The same `credentials.json` file works for both Gmail and Google Calendar across every account — they share one OAuth client. Each `(source, account)` pair has its own token file and consent flow.
+
+#### `[me]` Self-Identity
+
+Declare your own email addresses in a top-level `[me]` block so the graph treats them as a single self-Person:
+
+```toml
+[me]
+emails = ["me@personal.com", "me@work.com"]
+name = "Your Name"  # optional — falls back to the longest existing display name
+```
+
+**Why this matters:** Email is the canonical merge key for Person nodes (see [Cross-Source Person Linking](#cross-source-person-linking-gmail--google-calendar--obsidian--slack)), so two of *your* mailboxes appear as two different Persons by default. The `[me]` block tells the [`reconcile_self_person()`](docs/similarity.md) reconciliation step to merge them: it `MERGE`s a Person on each canonicalized email, sets `is_self = true`, and creates `SAME_AS` edges across all of them (`match_type = 'self_identity'`, `confidence = 1.0`).
+
+**Usage notes:**
+- `emails` is required and must be a non-empty list. Addresses are canonicalized (lowercased, trimmed, `@googlemail.com` → `@gmail.com`) so capitalization and Gmail aliases don't matter.
+- `name` is optional. When set it overrides the survivor display name; otherwise the longest existing `name` among matched Persons wins.
+- The OAuth client (your Google Cloud project) and `client_secrets_path` can be reused across all `[sources.gmail.<account>]` and `[sources.google_calendar.<account>]` sections — no additional setup is required to plug `[me]` in.
+- A single email is a no-op for `SAME_AS` edges; the lone Person is still flagged `is_self`.
+
+After it runs, `MATCH (p:Person {is_self: true})` resolves directly to your self-Persons, and `SAME_AS` traversals from any of them reach the rest of your alias cluster.
 
 #### Slack OAuth Setup
 
@@ -462,6 +506,58 @@ batch_size = 32                  # cross-encoder batch size
 | `FIELDNOTES_MCP_AUTH_TOKEN` | MCP server auth token | — |
 | `GRAFANA_PASSWORD` | Grafana admin password | *required* |
 
+## Migrating from Single-Account
+
+If you upgraded from a release that used the flat `[sources.gmail]` / `[sources.google_calendar]` schema, the daemon will refuse to start until you migrate. The `fieldnotes migrate gmail-multiaccount` command is a one-shot retag that does everything in place.
+
+**1. Stop the daemon:**
+
+```bash
+fieldnotes service stop
+```
+
+**2. Run the migrate command:**
+
+```bash
+# Interactive (prompts for an account label and confirmation):
+fieldnotes migrate gmail-multiaccount
+
+# Non-interactive (explicit label, no confirmation):
+fieldnotes migrate gmail-multiaccount --account personal --yes
+
+# See what would change without writing anything:
+fieldnotes migrate gmail-multiaccount --dry-run
+```
+
+The default label is `default` when you pass `--yes` without `--account`. Account labels must match `^[a-z][a-z0-9_-]{0,30}$`.
+
+**3. Restart the daemon:**
+
+```bash
+fieldnotes service start
+```
+
+That's it. The migrate command rewrites everything you'd otherwise have to update by hand:
+
+| What | Action |
+|---|---|
+| `~/.fieldnotes/data/queue.db` | `queue.source_id` and embedded payload `source_id` retagged to `gmail://<account>/...` and `google-calendar://<account>/...`; `cursors.key` rewritten to `gmail:<account>` / `calendar:<account>` |
+| Neo4j | `Document.source_id`, derivative `Chunk.id`, and fallback `Person.source_id` updated in place |
+| Qdrant | Chunk `payload.source_id` rewritten (vectors preserved in place) |
+| Token files | `gmail_token.json` → `gmail_token-<account>.json`, same for `calendar_token.json` |
+| Legacy cursor JSON | `gmail_cursor.json`, `calendar_cursor.json` deleted (cursors live in `queue.db` now) |
+| `~/.fieldnotes/config.toml` | Legacy `[sources.gmail]` / `[sources.google_calendar]` sections rewritten under `[sources.gmail.<account>]` / `[sources.google_calendar.<account>]` |
+
+**Auto-backup of `config.toml`:** The original config is copied to `~/.fieldnotes/config.toml.backup-<UTC-timestamp>` *before* the rewrite. To revert, replace `config.toml` with the backup and re-run `migrate` if you want a different account label.
+
+**Cursors are preserved automatically.** Polling position is stored in `queue.db` (`cursors` table) keyed by `gmail:<account>` / `calendar:<account>`, so the daemon resumes exactly where the single-account version left off — no re-scan, no re-OAuth.
+
+**Daemon-running guard:** Migrate refuses to run while the daemon is alive (`queue.db` is shared and concurrent writes race even under WAL). Stop the service first. The escape hatch is `--force-running`, but be warned: any in-flight queue items the daemon picks up *during* the migrate window keep their old-shape `source_id` and need a manual second `migrate` run to clean up.
+
+**Interleaved-migration safety:** If new-shape data already exists for the chosen account label (e.g. you ran the migration once, then added some fresh data, then re-ran with the same label), migrate refuses to proceed and asks for manual review.
+
+**After migrating:** Optionally add a [`[me]`](#me-self-identity) block to declare your own email aliases, and add additional `[sources.gmail.<account>]` / `[sources.google_calendar.<account>]` sections to bring further accounts online. Each new account triggers its own one-time OAuth consent flow on the next daemon start.
+
 ## Data Sources
 
 | Source | Sync Mode | What It Indexes |
@@ -539,6 +635,8 @@ When multiple people-aware sources are enabled, Fieldnotes automatically merges 
 
 **Email canonicalization:** All parsers normalise emails through a shared `canonicalize_email()` function that lower-cases, trims whitespace, and rewrites `@googlemail.com` → `@gmail.com` (Google treats these as the same mailbox). This prevents duplicate Person nodes for the same real-world identity.
 
+**Linking your own multiple email addresses:** Email is the canonical merge key, so two of *your* mailboxes (e.g. `me@personal.com` and `me@work.com`) appear as two different Persons by default. Declare them in a top-level [`[me]` block](#me-self-identity) and a `reconcile_self_person()` step links them as a single self-Person with `is_self = true`. See the [`[me]`](#me-self-identity) section for details and `MATCH (p:Person {is_self: true})` queryability.
+
 **Linking people from Obsidian notes:**
 
 Add an `emails` field to your note's frontmatter — either as a comma-separated string or a YAML list:
@@ -596,15 +694,17 @@ Lowercase @mentions like `@home` or `@work` are ignored (treated as context tags
 
 ### Entity Resolution Pipeline
 
-After each ingest batch, a five-step reconciliation chain runs to unify person identities across all sources:
+After each ingest batch, a multi-step reconciliation chain runs to unify person identities across all sources:
 
 | Step | What It Does |
 |---|---|
 | **1. Email-based reconciliation** | Creates `SAME_AS` edges between Person nodes that share an email address across different sources. Keeps the longest display name. |
-| **2. Fuzzy name matching** | Uses RapidFuzz `token_sort_ratio` to find Person nodes with near-identical names (threshold ≥ 95). Creates `SAME_AS` edges with `match_type='fuzzy_name'`. |
-| **3. Entity→Person bridging** | Links `Entity` nodes of type Person (extracted by the LLM) to structured `Person` nodes (from Gmail, Calendar, etc.) using fuzzy matching (threshold ≥ 93). Creates `SAME_AS` edges with `match_type='entity_person_bridge'`. |
-| **4. Cross-source entity resolution** | Deduplicates entities with the same label appearing across different sources using a 3-strategy cascade: exact match → fuzzy string match → embedding cosine similarity. |
-| **5. Transitive SAME_AS closure** | If A↔B and B↔C have `SAME_AS` edges but A↔C does not, creates the missing A↔C edge (up to 4 hops). Ensures the full identity cluster is fully connected. |
+| **2. Slack-identity merge** | Groups Person nodes by `(team_id, slack_user_id)` and creates `SAME_AS` edges (`match_type='slack_user_id'`) — closes the no-email-fallback gap when a Slack profile email isn't visible. |
+| **3. Fuzzy name matching** | Uses RapidFuzz `token_sort_ratio` to find Person nodes with near-identical names (threshold ≥ 95). Creates `SAME_AS` edges with `match_type='fuzzy_name'`. |
+| **4. Entity→Person bridging** | Links `Entity` nodes of type Person (extracted by the LLM) to structured `Person` nodes (from Gmail, Calendar, etc.) using fuzzy matching (threshold ≥ 93). Creates `SAME_AS` edges with `match_type='entity_person_bridge'`. |
+| **5. Cross-source entity resolution** | Deduplicates entities with the same label appearing across different sources using a 3-strategy cascade: exact match → fuzzy string match → embedding cosine similarity. |
+| **6. Transitive SAME_AS closure** | If A↔B and B↔C have `SAME_AS` edges but A↔C does not, creates the missing A↔C edge (up to 4 hops). Ensures the full identity cluster is fully connected. |
+| **7. Self-identity** *(only when [`[me]`](#me-self-identity) is configured)* | `MERGE`s a Person on each canonicalized email in `[me].emails`, sets `is_self=true`, and creates `SAME_AS` edges across all of them (`match_type='self_identity'`, `confidence=1.0`). Runs last so it can link your own aliases that the email-merge step left split. |
 
 Each step is fault-tolerant — a failure in one step logs a warning and proceeds to the next. All `SAME_AS` edges carry metadata: `confidence`, `match_type`, and `cross_source` flag.
 
@@ -616,15 +716,17 @@ On first startup, file and obsidian sources walk all configured directories and 
 
 On subsequent startups, the cursor is loaded and diffed against the current filesystem state — only new, modified, or deleted files generate events. Unchanged files are skipped entirely.
 
-| Source | Cursor File | What It Tracks |
+| Source | Cursor location | What It Tracks |
 |---|---|---|
 | **Files** | `~/.fieldnotes/data/files_cursor.json` | Per-file SHA256 + mtime |
 | **Obsidian** | `~/.fieldnotes/data/obsidian_cursor.json` | Per-file SHA256 + mtime |
-| **Gmail** | `~/.fieldnotes/data/gmail_cursor.json` | Gmail History API ID |
+| **Gmail** | `queue.db` (key `gmail:<account>`) | Gmail History API ID per account |
 | **Git Repos** | `~/.fieldnotes/data/repo_cursor.json` | Per-repo HEAD commit SHA |
 | **OmniFocus** | `~/.fieldnotes/state/omnifocus.json` | Per-task content hash |
-| **Google Calendar** | `~/.fieldnotes/data/calendar_cursor.json` | Per-calendar syncToken |
+| **Google Calendar** | `queue.db` (key `calendar:<account>`) | Per-calendar syncToken per account |
 | **Slack** | `~/.fieldnotes/data/slack_cursor.json` | Per-conversation latest_ts |
+
+Gmail and Google Calendar cursors live in the SQLite persistent queue (`~/.fieldnotes/data/queue.db`, `cursors` table). The legacy per-source JSON cursor files (`gmail_cursor.json`, `calendar_cursor.json`, and any per-account variants) are deprecated transitional state — the daemon does not read or write them under the multi-account schema, and `fieldnotes migrate gmail-multiaccount` deletes them. Other sources (Files, Obsidian, Git Repos, OmniFocus, Slack) still use their own JSON state files since they predate the SQLite persistent queue.
 
 Cursors are checkpointed every 5 minutes during operation and saved on graceful shutdown, so a restart only re-processes files that changed since the last checkpoint.
 
@@ -738,6 +840,8 @@ fieldnotes [-c CONFIG] [-v] <command>
   - OpenAI / Anthropic API keys are set.
   - Neo4j and Qdrant are reachable.
   - Source watch paths exist on disk.
+  - Per-account Gmail and Google Calendar auth status (one row per `[sources.gmail.<account>]` / `[sources.google_calendar.<account>]` section).
+  - `[me]` self-identity block parses, has at least one canonicalized email, and `name` is a string when set.
   - Required tools (`ollama`, `docker`) are on PATH.
 
 **`up [--compose-file PATH]`** — Start Docker infrastructure (`docker compose up -d`). Uses `~/.fieldnotes/infrastructure/docker-compose.yml` by default.
@@ -745,6 +849,26 @@ fieldnotes [-c CONFIG] [-v] <command>
 **`stop [--compose-file PATH]`** — Stop Docker containers without removing them (`docker compose stop`). Data volumes are preserved.
 
 **`down [--compose-file PATH]`** — Tear down Docker infrastructure (`docker compose down`). Containers and networks are removed; data volumes under `~/.fieldnotes/data/` are preserved.
+
+**`migrate gmail-multiaccount [--account LABEL] [--yes] [--dry-run] [--force-running]`** — One-shot retag of legacy single-account Gmail and Google Calendar artifacts under a chosen multi-account label. Rewrites `queue.db` rows + cursor keys, Neo4j `Document.source_id` / `Chunk.id` / fallback `Person.source_id`, Qdrant chunk `payload.source_id`, renames token files (`gmail_token.json` → `gmail_token-<account>.json`), deletes deprecated cursor JSON files, and rewrites `~/.fieldnotes/config.toml` (with backup at `config.toml.backup-<UTC-timestamp>`). See [Migrating from Single-Account](#migrating-from-single-account) for the full walkthrough.
+  - `--account LABEL` — Account label to retag under (default: `default` when `--yes` is set; otherwise interactive prompt). Must match `^[a-z][a-z0-9_-]{0,30}$`.
+  - `--yes` — Skip the confirmation prompt; assume `default` when `--account` is omitted.
+  - `--dry-run` — Print counts of what would change without mutating any state. Shows queue rows, cursor rows, Neo4j Documents/Chunks, fallback Persons, and Qdrant points.
+  - `--force-running` — Run even when the daemon is alive. **Use with care:** any in-flight queue items the daemon picks up during the migrate window keep their old-shape `source_id` and need a manual second `migrate` run to clean up.
+
+  Example dry-run:
+
+  ```bash
+  fieldnotes migrate gmail-multiaccount --dry-run
+  Migration target: account='default'
+    queue.db rows:       42
+    queue.db cursors:    2
+    Neo4j Documents:     128
+    Neo4j Chunks:        417
+    Fallback Persons:    9
+    Qdrant points:       417
+  Dry run — no changes made.
+  ```
 
 **`search <query> [-k N] [--no-rerank] [--rerank-top-k N]`** — Hybrid search combining graph traversal and vector similarity. Returns ranked results with source metadata. Results are reranked by a cross-encoder by default (see [Reranker](#reranker)); use `--no-rerank` to disable or `--rerank-top-k` to control how many candidates survive reranking.
 
