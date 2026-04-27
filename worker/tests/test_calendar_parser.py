@@ -632,6 +632,81 @@ class TestCalendarAttachmentsDownloadAndIndex:
         assert att.node_props["decision"] == "metadata_only"
 
 
+class TestCalendarAttachmentCounters:
+    """Parent CalendarEvent carries intended/indexed/metadata_only counters."""
+
+    def setup_method(self):
+        self.parser = GoogleCalendarParser()
+
+    def _three_attachment_event(self) -> dict:
+        return _make_event(
+            meta={
+                "download_attachments": True,
+                "attachment_indexable_mimetypes": ["application/pdf"],
+                "attachment_max_size_mb": 25,
+                "attachments": [
+                    _attachment("drv-1", "f1.pdf", "application/pdf", size_bytes=2048),
+                    _attachment("drv-2", "f2.pdf", "application/pdf", size_bytes=2048),
+                    _attachment("drv-3", "f3.pdf", "application/pdf", size_bytes=2048),
+                ],
+            }
+        )
+
+    def test_no_attachments_omits_counters(self):
+        docs = self.parser.parse(_make_event())
+        event_doc = next(d for d in docs if d.node_label == "CalendarEvent")
+        assert "has_attachments" not in event_doc.node_props
+        assert "attachments_count_intended" not in event_doc.node_props
+        assert "attachments_count_indexed" not in event_doc.node_props
+        assert "attachments_count_metadata_only" not in event_doc.node_props
+
+    def test_intended_matches_total_when_all_fail(self):
+        """3 attachments, all fail to fetch ⇒ intended=3, indexed=0, metadata_only=3."""
+
+        def fetcher(_account, _file_id):
+            return lambda: b""
+
+        def boom(*, fetch, filename, mime, source_id=None, **_kwargs):
+            raise AttachmentDownloadError(
+                f"network down: {filename}", source_id=source_id
+            )
+
+        with (
+            patch.object(calendar_parser_module, "_build_drive_fetcher", fetcher),
+            patch.object(calendar_parser_module, "stream_and_parse", boom),
+        ):
+            docs = self.parser.parse(self._three_attachment_event())
+
+        event_doc = next(d for d in docs if d.node_label == "CalendarEvent")
+        assert event_doc.node_props["attachments_count_intended"] == 3
+        assert event_doc.node_props["attachments_count_indexed"] == 0
+        assert event_doc.node_props["attachments_count_metadata_only"] == 3
+        assert event_doc.node_props["has_attachments"] == 3  # deprecated alias
+
+    def test_indexed_only_successes(self):
+        """3 attachments, 1 fails to fetch ⇒ intended=3, indexed=2, metadata_only=1."""
+
+        def fetcher(_account, _file_id):
+            return lambda: b"FAKEBYTES"
+
+        def maybe_parse(*, fetch, filename, mime, source_id=None, **_kwargs):
+            fetch()
+            if filename == "f1.pdf":
+                raise AttachmentParseError("malformed", source_id=source_id)
+            return ParsedAttachment(text=f"parsed {filename}")
+
+        with (
+            patch.object(calendar_parser_module, "_build_drive_fetcher", fetcher),
+            patch.object(calendar_parser_module, "stream_and_parse", maybe_parse),
+        ):
+            docs = self.parser.parse(self._three_attachment_event())
+
+        event_doc = next(d for d in docs if d.node_label == "CalendarEvent")
+        assert event_doc.node_props["attachments_count_intended"] == 3
+        assert event_doc.node_props["attachments_count_indexed"] == 2
+        assert event_doc.node_props["attachments_count_metadata_only"] == 1
+
+
 class TestCrossAccount:
     """Cross-account invariants required by the multi-account schema."""
 

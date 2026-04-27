@@ -682,6 +682,90 @@ class TestAttachmentDocsDownloadAndIndex:
         assert docx_doc.node_props["indexed"] is False
 
 
+class TestAttachmentCounters:
+    """Parent SlackMessage carries intended/indexed/metadata_only counters."""
+
+    def _three_pdfs(self, ts: str) -> list[dict[str, Any]]:
+        return [
+            _attachment(
+                file_id=f"F{i}",
+                name=f"f{i}.pdf",
+                mime="application/pdf",
+                size=4096,
+                ts=ts,
+                url=f"https://files.slack.com/{i}",
+            )
+            for i in range(3)
+        ]
+
+    def test_no_attachments_omits_counters(self) -> None:
+        m = _msg(1700000000.0, user="U1", text="hello")
+        event = _attach_meta(_window_event(messages=[m]), attachments=[])
+        [parent] = SlackParser().parse(event)
+        assert "has_attachments" not in parent.node_props
+        assert "attachments_count_intended" not in parent.node_props
+        assert "attachments_count_indexed" not in parent.node_props
+        assert "attachments_count_metadata_only" not in parent.node_props
+
+    def test_intended_matches_total_when_all_fail(self) -> None:
+        """3 attachments, all fail to fetch ⇒ intended=3, indexed=0, metadata_only=3."""
+        from worker.parsers.attachments import AttachmentDownloadError
+
+        m = _msg(1700000000.0, user="U1", text="files")
+        event = _attach_meta(
+            _window_event(messages=[m]),
+            attachments=self._three_pdfs(m["ts"]),
+            download_attachments=True,
+            indexable=["application/pdf"],
+        )
+
+        def boom(_url: str) -> bytes:
+            raise AttachmentDownloadError("network down")
+
+        parser = SlackParser()
+        parser._fetcher = boom  # type: ignore[assignment]
+        docs = parser.parse(event)
+        parent = docs[0]
+        assert parent.node_props["attachments_count_intended"] == 3
+        assert parent.node_props["attachments_count_indexed"] == 0
+        assert parent.node_props["attachments_count_metadata_only"] == 3
+        assert parent.node_props["has_attachments"] == 3  # deprecated alias
+
+    def test_indexed_only_successes(self) -> None:
+        """3 attachments, 1 fails to fetch ⇒ intended=3, indexed=2, metadata_only=1."""
+        import pymupdf
+
+        from worker.parsers.attachments import AttachmentDownloadError
+
+        m = _msg(1700000000.0, user="U1", text="files")
+        attachments = self._three_pdfs(m["ts"])
+        event = _attach_meta(
+            _window_event(messages=[m]),
+            attachments=attachments,
+            download_attachments=True,
+            indexable=["application/pdf"],
+        )
+
+        pdf = pymupdf.open()
+        page = pdf.new_page()
+        page.insert_text((72, 72), "ok")
+        pdf_bytes = pdf.tobytes()
+        pdf.close()
+
+        def fetch(url: str) -> bytes:
+            if url.endswith("/0"):
+                raise AttachmentDownloadError("boom")
+            return pdf_bytes
+
+        parser = SlackParser()
+        parser._fetcher = fetch  # type: ignore[assignment]
+        docs = parser.parse(event)
+        parent = docs[0]
+        assert parent.node_props["attachments_count_intended"] == 3
+        assert parent.node_props["attachments_count_indexed"] == 2
+        assert parent.node_props["attachments_count_metadata_only"] == 1
+
+
 class TestAttachmentEdges:
     def test_attached_to_points_at_parent_doc(self) -> None:
         m = _msg(1700000000.0, user="U1", text="here")

@@ -334,9 +334,8 @@ class GmailParser(BaseParser):
             body = (
                 (body + "\n\n" if body else "") + "Attachments:\n" + "\n".join(bullets)
             )
-            node_props["has_attachments"] = len(deduped)
 
-            attachment_docs = self._build_attachment_documents(
+            attachment_docs, counters = self._build_attachment_documents(
                 attachments=deduped,
                 account=account,
                 message_id=message_id,
@@ -346,6 +345,17 @@ class GmailParser(BaseParser):
                 edge_props=edge_props,
                 meta=meta,
             )
+            # Three counters distinguish intent (pre-fetch) from outcome
+            # (post-fetch).  Queries that need "documents with parsed
+            # attachment text" must use ``attachments_count_indexed``; the
+            # other two are diagnostic.
+            node_props["attachments_count_intended"] = counters["intended"]
+            node_props["attachments_count_indexed"] = counters["indexed"]
+            node_props["attachments_count_metadata_only"] = counters["metadata_only"]
+            # Deprecated alias of attachments_count_intended; retained for one
+            # release so existing Cypher queries keep working.  Remove after
+            # downstream consumers migrate to the explicit counter.
+            node_props["has_attachments"] = counters["intended"]
 
         parent_doc = ParsedDocument(
             source_type=self.source_type,
@@ -378,7 +388,7 @@ class GmailParser(BaseParser):
         sender_addr: str,
         edge_props: dict[str, Any],
         meta: dict[str, Any],
-    ) -> list[ParsedDocument]:
+    ) -> tuple[list[ParsedDocument], dict[str, int]]:
         """Emit one ParsedDocument per attachment (indexed or metadata-only).
 
         Each Document carries an ATTACHED_TO edge to the parent thread and
@@ -387,6 +397,10 @@ class GmailParser(BaseParser):
         attachments fetch + parse on the fly via :func:`stream_and_parse`;
         any download or parse error is logged and degrades cleanly to a
         metadata-only Document — the parent message is still ingested.
+
+        Returns a tuple of (documents, counters) where counters carries
+        ``intended`` (total attachments seen), ``indexed`` (successful
+        fetch+parse), and ``metadata_only`` (fallback or non-indexable).
         """
         download_attachments = bool(meta.get("download_attachments", False))
         indexable = list(meta.get("attachment_indexable_mimetypes") or [])
@@ -400,6 +414,7 @@ class GmailParser(BaseParser):
 
         norm_sender = canonicalize_email(sender_addr) if sender_addr else ""
         docs: list[ParsedDocument] = []
+        indexed_count = 0
 
         for att in attachments:
             filename = att.get("filename", "")
@@ -449,6 +464,7 @@ class GmailParser(BaseParser):
                     parsed = None  # fall through to metadata-only render
 
             if parsed is not None:
+                indexed_count += 1
                 text = parsed.text or _metadata_only_description(
                     filename, mime, size_bytes
                 )
@@ -525,7 +541,12 @@ class GmailParser(BaseParser):
                 )
             )
 
-        return docs
+        counters = {
+            "intended": len(attachments),
+            "indexed": indexed_count,
+            "metadata_only": len(attachments) - indexed_count,
+        }
+        return docs, counters
 
 
 def _metadata_only_description(filename: str, mime: str, size_bytes: int) -> str:

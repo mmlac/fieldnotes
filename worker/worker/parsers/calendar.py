@@ -322,9 +322,8 @@ class GoogleCalendarParser(BaseParser):
 
         if attachments_meta:
             body = self._augment_text_with_attachments(body, attachments_meta)
-            node_props["has_attachments"] = len(attachments_meta)
 
-        attachment_docs: list[ParsedDocument] = self._build_attachment_documents(
+        attachment_docs, attachment_counters = self._build_attachment_documents(
             attachments_meta=attachments_meta,
             event_source_id=source_id,
             event_id=event_id,
@@ -338,6 +337,16 @@ class GoogleCalendarParser(BaseParser):
             pdf_per_page_chars=pdf_per_page_chars,
             pdf_timeout_seconds=pdf_timeout_seconds,
         )
+
+        if attachment_counters["intended"]:
+            node_props["attachments_count_intended"] = attachment_counters["intended"]
+            node_props["attachments_count_indexed"] = attachment_counters["indexed"]
+            node_props["attachments_count_metadata_only"] = attachment_counters[
+                "metadata_only"
+            ]
+            # Deprecated alias of attachments_count_intended; retained for one
+            # release so existing Cypher queries keep working.
+            node_props["has_attachments"] = attachment_counters["intended"]
 
         event_doc = ParsedDocument(
             source_type=self.source_type,
@@ -395,16 +404,22 @@ class GoogleCalendarParser(BaseParser):
         pdf_max_pages: int = 1000,
         pdf_per_page_chars: int = 1_000_000,
         pdf_timeout_seconds: int = 60,
-    ) -> list[ParsedDocument]:
+    ) -> tuple[list[ParsedDocument], dict[str, int]]:
         """Emit one ParsedDocument per attachment.
 
         Each Attachment is linked to the parent CalendarEvent via an
         ATTACHED_TO graph hint.  ORGANIZED_BY / ATTENDED_BY edges that
         the parent event already carries are deliberately NOT propagated
         — the graph keeps them on the event only.
+
+        Returns a tuple of (documents, counters) where counters carries
+        ``intended`` (total attachments seen with a valid file_id),
+        ``indexed`` (successful download+parse) and ``metadata_only``
+        (fallback or non-indexable).
         """
+        empty_counters = {"intended": 0, "indexed": 0, "metadata_only": 0}
         if not attachments_meta:
-            return []
+            return [], empty_counters
 
         parent_url = ""
         if html_link:
@@ -414,10 +429,13 @@ class GoogleCalendarParser(BaseParser):
                 parent_url = ""
 
         out: list[ParsedDocument] = []
+        intended_count = 0
+        indexed_count = 0
         for att in attachments_meta:
             file_id = att.get("file_id", "")
             if not file_id:
                 continue
+            intended_count += 1
             mime = att.get("mime_type", "")
             title = att.get("title", "")
             size_bytes = int(att.get("size_bytes", 0) or 0)
@@ -459,6 +477,7 @@ class GoogleCalendarParser(BaseParser):
                     text = parsed.text
                     description = parsed.description
                     extra_hints.extend(parsed.extracted_entities)
+                    indexed_count += 1
                 except (AttachmentDownloadError, AttachmentParseError) as exc:
                     # Drive 404s, 403s, vision failures, etc. — log and
                     # downgrade to metadata-only so the event itself
@@ -532,4 +551,9 @@ class GoogleCalendarParser(BaseParser):
                     source_metadata=source_metadata,
                 )
             )
-        return out
+        counters = {
+            "intended": intended_count,
+            "indexed": indexed_count,
+            "metadata_only": intended_count - indexed_count,
+        }
+        return out, counters

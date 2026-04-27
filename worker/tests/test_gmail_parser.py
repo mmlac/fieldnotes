@@ -217,11 +217,13 @@ class TestGmailParser:
             },
         )
         sent_plain = [
-            h for h in self.parser.parse(event_plain)[0].graph_hints
+            h
+            for h in self.parser.parse(event_plain)[0].graph_hints
             if h.predicate == "SENT"
         ]
         sent_tagged = [
-            h for h in self.parser.parse(event_tagged)[0].graph_hints
+            h
+            for h in self.parser.parse(event_tagged)[0].graph_hints
             if h.predicate == "SENT"
         ]
         assert sent_plain[0].subject_id == "person:me@gmail.com"
@@ -352,7 +354,12 @@ class TestParserAttachmentsMetadataOnly:
         assert "- report.pdf (PDF, 1.1 MB)" in parent.text
         assert "- screenshot.png (PNG, 220.0 KB)" in parent.text
         assert "- logs.zip (ZIP, 100.0 KB)" in parent.text
+        # Deprecated alias still mirrors the intended count.
         assert parent.node_props["has_attachments"] == 3
+        # download_attachments=False ⇒ none indexed, all metadata-only.
+        assert parent.node_props["attachments_count_intended"] == 3
+        assert parent.node_props["attachments_count_indexed"] == 0
+        assert parent.node_props["attachments_count_metadata_only"] == 3
 
     def test_zero_attachments_leaves_parent_text_unchanged(self):
         event = _make_event("plain body", mime_type="text/plain")
@@ -364,10 +371,51 @@ class TestParserAttachmentsMetadataOnly:
         assert parent.text == "plain body"
         assert "Attachments:" not in parent.text
         assert "has_attachments" not in parent.node_props
+        assert "attachments_count_intended" not in parent.node_props
+        assert "attachments_count_indexed" not in parent.node_props
+        assert "attachments_count_metadata_only" not in parent.node_props
 
-    def test_attachment_with_newline_filename_does_not_inject_lines(
-        self, monkeypatch
-    ):
+    def test_attachments_count_intended_matches_total_when_all_fail(self, monkeypatch):
+        """3 attachments, all fail to fetch ⇒ intended=3, indexed=0, metadata_only=3."""
+
+        def fake_stream(**kwargs):
+            raise AttachmentDownloadError(
+                "network down", source_id=kwargs.get("source_id")
+            )
+
+        monkeypatch.setattr(gmail_parser_mod, "_stream_and_parse", fake_stream)
+
+        event = _event_with_attachments(
+            download_attachments=True,
+            indexable=["application/pdf", "image/png", "application/zip"],
+        )
+        docs = self.parser.parse(event)
+        parent = next(d for d in docs if d.node_label == "Email")
+        assert parent.node_props["attachments_count_intended"] == 3
+        assert parent.node_props["attachments_count_indexed"] == 0
+        assert parent.node_props["attachments_count_metadata_only"] == 3
+
+    def test_attachments_count_indexed_only_successes(self, monkeypatch):
+        """3 attachments, 1 fails to fetch ⇒ intended=3, indexed=2, metadata_only=1."""
+
+        def fake_stream(**kwargs):
+            if kwargs["filename"] == "report.pdf":
+                raise AttachmentDownloadError("boom", source_id=kwargs.get("source_id"))
+            return ParsedAttachment(text=f"OK:{kwargs['filename']}")
+
+        monkeypatch.setattr(gmail_parser_mod, "_stream_and_parse", fake_stream)
+
+        event = _event_with_attachments(
+            download_attachments=True,
+            indexable=["application/pdf", "image/png", "application/zip"],
+        )
+        docs = self.parser.parse(event)
+        parent = next(d for d in docs if d.node_label == "Email")
+        assert parent.node_props["attachments_count_intended"] == 3
+        assert parent.node_props["attachments_count_indexed"] == 2
+        assert parent.node_props["attachments_count_metadata_only"] == 1
+
+    def test_attachment_with_newline_filename_does_not_inject_lines(self, monkeypatch):
         """A filename containing '\\n' must not break the Attachments: bullet
         into multiple lines (which would let an attacker plant fake metadata
         in the parent thread chunk)."""

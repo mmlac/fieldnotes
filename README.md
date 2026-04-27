@@ -564,6 +564,28 @@ matches the parent email even when the attachment is metadata-only, and
 *"that quarterly_review.docx Bob shared"* finds the parent message via the
 filename — even though the Word body is currently unparseable.
 
+#### Counting attachments: intent vs. outcome
+
+Each parent Document (Email, SlackMessage, CalendarEvent) carries three
+counters that distinguish how many attachments were *seen* from how many
+ended up with extractable text:
+
+| Property                          | Meaning |
+|-----------------------------------|---------|
+| `attachments_count_intended`      | Total attachments discovered on the parent (post-dedupe). |
+| `attachments_count_indexed`       | Successfully fetched **and** parsed — the Attachment Document carries body text and content chunks. |
+| `attachments_count_metadata_only` | Skipped (non-indexable MIME / oversize / fetch disabled) **or** fell back after a fetch/parse error — the Attachment Document is metadata-only. |
+
+`intended = indexed + metadata_only` always holds. Use
+`attachments_count_indexed` when ranking by "messages with parseable
+attachment text"; use `attachments_count_intended` for diagnostic queries
+("how many emails arrived with attachments at all?").
+
+> **Deprecated alias.** A legacy `has_attachments` property is still
+> emitted as a copy of `attachments_count_intended` for one release so
+> existing Cypher queries keep working. New code should use the explicit
+> counters; `has_attachments` will be removed in a future cleanup.
+
 #### Office formats — deferred
 
 Microsoft Office formats (`.docx`, `.xlsx`, `.pptx`) are intentionally **not**

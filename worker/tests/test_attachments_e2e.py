@@ -680,7 +680,7 @@ class TestAttachmentsEndToEnd:
                     f"expected filename {fn!r} in parent {parent_sid!r} chunks"
                 )
 
-    def test_has_attachments_property_on_parents(
+    def test_attachment_counters_on_parents(
         self,
         writer: Writer,
         neo4j_driver: Driver,
@@ -688,17 +688,36 @@ class TestAttachmentsEndToEnd:
         patch_gmail_fetcher: None,
         patch_drive_fetcher: None,
     ) -> None:
-        """Each parent Document carries a truthy ``has_attachments`` so
-        graph queries can filter on 'has files' without a JOIN."""
+        """Each parent Document carries the three attachment counters plus
+        the deprecated ``has_attachments`` alias so graph queries can filter
+        on 'has files' (intended) or 'has parsed-text files' (indexed)
+        without a JOIN."""
         _ingest_and_write_all(writer, queue_db)
 
         for parent_sid in (_GMAIL_PARENT_SID, _SLACK_PARENT_SID, _CAL_PARENT_SID):
             props = _node_props(neo4j_driver, parent_sid)
             assert props is not None, f"missing parent node {parent_sid!r}"
-            value = props.get("has_attachments")
-            assert value, (
-                f"parent {parent_sid!r} missing/falsy has_attachments: {value!r}"
+
+            intended = props.get("attachments_count_intended")
+            indexed = props.get("attachments_count_indexed")
+            metadata_only = props.get("attachments_count_metadata_only")
+            assert intended, (
+                f"parent {parent_sid!r} missing/falsy "
+                f"attachments_count_intended: {intended!r}"
             )
+            assert indexed is not None, (
+                f"parent {parent_sid!r} missing attachments_count_indexed"
+            )
+            assert metadata_only is not None, (
+                f"parent {parent_sid!r} missing attachments_count_metadata_only"
+            )
+            assert intended == indexed + metadata_only, (
+                f"parent {parent_sid!r} counter sum mismatch: "
+                f"intended={intended} indexed={indexed} metadata_only={metadata_only}"
+            )
+
+            # Deprecated alias mirrors the intended count for one release.
+            assert props.get("has_attachments") == intended
 
     def test_three_layer_retrieval_for_sample_pdf(
         self,

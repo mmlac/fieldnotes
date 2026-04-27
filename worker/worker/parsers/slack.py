@@ -254,8 +254,6 @@ class SlackParser(BaseParser):
             "message_count": message_count,
             "has_thread": has_thread,
         }
-        if attachments:
-            node_props["has_attachments"] = len(attachments)
 
         graph_hints = _build_graph_hints(
             source_id=source_id,
@@ -266,6 +264,47 @@ class SlackParser(BaseParser):
             messages=messages,
             users_info=users_info,
         )
+
+        # Configurable attachment policy: source forwards its config so
+        # the parser doesn't need to reach back into Config / settings.
+        download_attachments = bool(meta.get("download_attachments", False))
+        indexable: list[str] = list(meta.get("attachment_indexable_mimetypes") or [])
+        max_size_mb = int(meta.get("attachment_max_size_mb", 25))
+        pdf_max_pages = int(meta.get("attachment_pdf_max_pages", 1000))
+        pdf_per_page_chars = int(meta.get("attachment_pdf_per_page_chars", 1_000_000))
+        pdf_timeout_seconds = int(meta.get("attachment_pdf_timeout_seconds", 60))
+
+        # Build attachments first so parent counters reflect actual fetch
+        # outcomes (intended vs indexed vs metadata_only) rather than mere
+        # intent.  See fn-g9c.
+        attachment_docs, attachment_counters = _build_attachment_documents(
+            parent_source_id=source_id,
+            team_id=team_id,
+            team_domain=team_domain,
+            channel_id=channel_id,
+            channel_name=channel_name,
+            conversation_type=conversation_type,
+            attachments=attachments,
+            users_info=users_info,
+            download_attachments=download_attachments,
+            indexable=indexable,
+            max_size_mb=max_size_mb,
+            pdf_max_pages=pdf_max_pages,
+            pdf_per_page_chars=pdf_per_page_chars,
+            pdf_timeout_seconds=pdf_timeout_seconds,
+            fetcher=self._fetcher,
+            vision_extractor=self._vision_extractor,
+        )
+
+        if attachment_counters["intended"]:
+            node_props["attachments_count_intended"] = attachment_counters["intended"]
+            node_props["attachments_count_indexed"] = attachment_counters["indexed"]
+            node_props["attachments_count_metadata_only"] = attachment_counters[
+                "metadata_only"
+            ]
+            # Deprecated alias of attachments_count_intended; retained for one
+            # release so existing Cypher queries keep working.
+            node_props["has_attachments"] = attachment_counters["intended"]
 
         parent_doc = ParsedDocument(
             source_type=self.source_type,
@@ -286,34 +325,6 @@ class SlackParser(BaseParser):
                 "message_count": message_count,
                 "has_thread": has_thread,
             },
-        )
-
-        # Configurable attachment policy: source forwards its config so
-        # the parser doesn't need to reach back into Config / settings.
-        download_attachments = bool(meta.get("download_attachments", False))
-        indexable: list[str] = list(meta.get("attachment_indexable_mimetypes") or [])
-        max_size_mb = int(meta.get("attachment_max_size_mb", 25))
-        pdf_max_pages = int(meta.get("attachment_pdf_max_pages", 1000))
-        pdf_per_page_chars = int(meta.get("attachment_pdf_per_page_chars", 1_000_000))
-        pdf_timeout_seconds = int(meta.get("attachment_pdf_timeout_seconds", 60))
-
-        attachment_docs = _build_attachment_documents(
-            parent_source_id=source_id,
-            team_id=team_id,
-            team_domain=team_domain,
-            channel_id=channel_id,
-            channel_name=channel_name,
-            conversation_type=conversation_type,
-            attachments=attachments,
-            users_info=users_info,
-            download_attachments=download_attachments,
-            indexable=indexable,
-            max_size_mb=max_size_mb,
-            pdf_max_pages=pdf_max_pages,
-            pdf_per_page_chars=pdf_per_page_chars,
-            pdf_timeout_seconds=pdf_timeout_seconds,
-            fetcher=self._fetcher,
-            vision_extractor=self._vision_extractor,
         )
 
         return [parent_doc, *attachment_docs]
@@ -619,7 +630,7 @@ def _build_attachment_documents(
     pdf_timeout_seconds: int = 60,
     fetcher: SlackAttachmentFetcher | None,
     vision_extractor: VisionExtractor | None,
-) -> list[ParsedDocument]:
+) -> tuple[list[ParsedDocument], dict[str, int]]:
     """Build one ParsedDocument per Slack file attachment.
 
     The result is downstream of the parent message Document and shares
@@ -631,12 +642,19 @@ def _build_attachment_documents(
 
     A failed fetch falls back to metadata_only and logs a warning so a
     transient error does not crash the parent ingest event.
+
+    Returns a tuple of (documents, counters) where counters carries
+    ``intended`` (total attachments seen), ``indexed`` (successful
+    download+parse) and ``metadata_only`` (fallback or non-indexable).
     """
     docs: list[ParsedDocument] = []
+    indexed_count = 0
+    intended_count = 0
     for att in attachments:
         file_id = att.get("id") or ""
         if not file_id:
             continue
+        intended_count += 1
         ts = att.get("ts", "")
         att_source_id = _attachment_doc_id(team_id, channel_id, ts, file_id)
         mime = att.get("mimetype") or "application/octet-stream"
@@ -692,6 +710,7 @@ def _build_attachment_documents(
                     ocr_text = parsed.ocr_text
                     description = parsed.description
                     extra_hints = list(parsed.extracted_entities)
+                    indexed_count += 1
 
         node_props: dict[str, Any] = {
             "team_id": team_id,
@@ -794,4 +813,9 @@ def _build_attachment_documents(
                 },
             )
         )
-    return docs
+    counters = {
+        "intended": intended_count,
+        "indexed": indexed_count,
+        "metadata_only": intended_count - indexed_count,
+    }
+    return docs, counters
