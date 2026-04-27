@@ -128,6 +128,16 @@ def _probe_persons(mod: Any) -> None:
     assert hasattr(mod, "run_merge")
 
 
+def _probe_person(mod: Any) -> None:
+    # Rich is the headline dep — exercise a small real call so a broken
+    # but importable rich install fails the canary instead of slipping
+    # through to runtime.
+    from rich.table import Table
+
+    assert callable(Table)
+    assert callable(mod.run_person)
+
+
 _PROBES: dict[str, Callable[[Any], None]] = {
     "ask": _probe_ask,
     "cluster": _probe_cluster,
@@ -141,6 +151,7 @@ _PROBES: dict[str, Callable[[Any], None]] = {
     "reformulator": _probe_reformulator,
     "stream": _probe_stream,
     "timeline": _probe_timeline,
+    "person": _probe_person,
 }
 
 

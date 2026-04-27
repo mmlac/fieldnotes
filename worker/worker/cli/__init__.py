@@ -265,6 +265,49 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Machine-readable JSON output",
     )
 
+    # ── person ──────────────────────────────────────────────────────
+    person_p = sub.add_parser(
+        "person",
+        help="Show a profile for a single Person across all sources",
+    )
+    person_p.add_argument(
+        "identifier",
+        nargs="?",
+        default=None,
+        help="Email, 'slack-user:<team>/<user>', or a name fragment "
+        "(omit when using --self or --search)",
+    )
+    person_p.add_argument(
+        "--since",
+        default="30d",
+        help="Window for recent interactions (relative '24h'/'7d'/'2w' or "
+        "ISO 8601). Default: 30d",
+    )
+    person_p.add_argument(
+        "--limit",
+        type=int,
+        default=10,
+        help="Maximum rows per section (default: 10)",
+    )
+    person_p.add_argument(
+        "--search",
+        default=None,
+        metavar="NAME",
+        help="Force fuzzy-name lookup even if the input looks like an email",
+    )
+    person_p.add_argument(
+        "--self",
+        dest="use_self",
+        action="store_true",
+        help="Resolve to the Person flagged is_self=true (requires [me] block)",
+    )
+    person_p.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="Emit a stable JSON object instead of Rich panels",
+    )
+
     # ── connections ──────────────────────────────────────────────────
     connections_p = sub.add_parser(
         "connections",
@@ -879,6 +922,23 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: {exc}", file=sys.stderr)
             return 1
 
+    if args.command == "person":
+        from worker.cli.person import run_person
+
+        try:
+            return run_person(
+                identifier=args.identifier,
+                since=args.since,
+                limit=args.limit,
+                use_self=args.use_self,
+                search=args.search,
+                json_output=args.json_output,
+                config_path=args.config,
+            )
+        except Exception as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+
     if args.command == "connections":
         from worker.cli.connections import run_connections
 
@@ -973,9 +1033,7 @@ def main(argv: list[str] | None = None) -> int:
 
             # Read raw config — load_config rejects the flat-shape
             # config that this migration is designed to fix.
-            cfg_file = args.config or (
-                Path.home() / ".fieldnotes" / "config.toml"
-            )
+            cfg_file = args.config or (Path.home() / ".fieldnotes" / "config.toml")
             try:
                 raw_cfg = tomllib.loads(Path(cfg_file).read_text())
             except OSError as exc:
