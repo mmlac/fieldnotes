@@ -7,6 +7,20 @@ for ``_on_indexed`` callbacks and sidecar files.
 
 The database uses WAL mode for safe concurrent access from multiple threads
 (e.g. watchdog observer threads and the main event loop).
+
+Cursor JSON shape (per source) is opaque to the queue — sources serialise
+whatever schema they need and store the result under ``cursors[<source>]``.
+The Slack source (``worker.sources.slack``) uses, per channel:
+
+* ``latest_ts``         — high-water mark for forward polling; advance-only.
+* ``oldest_ts_seen``    — low-water mark for resumable backfill.
+* ``backfill_complete`` — only True after a clean walk to the history floor;
+  forward polling is gated on this flag (see fn-fhr).
+* ``last_synced``       — ISO timestamp of the most recent poll.
+
+Legacy entries (``latest_ts``-only) are read with ``backfill_complete``
+defaulted to True so existing deployments don't re-walk their full window
+when the schema is upgraded.
 """
 
 from __future__ import annotations
@@ -146,11 +160,7 @@ class PersistentQueue:
         # Indexed-check pre-filter: drop already-chunked "created" events
         # before they ever hit SQLite.  Done outside the lock because the
         # check is read-only against Neo4j and may be slow.
-        if (
-            operation == "created"
-            and source_id
-            and self._indexed_check is not None
-        ):
+        if operation == "created" and source_id and self._indexed_check is not None:
             try:
                 hit = self._indexed_check([source_id])
             except Exception:
@@ -220,8 +230,15 @@ class PersistentQueue:
                     "(id, source_type, source_id, operation, status, payload, "
                     " blob_path, enqueued_at) "
                     "VALUES (?, ?, ?, ?, 'pending', ?, ?, ?)",
-                    (event_id, source_type, source_id, operation,
-                     payload, blob_path, enqueued_at),
+                    (
+                        event_id,
+                        source_type,
+                        source_id,
+                        operation,
+                        payload,
+                        blob_path,
+                        enqueued_at,
+                    ),
                 )
                 if cursor_key is not None and cursor_value is not None:
                     self._conn.execute(
@@ -528,16 +545,16 @@ class PersistentQueue:
             for (blob_path,) in rows:
                 with contextlib.suppress(OSError):
                     os.unlink(blob_path)
-            cur = self._conn.execute(
-                "DELETE FROM queue WHERE status = ?", (status,)
-            )
+            cur = self._conn.execute("DELETE FROM queue WHERE status = ?", (status,))
         return cur.rowcount
 
     # ------------------------------------------------------------------
     # Migration
     # ------------------------------------------------------------------
 
-    def migrate_cursor_files(self, data_dir: Path, state_dir: Path | None = None) -> int:
+    def migrate_cursor_files(
+        self, data_dir: Path, state_dir: Path | None = None
+    ) -> int:
         """Import old per-source cursor JSON files into the cursors table.
 
         Renames imported files to ``*.migrated``.  Returns the number of

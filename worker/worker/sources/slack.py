@@ -102,6 +102,22 @@ def _ts_seconds(ts: str | None) -> float:
         return 0.0
 
 
+def _max_ts(*candidates: str) -> str:
+    """Return the candidate with the greatest float-ts value (or '' if none)."""
+    valid = [c for c in candidates if c]
+    if not valid:
+        return ""
+    return max(valid, key=_ts_seconds)
+
+
+def _min_ts(*candidates: str) -> str:
+    """Return the candidate with the smallest float-ts value (or '' if none)."""
+    valid = [c for c in candidates if c]
+    if not valid:
+        return ""
+    return min(valid, key=_ts_seconds)
+
+
 def _ts_to_iso(ts: str | None) -> str:
     """Convert a Slack ts to an ISO-8601 UTC string (or '' on bad input)."""
     sec = _ts_seconds(ts)
@@ -819,47 +835,169 @@ class SlackSource(PythonSource):
         indexed_check: IndexedCheck | None = None,
         is_initial_cycle: bool = False,
     ) -> None:
-        """Backfill or incremental poll for a single conversation."""
+        """Backfill or incremental poll for a single conversation.
+
+        Cursor schema (per channel) — see :mod:`worker.queue` docstring:
+
+        * ``latest_ts``         — high-water mark for forward polling; only
+          ever advances (max of prior and any newly seen ts).
+        * ``oldest_ts_seen``    — low-water mark for backfill resume; the
+          oldest message ts emitted so far.
+        * ``backfill_complete`` — flips True only when the backfill walker
+          terminates cleanly (history exhausted or floor reached).  While
+          False, polling is suppressed and the source resumes backfill.
+        * ``last_synced``       — ISO timestamp of the most recent poll.
+
+        Legacy entries (``latest_ts``-only) load with ``backfill_complete``
+        defaulted to True so existing deployments don't re-walk 90 days.
+        """
         await asyncio.to_thread(self._maybe_refresh_users_cache)
         cid = channel.get("id", "")
-        entry = team_cursor.get(cid)
-        is_backfill = entry is None or not entry.get("latest_ts")
+        entry = dict(team_cursor.get(cid) or {})
 
-        if is_backfill:
-            oldest = (
-                datetime.now(timezone.utc).timestamp() - self._max_initial_days * 86400
-            )
-            oldest_str = f"{oldest:.6f}"
-        else:
-            oldest_str = entry["latest_ts"]
+        # Legacy cursors lack ``backfill_complete``.  Treat any cursor with
+        # a ``latest_ts`` as already-backfilled (preserves running state),
+        # and a fresh entry as needing backfill.
+        if "backfill_complete" not in entry:
+            entry["backfill_complete"] = bool(entry.get("latest_ts"))
 
-        messages = await asyncio.to_thread(self._fetch_history, cid, oldest_str)
-        if not messages:
-            # Even with no messages, advance cursor's last_synced timestamp.
-            team_cursor[cid] = {
-                "latest_ts": entry.get("latest_ts", "") if entry else "",
-                "last_synced": datetime.now(timezone.utc).isoformat(),
-            }
+        if not entry["backfill_complete"]:
+            await self._run_backfill_walk(channel, entry, team_cursor, queue)
             return
 
-        # Sort ascending by ts so windowing/threads see chronological order.
-        messages.sort(key=lambda m: _ts_seconds(m.get("ts")))
+        # Polling path requires a high-water mark; without one, fall back
+        # to backfill (e.g., manual cursor edit set the flag with no ts).
+        latest_ts = entry.get("latest_ts", "")
+        if not latest_ts:
+            entry["backfill_complete"] = False
+            await self._run_backfill_walk(channel, entry, team_cursor, queue)
+            return
 
-        latest_ts_seen = max(
-            (m.get("ts", "") for m in messages),
-            key=lambda t: _ts_seconds(t),
-            default=entry.get("latest_ts", "") if entry else "",
+        messages = await asyncio.to_thread(self._fetch_history, cid, latest_ts)
+        if not messages:
+            entry["last_synced"] = datetime.now(timezone.utc).isoformat()
+            team_cursor[cid] = entry
+            return
+
+        # Monotonic advance: never let a Slack-Connect out-of-order reply
+        # decrement the cursor.  Take max across prior and current page.
+        page_newest = _max_ts(*(m.get("ts", "") for m in messages if m.get("ts")))
+        entry["latest_ts"] = _max_ts(latest_ts, page_newest)
+        entry["last_synced"] = datetime.now(timezone.utc).isoformat()
+        team_cursor[cid] = entry
+
+        await self._emit_events_for_messages(
+            channel=channel,
+            messages=messages,
+            queue=queue,
+            team_cursor=team_cursor,
+            is_backfill=False,
         )
 
-        # 1) Edits / deletes — emit delete + re-emit per affected doc.
+    async def _run_backfill_walk(
+        self,
+        channel: dict[str, Any],
+        entry: dict[str, Any],
+        team_cursor: dict[str, dict[str, Any]],
+        queue: Any,
+    ) -> None:
+        """Walk history backward in pages, persisting after each page.
+
+        Resumes from ``entry['oldest_ts_seen']`` on restart.  Terminates
+        cleanly when ``has_more=False`` or no older messages remain inside
+        the ``max_initial_days`` floor; only then does ``backfill_complete``
+        flip to True.  A crash mid-walk leaves the partial cursor in place
+        so the next start picks up where this run stopped, instead of
+        skipping forward to ``latest_ts`` (the original bug, fn-fhr).
+        """
+        cid = channel.get("id", "")
+        floor_seconds = (
+            datetime.now(timezone.utc).timestamp() - self._max_initial_days * 86400
+        )
+        floor_str = f"{floor_seconds:.6f}"
+
+        # Resume point: the oldest ts we've already emitted, or 'now' for
+        # a fresh backfill.  conversations.history with inclusive=False
+        # then returns messages strictly older than walker_latest.
+        walker_latest = entry.get("oldest_ts_seen") or (
+            f"{datetime.now(timezone.utc).timestamp():.6f}"
+        )
+
+        team_cursor[cid] = entry
+
+        while True:
+            page = await asyncio.to_thread(
+                self._fetch_backfill_page, cid, walker_latest, floor_str
+            )
+            page_messages = page.get("messages") or []
+            page_has_more = bool(page.get("has_more"))
+
+            if not page_messages:
+                # Clean exhaustion: nothing older than walker_latest within
+                # the floor.
+                break
+
+            page_oldest = _min_ts(
+                *(m.get("ts", "") for m in page_messages if m.get("ts"))
+            )
+            page_newest = _max_ts(
+                *(m.get("ts", "") for m in page_messages if m.get("ts"))
+            )
+            entry["latest_ts"] = _max_ts(entry.get("latest_ts", ""), page_newest)
+            prior_oldest = entry.get("oldest_ts_seen", "")
+            entry["oldest_ts_seen"] = (
+                _min_ts(prior_oldest, page_oldest) if prior_oldest else page_oldest
+            )
+            entry["backfill_complete"] = False
+            entry["last_synced"] = datetime.now(timezone.utc).isoformat()
+            team_cursor[cid] = entry
+
+            await self._emit_events_for_messages(
+                channel=channel,
+                messages=page_messages,
+                queue=queue,
+                team_cursor=team_cursor,
+                is_backfill=True,
+            )
+
+            if not page_has_more:
+                break
+            if _ts_seconds(page_oldest) <= floor_seconds:
+                break
+            walker_latest = page_oldest
+
+        entry["backfill_complete"] = True
+        entry["last_synced"] = datetime.now(timezone.utc).isoformat()
+        team_cursor[cid] = entry
+        # Persist the flag flip even if the final page emitted nothing —
+        # the atomic enqueue path only writes the cursor when events were
+        # produced.
+        queue.save_cursor("slack", json.dumps({self._team_id: team_cursor}))
+
+    async def _emit_events_for_messages(
+        self,
+        *,
+        channel: dict[str, Any],
+        messages: list[dict[str, Any]],
+        queue: Any,
+        team_cursor: dict[str, dict[str, Any]],
+        is_backfill: bool,
+    ) -> None:
+        """Build thread/window events for *messages* and enqueue them.
+
+        Cursor write is atomic with the last enqueue when at least one
+        event is produced; callers must update ``team_cursor[cid]`` before
+        invoking so the persisted snapshot matches the visible state.
+        """
+        cid = channel.get("id", "")
+        messages = sorted(messages, key=lambda m: _ts_seconds(m.get("ts")))
+
         await self._handle_edits_and_deletes(channel, messages, queue)
 
-        # 2) Threads — fetch replies and emit one event per thread parent.
         thread_events = await asyncio.to_thread(
             self._build_thread_events, channel, messages
         )
 
-        # 3) Burst windows — non-thread, non-reply messages only.
         non_thread = [
             m
             for m in messages
@@ -887,14 +1025,10 @@ class SlackSource(PythonSource):
                 if ts:
                     self._ts_to_doc[(cid, ts)] = ev["source_id"]
 
-        # 4) Enqueue all events.  Mark as initial_scan during backfill.
         all_events = [*thread_events, *window_events]
         for ev in all_events:
             if is_backfill:
                 ev["initial_scan"] = True
-            # Stamp attachment policy onto every event so the parser can
-            # apply classify_attachment uniformly without reaching back
-            # into source state.
             ev["meta"]["download_attachments"] = self._download_attachments
             ev["meta"]["attachment_indexable_mimetypes"] = list(
                 self._attachment_indexable_mimetypes
@@ -916,14 +1050,7 @@ class SlackSource(PythonSource):
                 datetime.now(timezone.utc).timestamp()
             )
 
-        # Update cursor entry alongside the last event for atomicity.
-        team_cursor[cid] = {
-            "latest_ts": latest_ts_seen
-            or (entry.get("latest_ts", "") if entry else ""),
-            "last_synced": datetime.now(timezone.utc).isoformat(),
-        }
         cursor_value = json.dumps({self._team_id: team_cursor}) if all_events else None
-
         for i, ev in enumerate(all_events):
             is_last = i == len(all_events) - 1
             queue.enqueue(
@@ -942,6 +1069,28 @@ class SlackSource(PythonSource):
                 len(thread_events),
                 len(window_events),
             )
+
+    def _fetch_backfill_page(
+        self, channel_id: str, latest: str, oldest_floor: str
+    ) -> dict[str, Any]:
+        """Fetch a single page of history older than *latest*, down to *oldest_floor*.
+
+        Returns ``{messages, has_more}`` so the walker can persist a
+        cursor between pages and resume after a crash.
+        """
+        assert self._client is not None
+        resp = call_with_rate_limit_retry(
+            self._client.conversations_history,
+            channel=channel_id,
+            latest=latest,
+            oldest=oldest_floor,
+            inclusive=False,
+            limit=HISTORY_PAGE_SIZE,
+        )
+        return {
+            "messages": list(resp.get("messages") or []),
+            "has_more": bool(resp.get("has_more")),
+        }
 
     def _fetch_history(self, channel_id: str, oldest: str) -> list[dict[str, Any]]:
         """Page conversations.history starting at *oldest* (exclusive of older)."""

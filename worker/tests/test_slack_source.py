@@ -633,6 +633,181 @@ class TestSlackSourcePolling:
 
 
 # ---------------------------------------------------------------------------
+# Backfill resume / cursor monotonicity (fn-fhr)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+class TestBackfillResume:
+    """Cursor-monotonicity invariants from fn-fhr.
+
+    Before this fix, an interrupted backfill would persist its partial
+    ``latest_ts`` and on resume the source treated that cursor as
+    'polling forward' state, silently skipping every message older than
+    the partial high-water mark.  The cursor schema now carries an
+    explicit ``backfill_complete`` flag plus an ``oldest_ts_seen``
+    resume point so a crash leaves a recoverable footprint.
+    """
+
+    async def test_backfill_resumes_from_oldest_ts_seen(self) -> None:
+        source = SlackSource()
+        source.configure({})
+        _seed_source(source)
+        ch = _channel("C1")
+
+        # Mid-backfill cursor: latest_ts is the newest emitted, oldest_ts_seen
+        # is how far back we've walked, backfill_complete is False.
+        team_cursor: dict[str, dict[str, Any]] = {
+            "C1": {
+                "latest_ts": "500.000000",
+                "oldest_ts_seen": "200.000000",
+                "backfill_complete": False,
+                "last_synced": "x",
+            }
+        }
+        # Walker fetches one older page and then exhausts.
+        source._client.conversations_history.return_value = {
+            "messages": [_msg(150.0, "older")],
+            "has_more": False,
+            "response_metadata": {"next_cursor": ""},
+        }
+
+        queue = _ListQueue()
+        await source._poll_conversation(ch, team_cursor, queue)
+
+        call_kwargs = source._client.conversations_history.call_args.kwargs
+        # Backfill walker passes `latest=oldest_ts_seen`; polling would have
+        # passed `oldest=latest_ts` ("500.000000") instead.
+        assert call_kwargs["latest"] == "200.000000"
+        assert call_kwargs.get("inclusive") is False
+        # Resume point advanced to the older ts emitted in this page.
+        assert team_cursor["C1"]["oldest_ts_seen"] == "150.000000"
+        # latest_ts must NOT regress to an older value.
+        assert team_cursor["C1"]["latest_ts"] == "500.000000"
+
+    async def test_backfill_complete_flips_to_polling(self) -> None:
+        source = SlackSource()
+        source.configure({})
+        _seed_source(source)
+        ch = _channel("C1")
+
+        # Fresh state — no cursor entry.  First poll triggers backfill walk.
+        team_cursor: dict[str, dict[str, Any]] = {}
+        source._client.conversations_history.return_value = {
+            "messages": [_msg(100.0, "a"), _msg(200.0, "b")],
+            "has_more": False,
+            "response_metadata": {"next_cursor": ""},
+        }
+        queue = _ListQueue()
+        await source._poll_conversation(ch, team_cursor, queue)
+
+        # Walk exhausted on the first page → flag flips.
+        assert team_cursor["C1"]["backfill_complete"] is True
+        assert team_cursor["C1"]["latest_ts"] == "200.000000"
+        # Persisted cursor (via the explicit save_cursor at walk end)
+        # carries the flipped flag.
+        persisted = json.loads(queue.cursors["slack"])
+        assert persisted["T1"]["C1"]["backfill_complete"] is True
+
+        # Second poll: now we're in polling mode — `oldest=latest_ts`,
+        # no `latest=` (which would be the backfill-walker shape).
+        source._client.conversations_history.reset_mock()
+        source._client.conversations_history.return_value = {
+            "messages": [],
+            "has_more": False,
+            "response_metadata": {"next_cursor": ""},
+        }
+        await source._poll_conversation(ch, team_cursor, queue)
+
+        call_kwargs = source._client.conversations_history.call_args.kwargs
+        assert call_kwargs["oldest"] == "200.000000"
+        assert "latest" not in call_kwargs
+
+    async def test_polling_does_not_decrement_cursor(self) -> None:
+        """Slack-Connect out-of-order timestamps must not regress latest_ts."""
+        source = SlackSource()
+        source.configure({})
+        _seed_source(source)
+        ch = _channel("C1")
+
+        team_cursor: dict[str, dict[str, Any]] = {
+            "C1": {
+                "latest_ts": "500.000000",
+                "backfill_complete": True,
+                "last_synced": "x",
+            }
+        }
+        # Page returns ts strictly older than latest_ts (workspace clock skew).
+        source._client.conversations_history.return_value = {
+            "messages": [_msg(450.0, "a"), _msg(480.0, "b")],
+            "has_more": False,
+            "response_metadata": {"next_cursor": ""},
+        }
+        queue = _ListQueue()
+        await source._poll_conversation(ch, team_cursor, queue)
+
+        # Cursor must hold at the prior high-water mark.
+        assert team_cursor["C1"]["latest_ts"] == "500.000000"
+
+    async def test_polling_blocked_until_backfill_complete(self) -> None:
+        """When ``backfill_complete=False`` the source must not enter the
+        forward-poll path, even if ``latest_ts`` is set."""
+        source = SlackSource()
+        source.configure({})
+        _seed_source(source)
+        ch = _channel("C1")
+
+        team_cursor: dict[str, dict[str, Any]] = {
+            "C1": {
+                "latest_ts": "500.000000",
+                "oldest_ts_seen": "100.000000",
+                "backfill_complete": False,
+                "last_synced": "x",
+            }
+        }
+        source._client.conversations_history.return_value = {
+            "messages": [],  # backfill exhausted
+            "has_more": False,
+            "response_metadata": {"next_cursor": ""},
+        }
+        queue = _ListQueue()
+        await source._poll_conversation(ch, team_cursor, queue)
+
+        call_kwargs = source._client.conversations_history.call_args.kwargs
+        # Backfill walk uses `latest=oldest_ts_seen`; polling-style call
+        # would have set `oldest=latest_ts`.  Assert the walker shape.
+        assert call_kwargs["latest"] == "100.000000"
+        assert call_kwargs.get("oldest") != "500.000000"
+        # Empty page → clean exhaustion → flag flips.
+        assert team_cursor["C1"]["backfill_complete"] is True
+
+    async def test_legacy_cursor_treated_as_complete(self) -> None:
+        """Cursors written by old code (no ``backfill_complete`` field) must
+        not retroactively trigger a fresh backfill — that would double-emit
+        90 days of history on every existing deployment."""
+        source = SlackSource()
+        source.configure({})
+        _seed_source(source)
+        ch = _channel("C1")
+
+        team_cursor: dict[str, dict[str, Any]] = {
+            "C1": {"latest_ts": "300.000000", "last_synced": "x"}
+        }
+        source._client.conversations_history.return_value = {
+            "messages": [_msg(400.0, "new")],
+            "has_more": False,
+            "response_metadata": {"next_cursor": ""},
+        }
+        queue = _ListQueue()
+        await source._poll_conversation(ch, team_cursor, queue)
+
+        call_kwargs = source._client.conversations_history.call_args.kwargs
+        # Legacy entry → polling forward, not backfill walk.
+        assert call_kwargs["oldest"] == "300.000000"
+        assert "latest" not in call_kwargs
+
+
+# ---------------------------------------------------------------------------
 # Attachments (fn-bu3)
 # ---------------------------------------------------------------------------
 
