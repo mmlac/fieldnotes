@@ -24,6 +24,7 @@ if _TESTS_DIR not in sys.path:
 _SLACK_FIXTURES_DIR = Path(_TESTS_DIR) / "fixtures" / "slack"
 _GMAIL_FIXTURES_DIR = Path(_TESTS_DIR) / "fixtures" / "gmail"
 _CALENDAR_FIXTURES_DIR = Path(_TESTS_DIR) / "fixtures" / "calendar"
+_ATTACHMENT_FIXTURES_DIR = Path(_TESTS_DIR) / "fixtures" / "attachments"
 
 
 @pytest.fixture
@@ -156,3 +157,27 @@ def fake_calendar_services() -> dict[str, MagicMock]:
         "personal": make_fake_calendar_service("personal"),
         "shared": make_fake_calendar_service("shared"),
     }
+
+
+def attachment_bytes(name: str) -> bytes:
+    """Read raw bytes from ``tests/fixtures/attachments/<name>``."""
+    return (_ATTACHMENT_FIXTURES_DIR / name).read_bytes()
+
+
+def make_fake_drive_service(file_sizes: dict[str, int]) -> MagicMock:
+    """Build a fake Drive ``service`` exposing ``files().get(fileId=, fields=)``.
+
+    Used by :class:`GoogleCalendarSource._enrich_attachment_sizes` to fetch
+    the per-file ``size`` field before the parser decides whether to index
+    or fall back to metadata-only.  *file_sizes* maps Drive file_id to the
+    integer byte count the fake should return.
+    """
+    drive = MagicMock()
+
+    def _get(fileId: str, fields: str = "size") -> MagicMock:  # noqa: N803
+        req = MagicMock()
+        req.execute.return_value = {"size": str(file_sizes.get(fileId, 0))}
+        return req
+
+    drive.files.return_value.get.side_effect = _get
+    return drive

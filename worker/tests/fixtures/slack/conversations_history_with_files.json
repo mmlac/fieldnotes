@@ -1,0 +1,34 @@
+{
+  "ok": true,
+  "messages": [
+    {
+      "ts": "1700200000.000100",
+      "user": "U-ALICE",
+      "text": "Sharing the latest assets for the engineering review.",
+      "files": [
+        {
+          "id": "F-PNG-1",
+          "name": "sample.png",
+          "title": "sample.png",
+          "mimetype": "image/png",
+          "filetype": "png",
+          "size": 75,
+          "url_private_download": "https://files.slack.com/files-pri/T-TEST-F-PNG-1/sample.png",
+          "user": "U-ALICE"
+        },
+        {
+          "id": "F-ZIP-1",
+          "name": "bundle.zip",
+          "title": "bundle.zip",
+          "mimetype": "application/zip",
+          "filetype": "zip",
+          "size": 2048,
+          "url_private_download": "https://files.slack.com/files-pri/T-TEST-F-ZIP-1/bundle.zip",
+          "user": "U-ALICE"
+        }
+      ]
+    }
+  ],
+  "has_more": false,
+  "response_metadata": {"next_cursor": ""}
+}

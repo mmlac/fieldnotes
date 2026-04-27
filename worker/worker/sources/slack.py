@@ -792,6 +792,14 @@ class SlackSource(PythonSource):
         for ev in all_events:
             if is_backfill:
                 ev["initial_scan"] = True
+            # Stamp attachment policy onto every event so the parser can
+            # apply classify_attachment uniformly without reaching back
+            # into source state.
+            ev["meta"]["download_attachments"] = self._download_attachments
+            ev["meta"]["attachment_indexable_mimetypes"] = list(
+                self._attachment_indexable_mimetypes
+            )
+            ev["meta"]["attachment_max_size_mb"] = self._attachment_max_size_mb
             SOURCE_WATCHER_EVENTS.labels(
                 source_type="slack",
                 event_type=ev["operation"],

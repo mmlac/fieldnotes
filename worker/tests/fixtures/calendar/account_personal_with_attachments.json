@@ -1,0 +1,40 @@
+{
+  "events": {
+    "items": [
+      {
+        "id": "evt-att-1",
+        "status": "confirmed",
+        "summary": "Budget review with Alice",
+        "description": "Review attached materials before the meeting.",
+        "location": "Cafe Central",
+        "start": {"dateTime": "2026-04-10T15:00:00Z"},
+        "end": {"dateTime": "2026-04-10T16:00:00Z"},
+        "organizer": {"email": "me@personal.com", "displayName": "Me"},
+        "creator": {"email": "me@personal.com"},
+        "htmlLink": "https://calendar.google.com/event?eid=evt-att-1",
+        "updated": "2026-04-01T08:00:00Z",
+        "attendees": [
+          {"email": "alice@example.com", "displayName": "Alice", "responseStatus": "accepted"},
+          {"email": "me@personal.com", "displayName": "Me", "responseStatus": "accepted", "self": true}
+        ],
+        "attachments": [
+          {
+            "title": "sample.pdf",
+            "mimeType": "application/pdf",
+            "fileId": "drive-pdf-1",
+            "fileUrl": "https://drive.google.com/file/d/drive-pdf-1/view",
+            "iconLink": "https://drive-thirdparty.googleusercontent.com/icon?type=pdf"
+          },
+          {
+            "title": "sample.docx",
+            "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "fileId": "drive-docx-1",
+            "fileUrl": "https://drive.google.com/file/d/drive-docx-1/view",
+            "iconLink": "https://drive-thirdparty.googleusercontent.com/icon?type=docx"
+          }
+        ]
+      }
+    ],
+    "nextSyncToken": "sync-att-1"
+  }
+}

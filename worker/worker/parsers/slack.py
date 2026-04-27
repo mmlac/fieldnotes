@@ -252,6 +252,8 @@ class SlackParser(BaseParser):
             "message_count": message_count,
             "has_thread": has_thread,
         }
+        if attachments:
+            node_props["has_attachments"] = len(attachments)
 
         graph_hints = _build_graph_hints(
             source_id=source_id,

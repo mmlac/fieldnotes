@@ -148,9 +148,7 @@ class GoogleCalendarParser(BaseParser):
 
         # --- Clean description (may contain HTML) ---
         body = event.get("text", "")
-        if description and (
-            "<" in description and ">" in description
-        ):
+        if description and ("<" in description and ">" in description):
             if len(description) <= _MAX_HTML_SIZE:
                 description = _strip_html(description)
 
@@ -181,9 +179,7 @@ class GoogleCalendarParser(BaseParser):
         if recurring_event_id:
             # CalendarSeries node is account-namespaced for the same reason
             # CalendarEvent is: Google reuses series IDs across calendars.
-            series_uri = (
-                f"google-calendar://{account}/series/{recurring_event_id}"
-            )
+            series_uri = f"google-calendar://{account}/series/{recurring_event_id}"
             series_props: dict[str, Any] = {
                 "series_id": recurring_event_id,
                 "summary": summary,
@@ -273,10 +269,7 @@ class GoogleCalendarParser(BaseParser):
                 # later via reconcile once the email becomes known.
                 if not att_name:
                     continue
-                obj_id = (
-                    f"google-calendar://{account}/event/{event_id}"
-                    f"/attendee/{idx}"
-                )
+                obj_id = f"google-calendar://{account}/event/{event_id}/attendee/{idx}"
                 att_props = {"name": att_name, "account": account}
                 obj_merge_key = "source_id"
 
@@ -296,7 +289,9 @@ class GoogleCalendarParser(BaseParser):
             )
 
         # CREATED_BY: anchor → Person (creator, if different from organizer)
-        if creator_email and canonicalize_email(creator_email) != canonicalize_email(organizer_email):
+        if creator_email and canonicalize_email(creator_email) != canonicalize_email(
+            organizer_email
+        ):
             norm_creator = canonicalize_email(creator_email)
             graph_hints.append(
                 GraphHint(
@@ -316,13 +311,12 @@ class GoogleCalendarParser(BaseParser):
         # --- Attachments (Drive links surfaced by the source) ---
         attachments_meta: list[dict[str, Any]] = meta.get("attachments", []) or []
         download_attachments: bool = bool(meta.get("download_attachments", False))
-        indexable: list[str] = list(
-            meta.get("attachment_indexable_mimetypes", [])
-        )
+        indexable: list[str] = list(meta.get("attachment_indexable_mimetypes", []))
         max_size_mb: int = int(meta.get("attachment_max_size_mb", 25))
 
         if attachments_meta:
             body = self._augment_text_with_attachments(body, attachments_meta)
+            node_props["has_attachments"] = len(attachments_meta)
 
         attachment_docs: list[ParsedDocument] = self._build_attachment_documents(
             attachments_meta=attachments_meta,
@@ -414,8 +408,7 @@ class GoogleCalendarParser(BaseParser):
             size_bytes = int(att.get("size_bytes", 0) or 0)
 
             att_source_id = (
-                f"google-calendar://{account}/event/{event_id}"
-                f"/attachment/{file_id}"
+                f"google-calendar://{account}/event/{event_id}/attachment/{file_id}"
             )
 
             # Unknown size + an explicit max bound = treat as too-large so
@@ -462,8 +455,7 @@ class GoogleCalendarParser(BaseParser):
 
             if decision == "metadata_only" and not description:
                 description = (
-                    f"Calendar attachment '{title}' ({mime}) on event "
-                    f"{event_id}"
+                    f"Calendar attachment '{title}' ({mime}) on event {event_id}"
                 )
 
             node_props: dict[str, Any] = {
@@ -479,6 +471,8 @@ class GoogleCalendarParser(BaseParser):
                 node_props["file_url"] = att["file_url"]
             if att.get("icon_link"):
                 node_props["icon_link"] = att["icon_link"]
+            if parent_url:
+                node_props["parent_url"] = parent_url
             if description:
                 node_props["description"] = description
 
