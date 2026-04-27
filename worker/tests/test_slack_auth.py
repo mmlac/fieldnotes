@@ -18,8 +18,13 @@ from worker.sources.slack_auth import (
     BOT_SCOPES,
     DEFAULT_REDIRECT_PORT,
     REAUTH_ERRORS,
+    STATE_TTL_SECONDS,
     ReauthRequiredError,
     SlackToken,
+    StateExpiredError,
+    StateLedger,
+    StateReplayError,
+    UnknownStateError,
     _build_authorize_url,
     _load_token,
     _save_token,
@@ -269,6 +274,50 @@ class TestInstallSlack:
         assert kwargs["code"] == "CODE"
         assert kwargs["redirect_uri"] == "http://localhost:4321/oauth/callback"
         assert kwargs["client_id"] == "CID"
+
+    def test_state_is_one_shot(self) -> None:
+        """A state validated once cannot be validated again."""
+        ledger = StateLedger()
+        state = ledger.issue()
+        ledger.consume(state)
+        with pytest.raises(StateReplayError):
+            ledger.consume(state)
+
+    def test_state_expires_after_ttl(self) -> None:
+        """A state validated past its TTL raises StateExpiredError."""
+        clock = [1000.0]
+        ledger = StateLedger(ttl_seconds=STATE_TTL_SECONDS, now=lambda: clock[0])
+        state = ledger.issue()
+        # Eleven minutes later — past the 10-minute TTL
+        clock[0] = 1000.0 + (11 * 60)
+        with pytest.raises(StateExpiredError):
+            ledger.consume(state)
+
+    def test_unknown_state_raises(self) -> None:
+        """A state never issued by the ledger is rejected."""
+        ledger = StateLedger()
+        with pytest.raises(UnknownStateError, match="state mismatch"):
+            ledger.consume("never-issued-by-anyone")
+
+    def test_concurrent_install_attempts_isolated(self) -> None:
+        """Two install attempts in parallel each only accept their own state.
+
+        Each attempt creates its own ledger, so a state issued by attempt A
+        is unknown to attempt B and vice versa.
+        """
+        ledger_a = StateLedger()
+        ledger_b = StateLedger()
+        state_a = ledger_a.issue()
+        state_b = ledger_b.issue()
+
+        with pytest.raises(UnknownStateError):
+            ledger_a.consume(state_b)
+        with pytest.raises(UnknownStateError):
+            ledger_b.consume(state_a)
+
+        # Each ledger still accepts its own state after the cross-attempts.
+        ledger_a.consume(state_a)
+        ledger_b.consume(state_b)
 
     def test_state_mismatch_raises(self, tmp_path: Path) -> None:
         with (

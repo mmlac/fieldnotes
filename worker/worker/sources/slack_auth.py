@@ -26,7 +26,9 @@ import http.server
 import json
 import logging
 import secrets as _secrets
+import time
 import urllib.parse
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -69,6 +71,11 @@ REAUTH_ERRORS: frozenset[str] = frozenset(
     {"invalid_auth", "token_revoked", "account_inactive", "not_authed"}
 )
 
+# OAuth state values are valid for 10 minutes after issuance — long enough
+# for the user to authorize in their browser, short enough that a captured
+# state cannot be replayed days later.
+STATE_TTL_SECONDS = 600
+
 
 class ReauthRequiredError(RuntimeError):
     """Raised when a saved Slack token is rejected by auth.test.
@@ -76,6 +83,76 @@ class ReauthRequiredError(RuntimeError):
     The caller (or the user via ``fieldnotes doctor``) should delete the
     token file and re-run the install flow.
     """
+
+
+class UnknownStateError(RuntimeError):
+    """Raised when a callback presents a state value never issued by this ledger.
+
+    Subclasses ``RuntimeError`` so callers that catch the broader type
+    (e.g. tests asserting ``state mismatch``) continue to work.
+    """
+
+
+class StateReplayError(RuntimeError):
+    """Raised when a callback presents a state value that has already been consumed."""
+
+
+class StateExpiredError(RuntimeError):
+    """Raised when a callback presents a state value past its TTL."""
+
+
+class StateLedger:
+    """In-memory, single-use, time-bounded OAuth state store.
+
+    A fresh ledger is created per install attempt, which provides the
+    "keyed by install-attempt UUID" isolation cheaply: state values issued
+    by one ledger instance are unknown to any other instance.
+
+    The ledger lives only in process memory by design — a daemon restart
+    mid-install drops it and forces the user to re-initiate (fail-closed).
+
+    The clock is injectable to keep tests deterministic without pulling in
+    a time-travel dependency.
+    """
+
+    def __init__(
+        self,
+        *,
+        ttl_seconds: int = STATE_TTL_SECONDS,
+        now: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._ttl_seconds = ttl_seconds
+        self._now = now
+        self._issued: dict[str, float] = {}
+        self._consumed: set[str] = set()
+
+    def issue(self) -> str:
+        """Generate an unguessable state value and record its issuance time."""
+        state = _secrets.token_urlsafe(32)
+        self._issued[state] = self._now()
+        return state
+
+    def consume(self, state: str) -> None:
+        """Validate a callback state. Single-use; raises a typed error on misuse.
+
+        Order of checks: replay (already consumed) → unknown (never issued)
+        → expired (past TTL). On success, the state is removed from the
+        issued set and recorded as consumed.
+        """
+        if state in self._consumed:
+            raise StateReplayError(
+                "OAuth state mismatch: state already consumed (replay)"
+            )
+        if state not in self._issued:
+            raise UnknownStateError(
+                "OAuth state mismatch: state was not issued (possible CSRF)"
+            )
+        issued_at = self._issued.pop(state)
+        if (self._now() - issued_at) > self._ttl_seconds:
+            raise StateExpiredError(
+                f"OAuth state mismatch: state expired after {self._ttl_seconds}s TTL"
+            )
+        self._consumed.add(state)
 
 
 @dataclass
@@ -227,7 +304,8 @@ def install_slack(
     writes them to *token_path* with mode 0600.
     """
     redirect_uri = f"http://localhost:{redirect_port}/oauth/callback"
-    state = _secrets.token_urlsafe(24)
+    ledger = StateLedger()
+    state = ledger.issue()
     url = _build_authorize_url(
         client_id=client_id,
         bot_scopes=BOT_SCOPES,
@@ -240,8 +318,7 @@ def install_slack(
     print(f"Listening for callback on {redirect_uri} ...")
 
     query = _wait_for_callback(redirect_port)
-    if query.get("state") != state:
-        raise RuntimeError("Slack OAuth state mismatch (possible CSRF)")
+    ledger.consume(query.get("state", ""))
     if "code" not in query:
         err = query.get("error", "unknown error")
         raise RuntimeError(f"Slack OAuth callback returned error: {err}")
