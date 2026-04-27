@@ -13,7 +13,9 @@ handles edits without duplicating points/nodes:
 * Thread       — ``slack://{team_id}/{channel_id}/thread/{parent_ts}``
 * Burst window — ``slack://{team_id}/{channel_id}/window/{first_ts}-{last_ts}``
 
-Out of scope (future beads): file uploads, image OCR, reactions.
+File uploads on messages are surfaced in event meta as ``attachments``;
+the Slack parser decides per-attachment whether to download-and-index or
+stay metadata-only.  Image OCR and reactions remain out of scope.
 
 Config section ``[sources.slack]`` is parsed by ``worker.config`` into a
 :class:`SlackSourceConfig`; pass ``dataclasses.asdict(cfg.slack)`` to
@@ -44,6 +46,8 @@ from worker.metrics import (
     initial_sync_source_done,
 )
 
+from worker.parsers.attachments import DEFAULT_INDEXABLE_MIMETYPES
+
 from .base import IndexedCheck, PythonSource
 from .cursor import save_json_atomic
 from .slack_auth import DEFAULT_TOKEN_PATH, SlackToken, get_slack_client
@@ -63,6 +67,25 @@ TOKEN_CHARS_PER_TOKEN = 4  # rough estimator: ~4 chars per token
 # ---------------------------------------------------------------------------
 # Pure helpers
 # ---------------------------------------------------------------------------
+
+
+def _team_domain_from_url(url: str) -> str:
+    """Pull the workspace subdomain out of an ``auth.test`` ``url`` value.
+
+    Slack reports the workspace as ``https://<sub>.slack.com/`` — the
+    subdomain is the same value the ``team_domain`` field carries.
+    Returns ``""`` when the URL does not match that shape.
+    """
+    if not url:
+        return ""
+    prefix = "https://"
+    if url.startswith(prefix):
+        url = url[len(prefix) :]
+    suffix = ".slack.com"
+    idx = url.find(suffix)
+    if idx <= 0:
+        return ""
+    return url[:idx]
 
 
 def _ts_seconds(ts: str | None) -> float:
@@ -120,6 +143,47 @@ def _channel_meta(channel: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _extract_attachments(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return the per-message file attachments flattened into one list.
+
+    Each entry carries the parent ``ts`` so the parser can place the file
+    inline with the originating message's render line.  Slack's private-
+    channel and team identifiers live on the parent event meta (and are
+    redundant per-attachment), so we deliberately drop them here.
+    """
+    out: list[dict[str, Any]] = []
+    for m in messages:
+        files = m.get("files") or []
+        if not isinstance(files, list):
+            continue
+        ts = m.get("ts", "")
+        msg_user = m.get("user") or m.get("bot_id") or ""
+        for f in files:
+            if not isinstance(f, dict):
+                continue
+            file_id = f.get("id") or ""
+            if not file_id:
+                continue
+            out.append(
+                {
+                    "id": file_id,
+                    "name": f.get("name") or f.get("title") or file_id,
+                    "mimetype": f.get("mimetype") or "application/octet-stream",
+                    "filetype": f.get("filetype") or "",
+                    "size": int(f.get("size") or 0),
+                    "url_private_download": f.get("url_private_download") or "",
+                    # Parent-message ts so parser can place [file] markers
+                    # next to the right line.
+                    "ts": ts,
+                    # file.user is the uploader (may differ from message
+                    # author when a bot uploads); message.user is the
+                    # fallback for legacy bot-message envelopes.
+                    "user": f.get("user") or msg_user,
+                }
+            )
+    return out
+
+
 def _is_thread_parent(msg: dict[str, Any]) -> bool:
     """True iff *msg* is a thread parent (has replies)."""
     thread_ts = msg.get("thread_ts")
@@ -144,6 +208,7 @@ def _build_thread_event(
     parent: dict[str, Any],
     replies: list[dict[str, Any]],
     operation: str = "created",
+    team_domain: str = "",
 ) -> dict[str, Any]:
     """Build an IngestEvent for a thread (parent + ordered replies)."""
     parent_ts = parent.get("ts", "")
@@ -165,6 +230,7 @@ def _build_thread_event(
 
     meta: dict[str, Any] = {
         "team_id": team_id,
+        "team_domain": team_domain,
         **cmeta,
         "kind": "thread",
         "parent_ts": parent_ts,
@@ -172,6 +238,7 @@ def _build_thread_event(
         "message_ts": [m.get("ts", "") for m in ordered],
         "users": sorted({m.get("user", "") for m in ordered if m.get("user")}),
         "reply_count": max(0, len(ordered) - 1),
+        "attachments": _extract_attachments(ordered),
     }
 
     return {
@@ -194,6 +261,7 @@ def _build_window_event(
     channel: dict[str, Any],
     messages: list[dict[str, Any]],
     operation: str = "created",
+    team_domain: str = "",
 ) -> dict[str, Any]:
     """Build an IngestEvent for a burst window of un-threaded messages."""
     if not messages:
@@ -206,6 +274,7 @@ def _build_window_event(
 
     meta: dict[str, Any] = {
         "team_id": team_id,
+        "team_domain": team_domain,
         **cmeta,
         "kind": "window",
         "first_ts": first_ts,
@@ -213,6 +282,7 @@ def _build_window_event(
         "message_ts": [m.get("ts", "") for m in messages],
         "users": sorted({m.get("user", "") for m in messages if m.get("user")}),
         "message_count": len(messages),
+        "attachments": _extract_attachments(messages),
     }
 
     return {
@@ -406,7 +476,11 @@ class SlackSource(PythonSource):
         self._window_max_tokens = DEFAULT_WINDOW_MAX_TOKENS
         self._window_gap_seconds = DEFAULT_WINDOW_GAP_SECONDS
         self._window_overlap_messages = DEFAULT_WINDOW_OVERLAP
-        self._download_files = False
+        self._download_attachments = False
+        self._attachment_indexable_mimetypes: list[str] = list(
+            DEFAULT_INDEXABLE_MIMETYPES
+        )
+        self._attachment_max_size_mb: int = 25
         self._client_secrets_path = "~/.fieldnotes/slack_credentials.json"
         self._token_path: Path = DEFAULT_TOKEN_PATH
         self._cursor_path: Path = DEFAULT_CURSOR_PATH
@@ -414,6 +488,7 @@ class SlackSource(PythonSource):
         # Test seam: when set, used in place of running auth.test/OAuth.
         self._client: WebClient | None = None
         self._team_id: str = ""
+        self._team_domain: str = ""
         # In-memory map of (channel_id, ts) → emitted document source_id.
         # Used to translate edits/deletes into delete-before-rewrite.
         self._ts_to_doc: dict[tuple[str, str], str] = {}
@@ -449,11 +524,19 @@ class SlackSource(PythonSource):
         self._window_overlap_messages = int(
             cfg.get("window_overlap_messages", DEFAULT_WINDOW_OVERLAP)
         )
-        # SlackSourceConfig now exposes 'download_attachments' (legacy
-        # 'download_files' aliased at parse time).  Read both for safety.
-        self._download_files = bool(
+        # SlackSourceConfig.download_attachments is canonical; the legacy
+        # 'download_files' alias is promoted in worker.config and never
+        # reaches the source as the only key.  Defensive read keeps tests
+        # that build the dict by hand working.
+        self._download_attachments = bool(
             cfg.get("download_attachments", cfg.get("download_files", False))
         )
+        if "attachment_indexable_mimetypes" in cfg:
+            self._attachment_indexable_mimetypes = list(
+                cfg["attachment_indexable_mimetypes"]
+            )
+        if "attachment_max_size_mb" in cfg:
+            self._attachment_max_size_mb = int(cfg["attachment_max_size_mb"])
         if "client_secrets_path" in cfg:
             self._client_secrets_path = cfg["client_secrets_path"]
         if "token_path" in cfg:
@@ -471,9 +554,10 @@ class SlackSource(PythonSource):
         *,
         indexed_check: IndexedCheck | None = None,
     ) -> None:
-        client, team_id = await asyncio.to_thread(self._resolve_client)
+        client, team_id, team_domain = await asyncio.to_thread(self._resolve_client)
         self._client = client
         self._team_id = team_id
+        self._team_domain = team_domain
 
         # Load cursor (queue-backed first, falling back to legacy file).
         raw = queue.load_cursor("slack")
@@ -530,15 +614,27 @@ class SlackSource(PythonSource):
     # Auth
     # ------------------------------------------------------------------
 
-    def _resolve_client(self) -> tuple[WebClient, str]:
-        """Return an authenticated WebClient and the workspace team_id."""
+    def _resolve_client(self) -> tuple[WebClient, str, str]:
+        """Return an authenticated WebClient, ``team_id``, and ``team_domain``.
+
+        ``team_domain`` is the subdomain prefix in ``<domain>.slack.com``
+        URLs and is needed to render attachment parent_url permalinks.
+        """
         if self._client is not None:
             team_id = self._team_id
-            if not team_id:
-                # Fall back to auth.test for the workspace id.
+            team_domain = self._team_domain
+            if not team_id or not team_domain:
+                # Fall back to auth.test for the workspace identifiers.
                 resp = self._client.auth_test()
-                team_id = resp.get("team_id", "")
-            return self._client, team_id
+                team_id = team_id or resp.get("team_id", "")
+                team_domain = team_domain or resp.get("team_domain", "")
+                # Some auth.test responses report ``url`` instead of
+                # ``team_domain`` (https://<sub>.slack.com/).  Derive from
+                # that when the explicit field is absent.
+                if not team_domain:
+                    url = resp.get("url", "") or ""
+                    team_domain = _team_domain_from_url(url)
+            return self._client, team_id, team_domain
 
         config: dict[str, Any] = {}
         secrets_path = Path(self._client_secrets_path).expanduser()
@@ -562,13 +658,19 @@ class SlackSource(PythonSource):
                 team_id = tok.team_id
             except (json.JSONDecodeError, KeyError, OSError):
                 team_id = ""
-        if not team_id:
+        team_domain = ""
+        if not team_id or not team_domain:
             try:
                 resp = client.auth_test()
-                team_id = resp.get("team_id", "")
+                team_id = team_id or resp.get("team_id", "")
+                team_domain = resp.get("team_domain", "") or _team_domain_from_url(
+                    resp.get("url", "") or ""
+                )
             except SlackApiError:
-                logger.exception("auth.test failed; team_id will be empty")
-        return client, team_id
+                logger.exception(
+                    "auth.test failed; team_id and team_domain will be empty"
+                )
+        return client, team_id, team_domain
 
     # ------------------------------------------------------------------
     # Conversation discovery
@@ -674,7 +776,10 @@ class SlackSource(PythonSource):
         window_events: list[dict[str, Any]] = []
         for win in windows:
             ev = _build_window_event(
-                team_id=self._team_id, channel=channel, messages=win
+                team_id=self._team_id,
+                channel=channel,
+                messages=win,
+                team_domain=self._team_domain,
             )
             window_events.append(ev)
             for m in win:
@@ -790,6 +895,7 @@ class SlackSource(PythonSource):
                 channel=channel,
                 parent=parent,
                 replies=replies,
+                team_domain=self._team_domain,
             )
             events.append(ev)
             # Index every ts in the thread → its document id for edit handling.
@@ -874,6 +980,7 @@ class SlackSource(PythonSource):
                         parent=parent,
                         replies=replies,
                         operation="modified",
+                        team_domain=self._team_domain,
                     )
                     queue.enqueue(rebuilt)
                     for sub in [parent, *replies]:
@@ -913,5 +1020,8 @@ class SlackSource(PythonSource):
         if not msgs:
             return None
         return _build_window_event(
-            team_id=self._team_id, channel=channel, messages=msgs
+            team_id=self._team_id,
+            channel=channel,
+            messages=msgs,
+            team_domain=self._team_domain,
         )

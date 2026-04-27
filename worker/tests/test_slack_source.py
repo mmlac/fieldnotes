@@ -632,6 +632,161 @@ class TestSlackSourcePolling:
         assert sorted(c["id"] for c in chans) == ["C1"]
 
 
+# ---------------------------------------------------------------------------
+# Attachments (fn-bu3)
+# ---------------------------------------------------------------------------
+
+
+class TestAttachmentExtraction:
+    def test_window_event_includes_attachments_from_message_files(self) -> None:
+        ch = _channel("C1", "general")
+        msg_with_files = _msg(
+            100.0,
+            "see the docs",
+            user="U1",
+            extra={
+                "files": [
+                    {
+                        "id": "F1",
+                        "name": "report.pdf",
+                        "mimetype": "application/pdf",
+                        "filetype": "pdf",
+                        "size": 4096,
+                        "url_private_download": (
+                            "https://files.slack.com/files-pri/T-F1/download/report.pdf"
+                        ),
+                        "user": "U1",
+                    },
+                    {
+                        "id": "F2",
+                        "name": "notes.docx",
+                        "mimetype": (
+                            "application/vnd.openxmlformats-officedocument."
+                            "wordprocessingml.document"
+                        ),
+                        "filetype": "docx",
+                        "size": 8192,
+                        "url_private_download": (
+                            "https://files.slack.com/files-pri/T-F2/download/notes.docx"
+                        ),
+                        "user": "U1",
+                    },
+                ]
+            },
+        )
+        plain = _msg(110.0, "no files here", user="U2")
+        ev = _build_window_event(
+            team_id="T1",
+            channel=ch,
+            messages=[msg_with_files, plain],
+            team_domain="acme",
+        )
+        atts = ev["meta"]["attachments"]
+        assert len(atts) == 2
+        ids = {a["id"] for a in atts}
+        assert ids == {"F1", "F2"}
+        # Each attachment carries its parent ts so the parser can place
+        # markers next to the right message.
+        assert all(a["ts"] == "100.000000" for a in atts)
+        # Workspace identifiers travel on the parent meta, not per-file.
+        assert ev["meta"]["team_domain"] == "acme"
+
+    def test_thread_event_includes_attachments_from_each_reply(self) -> None:
+        ch = _channel("C1", "general")
+        parent = _msg(100.0, "kickoff", user="U1", thread_ts=100.0)
+        reply_with_file = _msg(
+            110.0,
+            "here it is",
+            user="U2",
+            thread_ts=100.0,
+            extra={
+                "files": [
+                    {
+                        "id": "Fdiagram",
+                        "name": "diagram.png",
+                        "mimetype": "image/png",
+                        "filetype": "png",
+                        "size": 2048,
+                        "url_private_download": "https://files.slack.com/png",
+                        "user": "U2",
+                    }
+                ]
+            },
+        )
+        ev = _build_thread_event(
+            team_id="T1",
+            channel=ch,
+            parent=parent,
+            replies=[reply_with_file],
+            team_domain="acme",
+        )
+        atts = ev["meta"]["attachments"]
+        assert [a["id"] for a in atts] == ["Fdiagram"]
+        # Reply ts is preserved so the parser can indent the marker.
+        assert atts[0]["ts"] == "110.000000"
+
+    def test_bot_uploader_is_extracted_from_file_user(self) -> None:
+        ch = _channel("C1", "general")
+        # Message author is U1; file uploader is bot user B1.
+        msg = _msg(
+            100.0,
+            "deploy notes",
+            user="U1",
+            extra={
+                "files": [
+                    {
+                        "id": "Fbot",
+                        "name": "deploy.pdf",
+                        "mimetype": "application/pdf",
+                        "size": 1024,
+                        "url_private_download": "https://files.slack.com/pdf",
+                        "user": "B1",  # bot uploader
+                    }
+                ]
+            },
+        )
+        ev = _build_window_event(
+            team_id="T1", channel=ch, messages=[msg], team_domain="acme"
+        )
+        att = ev["meta"]["attachments"][0]
+        assert att["user"] == "B1"
+
+
+class TestSlackSourceDownloadAttachments:
+    """The 'download_files' field is gone; the alias survives at parse time."""
+
+    def test_configure_reads_download_attachments_from_settings(self) -> None:
+        source = SlackSource()
+        source.configure({"download_attachments": True})
+        assert source._download_attachments is True
+
+    def test_configure_legacy_alias_promotes_to_download_attachments(self) -> None:
+        # In production the alias is resolved by worker.config; this guards
+        # the source against a hand-rolled settings dict that still uses
+        # the legacy key (per fn-0yl).
+        source = SlackSource()
+        source.configure({"download_files": True})
+        assert source._download_attachments is True
+
+    def test_configure_attachment_knobs_propagate(self) -> None:
+        source = SlackSource()
+        source.configure(
+            {
+                "download_attachments": True,
+                "attachment_indexable_mimetypes": ["application/pdf"],
+                "attachment_max_size_mb": 5,
+            }
+        )
+        assert source._attachment_indexable_mimetypes == ["application/pdf"]
+        assert source._attachment_max_size_mb == 5
+
+    def test_no_legacy_download_files_attribute_remains(self) -> None:
+        # Defensive check: the renamed-out attribute must NOT come back.
+        source = SlackSource()
+        source.configure({"download_attachments": True})
+        assert not hasattr(source, "_download_files")
+
+
 @pytest.mark.asyncio
 async def test_cursor_is_persisted_atomically(tmp_path: Path) -> None:
     """Acceptance criterion 5: cursor is per-conversation, atomic, and survives restart."""

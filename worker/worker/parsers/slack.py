@@ -28,8 +28,16 @@ from __future__ import annotations
 import logging
 import re
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable
 
+from .attachments import (
+    AttachmentDownloadError,
+    AttachmentParseError,
+    VisionExtractor,
+    build_parent_url,
+    classify_attachment,
+    stream_and_parse,
+)
 from .base import (
     _EMAIL_RE,
     BaseParser,
@@ -42,6 +50,21 @@ from .registry import register
 logger = logging.getLogger(__name__)
 
 NODE_LABEL = "SlackMessage"
+ATTACHMENT_NODE_LABEL = "Attachment"
+
+# Closure type for the Slack attachment downloader.  Takes a Slack
+# ``url_private_download`` URL and returns the file bytes (or raises).
+# ``configure_slack_parser`` wires the production version (httpx + bot
+# token); tests inject fakes.
+SlackAttachmentFetcher = Callable[[str], bytes]
+
+
+# Module-level defaults used by every ``SlackParser`` instance unless
+# the caller overrides them per-instance.  We keep these out of class
+# scope so plain functions don't trigger Python's descriptor binding
+# when read via an instance.
+_default_fetcher: SlackAttachmentFetcher | None = None
+_default_vision_extractor: VisionExtractor | None = None
 
 # Slack mention syntax inside message text.
 _USER_MENTION_RE = re.compile(r"<@([UW][A-Z0-9]+)>")
@@ -151,7 +174,19 @@ def _is_system_message(msg: dict[str, Any]) -> bool:
 
 @register
 class SlackParser(BaseParser):
-    """Parses Slack thread/window IngestEvents into ParsedDocuments."""
+    """Parses Slack thread/window IngestEvents into ParsedDocuments.
+
+    Attachment-fetch wiring is read from module-level defaults at
+    construction time so the registry's fresh-instance-per-call pattern
+    still picks up the runtime fetcher set by ``configure_slack_parser``
+    at startup.  Tests can shadow ``_fetcher`` / ``_vision_extractor``
+    on the instance.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._fetcher: SlackAttachmentFetcher | None = _default_fetcher
+        self._vision_extractor: VisionExtractor | None = _default_vision_extractor
 
     @property
     def source_type(self) -> str:
@@ -174,11 +209,13 @@ class SlackParser(BaseParser):
             ]
 
         team_id: str = meta.get("team_id", "")
+        team_domain: str = meta.get("team_domain", "")
         channel_id: str = meta.get("channel_id", "")
         channel_name: str = meta.get("channel_name", "") or channel_id
         kind: str = meta.get("kind", "window")
         users_info: dict[str, Any] = meta.get("users_info") or {}
         messages: list[dict[str, Any]] = list(meta.get("messages") or [])
+        attachments: list[dict[str, Any]] = list(meta.get("attachments") or [])
 
         conversation_type = _conversation_type(meta)
         first_ts = (
@@ -192,7 +229,7 @@ class SlackParser(BaseParser):
         )
         has_thread = kind == "thread"
 
-        text = _render_text(messages, users_info, kind=kind)
+        text = _render_text(messages, users_info, kind=kind, attachments=attachments)
 
         # Empty/system path: produce a metadata-only chunk so the document
         # still exists in the graph.  We bypass the rendered (empty) text
@@ -226,28 +263,50 @@ class SlackParser(BaseParser):
             users_info=users_info,
         )
 
-        return [
-            ParsedDocument(
-                source_type=self.source_type,
-                source_id=source_id,
-                operation=operation,
-                text=text,
-                mime_type="text/plain",
-                node_label=NODE_LABEL,
-                node_props=node_props,
-                graph_hints=graph_hints,
-                source_metadata={
-                    "source_type": "slack",
-                    "team_id": team_id,
-                    "channel_id": channel_id,
-                    "conversation_type": conversation_type,
-                    "first_ts": first_ts,
-                    "last_ts": last_ts,
-                    "message_count": message_count,
-                    "has_thread": has_thread,
-                },
-            )
-        ]
+        parent_doc = ParsedDocument(
+            source_type=self.source_type,
+            source_id=source_id,
+            operation=operation,
+            text=text,
+            mime_type="text/plain",
+            node_label=NODE_LABEL,
+            node_props=node_props,
+            graph_hints=graph_hints,
+            source_metadata={
+                "source_type": "slack",
+                "team_id": team_id,
+                "channel_id": channel_id,
+                "conversation_type": conversation_type,
+                "first_ts": first_ts,
+                "last_ts": last_ts,
+                "message_count": message_count,
+                "has_thread": has_thread,
+            },
+        )
+
+        # Configurable attachment policy: source forwards its config so
+        # the parser doesn't need to reach back into Config / settings.
+        download_attachments = bool(meta.get("download_attachments", False))
+        indexable: list[str] = list(meta.get("attachment_indexable_mimetypes") or [])
+        max_size_mb = int(meta.get("attachment_max_size_mb", 25))
+
+        attachment_docs = _build_attachment_documents(
+            parent_source_id=source_id,
+            team_id=team_id,
+            team_domain=team_domain,
+            channel_id=channel_id,
+            channel_name=channel_name,
+            conversation_type=conversation_type,
+            attachments=attachments,
+            users_info=users_info,
+            download_attachments=download_attachments,
+            indexable=indexable,
+            max_size_mb=max_size_mb,
+            fetcher=self._fetcher,
+            vision_extractor=self._vision_extractor,
+        )
+
+        return [parent_doc, *attachment_docs]
 
 
 # ---------------------------------------------------------------------------
@@ -260,20 +319,82 @@ def _render_text(
     users_info: dict[str, Any],
     *,
     kind: str,
+    attachments: list[dict[str, Any]] | None = None,
 ) -> str:
     if not messages:
         return ""
+
+    # Bucket attachments by their parent message ts so each '[file] …'
+    # marker appears immediately after the line that referenced it.
+    by_ts: dict[str, list[dict[str, Any]]] = {}
+    for a in attachments or []:
+        ts = a.get("ts", "")
+        if not ts:
+            continue
+        by_ts.setdefault(ts, []).append(a)
+
+    def _file_marker(att: dict[str, Any], *, indent: bool) -> str:
+        line = (
+            f"[file] {att.get('name', '')} "
+            f"({att.get('mimetype', '')}, {_human_size(int(att.get('size') or 0))})"
+        )
+        return f"  {line}" if indent else line
+
     lines: list[str] = []
     if kind == "thread":
         parent = messages[0]
         replies = messages[1:]
         lines.append(_format_message(parent, users_info, indent=False))
+        for att in by_ts.get(parent.get("ts", ""), []):
+            lines.append(_file_marker(att, indent=False))
         for r in replies:
             lines.append(_format_message(r, users_info, indent=True))
+            for att in by_ts.get(r.get("ts", ""), []):
+                lines.append(_file_marker(att, indent=True))
     else:
         for m in messages:
             lines.append(_format_message(m, users_info, indent=False))
+            for att in by_ts.get(m.get("ts", ""), []):
+                lines.append(_file_marker(att, indent=False))
     return "\n".join(lines)
+
+
+def _human_size(n: int) -> str:
+    """Format *n* bytes as a short human-readable string (e.g. ``1.2 MB``)."""
+    if n < 1024:
+        return f"{n} B"
+    units = ["KB", "MB", "GB", "TB"]
+    val = float(n)
+    for unit in units:
+        val /= 1024
+        if val < 1024:
+            return f"{val:.1f} {unit}"
+    return f"{val:.1f} PB"
+
+
+def configure_slack_parser(
+    *,
+    fetcher: SlackAttachmentFetcher | None = None,
+    vision_extractor: VisionExtractor | None = None,
+) -> None:
+    """Wire production-side dependencies for new :class:`SlackParser`s.
+
+    Called by the worker startup once the Slack bot token is loaded —
+    binds a fetcher closure that authenticates ``url_private_download``
+    requests and (optionally) the vision extractor for image OCR.  New
+    parser instances pick the defaults up at construction time.
+
+    Tests may shadow ``_fetcher`` / ``_vision_extractor`` on a parser
+    instance directly without affecting these defaults.
+    """
+    global _default_fetcher, _default_vision_extractor
+    _default_fetcher = fetcher
+    _default_vision_extractor = vision_extractor
+
+
+def _attachment_doc_id(team_id: str, channel_id: str, ts: str, file_id: str) -> str:
+    """``slack://{team_id}/{channel_id}/{ts}/file/{file_id}``."""
+    return f"slack://{team_id}/{channel_id}/{ts}/file/{file_id}"
 
 
 def _person_hint_for_user(
@@ -462,3 +583,198 @@ def _build_graph_hints(
         )
 
     return hints
+
+
+# ---------------------------------------------------------------------------
+# Attachment Document construction
+# ---------------------------------------------------------------------------
+
+
+def _build_attachment_documents(
+    *,
+    parent_source_id: str,
+    team_id: str,
+    team_domain: str,
+    channel_id: str,
+    channel_name: str,
+    conversation_type: str,
+    attachments: list[dict[str, Any]],
+    users_info: dict[str, Any],
+    download_attachments: bool,
+    indexable: list[str],
+    max_size_mb: int,
+    fetcher: SlackAttachmentFetcher | None,
+    vision_extractor: VisionExtractor | None,
+) -> list[ParsedDocument]:
+    """Build one ParsedDocument per Slack file attachment.
+
+    The result is downstream of the parent message Document and shares
+    its source_id via the ATTACHED_TO edge.  Each attachment is either:
+
+    * **download_and_index** — bytes fetched via *fetcher*, parsed by
+      :func:`stream_and_parse`, full text stored on the Document.
+    * **metadata_only** — empty body, file metadata on node_props only.
+
+    A failed fetch falls back to metadata_only and logs a warning so a
+    transient error does not crash the parent ingest event.
+    """
+    docs: list[ParsedDocument] = []
+    for att in attachments:
+        file_id = att.get("id") or ""
+        if not file_id:
+            continue
+        ts = att.get("ts", "")
+        att_source_id = _attachment_doc_id(team_id, channel_id, ts, file_id)
+        mime = att.get("mimetype") or "application/octet-stream"
+        size = int(att.get("size") or 0)
+
+        decision = (
+            classify_attachment(
+                mime=mime,
+                size_bytes=size,
+                indexable=indexable,
+                max_size_mb=max_size_mb,
+            )
+            if download_attachments
+            else "metadata_only"
+        )
+
+        text = ""
+        ocr_text: str | None = None
+        description = ""
+        extra_hints: list[GraphHint] = []
+
+        if decision == "download_and_index":
+            url = att.get("url_private_download") or ""
+            if not url or fetcher is None:
+                logger.warning(
+                    "Slack attachment %s lacks url_private_download or fetcher; "
+                    "downgrading to metadata_only",
+                    att_source_id,
+                )
+                decision = "metadata_only"
+            else:
+                try:
+                    parsed = stream_and_parse(
+                        fetch=lambda u=url: fetcher(u),
+                        filename=att.get("name") or file_id,
+                        mime=mime,
+                        vision_extractor=vision_extractor,
+                        source_id=att_source_id,
+                    )
+                except (AttachmentDownloadError, AttachmentParseError) as exc:
+                    logger.warning(
+                        "Attachment %s fetch/parse failed (%s); falling back to "
+                        "metadata_only",
+                        att_source_id,
+                        exc,
+                    )
+                    decision = "metadata_only"
+                else:
+                    text = parsed.text
+                    ocr_text = parsed.ocr_text
+                    description = parsed.description
+                    extra_hints = list(parsed.extracted_entities)
+
+        node_props: dict[str, Any] = {
+            "team_id": team_id,
+            "channel_id": channel_id,
+            "channel_name": channel_name,
+            "conversation_type": conversation_type,
+            "parent_ts": ts,
+            "file_id": file_id,
+            "name": att.get("name") or "",
+            "mimetype": mime,
+            "filetype": att.get("filetype") or "",
+            "size": size,
+            "indexed": decision == "download_and_index",
+        }
+        try:
+            parent_url = build_parent_url(
+                "slack",
+                team_domain=team_domain or "slack",
+                channel_id=channel_id,
+                ts=ts,
+            )
+            node_props["parent_url"] = parent_url
+        except ValueError:
+            # Missing team_domain/ts/channel_id is a soft error — the
+            # node still exists, just without a clickable back-link.
+            pass
+        if description:
+            node_props["description"] = description
+        if ocr_text:
+            node_props["ocr_text"] = ocr_text
+
+        graph_hints: list[GraphHint] = [
+            # ATTACHED_TO: links the attachment to its parent message
+            # Document.  ``object_merge_key='source_id'`` is the default
+            # but we set it explicitly so the writer doesn't have to
+            # guess against an external label.
+            GraphHint(
+                subject_id=att_source_id,
+                subject_label=ATTACHMENT_NODE_LABEL,
+                predicate="ATTACHED_TO",
+                object_id=parent_source_id,
+                object_label=NODE_LABEL,
+                confidence=1.0,
+            ),
+            # IN_CHANNEL: same Channel node Gmail/Calendar consumers see
+            # via the parent message; redundant but lets queries that
+            # walk Attachment → Channel skip the Message hop.
+            GraphHint(
+                subject_id=att_source_id,
+                subject_label=ATTACHMENT_NODE_LABEL,
+                predicate="IN_CHANNEL",
+                object_id=f"slack-channel:{team_id}/{channel_id}",
+                object_label="Channel",
+                object_props={
+                    "name": channel_name,
+                    "team_id": team_id,
+                    "channel_id": channel_id,
+                    "type": conversation_type,
+                },
+                confidence=1.0,
+            ),
+        ]
+
+        # SENT_BY: the file uploader (file.user, falling back to
+        # message.user).  Bot uploaders without an email round-trip via
+        # the slack-user fallback Person.
+        uploader = att.get("user") or ""
+        if uploader:
+            uploader_hint = _person_hint_for_user(
+                source_id=att_source_id,
+                predicate="SENT_BY",
+                user_id=uploader,
+                team_id=team_id,
+                users_info=users_info,
+            )
+            uploader_hint.subject_label = ATTACHMENT_NODE_LABEL
+            graph_hints.append(uploader_hint)
+
+        graph_hints.extend(extra_hints)
+
+        docs.append(
+            ParsedDocument(
+                source_type="slack",
+                source_id=att_source_id,
+                operation="created",
+                text=text,
+                mime_type=mime,
+                node_label=ATTACHMENT_NODE_LABEL,
+                node_props=node_props,
+                graph_hints=graph_hints,
+                source_metadata={
+                    "source_type": "slack",
+                    "team_id": team_id,
+                    "channel_id": channel_id,
+                    "parent_ts": ts,
+                    "file_id": file_id,
+                    "mimetype": mime,
+                    "size": size,
+                    "indexed": decision == "download_and_index",
+                },
+            )
+        )
+    return docs

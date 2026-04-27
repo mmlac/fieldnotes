@@ -391,3 +391,434 @@ def test_canonicalize_is_shared_with_base() -> None:
     from worker.parsers import base
 
     assert slack.canonicalize_email is base.canonicalize_email
+
+
+# ---------------------------------------------------------------------------
+# Attachments (fn-bu3)
+# ---------------------------------------------------------------------------
+
+
+_TEAM_DOMAIN = "acme"
+
+
+def _attachment(
+    *,
+    file_id: str,
+    name: str,
+    mime: str,
+    size: int,
+    ts: str,
+    user: str = "U1",
+    url: str = "https://files.slack.com/private/url",
+    filetype: str = "",
+) -> dict[str, Any]:
+    return {
+        "id": file_id,
+        "name": name,
+        "mimetype": mime,
+        "filetype": filetype or mime.split("/")[-1],
+        "size": size,
+        "url_private_download": url,
+        "ts": ts,
+        "user": user,
+    }
+
+
+def _attach_meta(
+    event: dict[str, Any],
+    *,
+    attachments: list[dict[str, Any]],
+    download_attachments: bool = False,
+    indexable: list[str] | None = None,
+    max_size_mb: int = 25,
+    team_domain: str = _TEAM_DOMAIN,
+) -> dict[str, Any]:
+    """Augment a window/thread event with attachment-related meta."""
+    event = dict(event)
+    meta = dict(event["meta"])
+    meta["attachments"] = attachments
+    meta["download_attachments"] = download_attachments
+    meta["attachment_indexable_mimetypes"] = (
+        indexable if indexable is not None else ["application/pdf", "text/plain"]
+    )
+    meta["attachment_max_size_mb"] = max_size_mb
+    meta["team_domain"] = team_domain
+    event["meta"] = meta
+    return event
+
+
+class TestAttachmentRenderMarkers:
+    def test_window_inserts_file_marker_under_owning_message(self) -> None:
+        m1 = _msg(1700000000.0, user="U1", text="hello")
+        m2 = _msg(1700000060.0, user="U2", text="see attached")
+        m3 = _msg(1700000120.0, user="U1", text="bye")
+        event = _attach_meta(
+            _window_event(messages=[m1, m2, m3]),
+            attachments=[
+                _attachment(
+                    file_id="F1",
+                    name="report.pdf",
+                    mime="application/pdf",
+                    size=1024,
+                    ts=m2["ts"],
+                ),
+            ],
+        )
+        [parent, _attachment_doc] = SlackParser().parse(event)
+        lines = parent.text.split("\n")
+        assert len(lines) == 4
+        # Marker appears immediately after m2's render line.
+        assert lines[2].startswith("[file] report.pdf")
+        assert "application/pdf" in lines[2]
+        assert lines[3].startswith("[")  # m3's normal line follows
+
+    def test_thread_reply_marker_is_indented(self) -> None:
+        parent = _msg(1700000000.0, user="U1", text="kickoff")
+        reply = _msg(1700000060.0, user="U2", text="see this", thread_ts=1700000000.0)
+        event = _attach_meta(
+            _thread_event(parent=parent, replies=[reply]),
+            attachments=[
+                _attachment(
+                    file_id="F2",
+                    name="diagram.png",
+                    mime="image/png",
+                    size=2048,
+                    ts=reply["ts"],
+                    user="U2",
+                )
+            ],
+        )
+        [doc, _att] = SlackParser().parse(event)
+        marker_lines = [ln for ln in doc.text.split("\n") if "[file]" in ln]
+        assert len(marker_lines) == 1
+        assert marker_lines[0].startswith("  [file] diagram.png")
+
+
+class TestAttachmentDocsMetadataOnly:
+    """download_attachments=False → 2 metadata-only Documents, markers in text."""
+
+    def test_two_files_emit_two_metadata_only_docs(self) -> None:
+        m = _msg(1700000000.0, user="U1", text="see files")
+        attachments = [
+            _attachment(
+                file_id="Fpdf",
+                name="report.pdf",
+                mime="application/pdf",
+                size=4096,
+                ts=m["ts"],
+            ),
+            _attachment(
+                file_id="Fdoc",
+                name="notes.docx",
+                mime=(
+                    "application/vnd.openxmlformats-officedocument."
+                    "wordprocessingml.document"
+                ),
+                size=8192,
+                ts=m["ts"],
+            ),
+        ]
+        event = _attach_meta(
+            _window_event(messages=[m]),
+            attachments=attachments,
+            download_attachments=False,
+        )
+        docs = SlackParser().parse(event)
+        # 1 message doc + 2 attachment docs.
+        assert len(docs) == 3
+        att_docs = [d for d in docs if d.node_label == "Attachment"]
+        assert len(att_docs) == 2
+        for d in att_docs:
+            assert d.text == ""
+            assert d.node_props["indexed"] is False
+
+        # Render carries [file] markers for both files.
+        msg_text = docs[0].text
+        assert "[file] report.pdf" in msg_text
+        assert "[file] notes.docx" in msg_text
+
+
+class TestAttachmentDocsDownloadAndIndex:
+    """download_attachments=True with PDF allowlist: PDF fetched, .docx skipped."""
+
+    def test_pdf_only_indexable(self) -> None:
+        m = _msg(1700000000.0, user="U1", text="files attached")
+        attachments = [
+            _attachment(
+                file_id="Fpdf",
+                name="report.pdf",
+                mime="application/pdf",
+                size=4096,
+                ts=m["ts"],
+                url="https://files.slack.com/pdf",
+            ),
+            _attachment(
+                file_id="Fdoc",
+                name="notes.docx",
+                mime=(
+                    "application/vnd.openxmlformats-officedocument."
+                    "wordprocessingml.document"
+                ),
+                size=8192,
+                ts=m["ts"],
+            ),
+        ]
+        event = _attach_meta(
+            _window_event(messages=[m]),
+            attachments=attachments,
+            download_attachments=True,
+            indexable=["application/pdf"],
+        )
+
+        # Build a single-page PDF in memory so pymupdf can extract text.
+        import pymupdf
+
+        pdf = pymupdf.open()
+        page = pdf.new_page()
+        page.insert_text((72, 72), "indexed slack pdf")
+        pdf_bytes = pdf.tobytes()
+        pdf.close()
+
+        fetched_urls: list[str] = []
+
+        def fake_fetch(url: str) -> bytes:
+            fetched_urls.append(url)
+            return pdf_bytes
+
+        parser = SlackParser()
+        parser._fetcher = fake_fetch  # type: ignore[assignment]
+        docs = parser.parse(event)
+
+        att_docs = [d for d in docs if d.node_label == "Attachment"]
+        assert len(att_docs) == 2
+
+        pdf_doc = next(d for d in att_docs if d.source_id.endswith("/file/Fpdf"))
+        docx_doc = next(d for d in att_docs if d.source_id.endswith("/file/Fdoc"))
+
+        # PDF was fetched + parsed.
+        assert "indexed slack pdf" in pdf_doc.text
+        assert pdf_doc.node_props["indexed"] is True
+        assert fetched_urls == ["https://files.slack.com/pdf"]
+
+        # .docx (not in indexable allowlist) → metadata-only, not fetched.
+        assert docx_doc.text == ""
+        assert docx_doc.node_props["indexed"] is False
+
+
+class TestAttachmentEdges:
+    def test_attached_to_points_at_parent_doc(self) -> None:
+        m = _msg(1700000000.0, user="U1", text="here")
+        att = _attachment(
+            file_id="F1",
+            name="x.pdf",
+            mime="application/pdf",
+            size=1024,
+            ts=m["ts"],
+        )
+        event = _attach_meta(_window_event(messages=[m]), attachments=[att])
+        [parent_doc, att_doc] = SlackParser().parse(event)
+
+        attached = [h for h in att_doc.graph_hints if h.predicate == "ATTACHED_TO"]
+        assert len(attached) == 1
+        assert attached[0].subject_id == att_doc.source_id
+        assert attached[0].object_id == parent_doc.source_id
+        assert attached[0].object_label == "SlackMessage"
+
+    def test_in_channel_edge_emitted(self) -> None:
+        m = _msg(1700000000.0, user="U1", text="here")
+        att = _attachment(
+            file_id="F1",
+            name="x.pdf",
+            mime="application/pdf",
+            size=1024,
+            ts=m["ts"],
+        )
+        event = _attach_meta(_window_event(messages=[m]), attachments=[att])
+        [_parent, att_doc] = SlackParser().parse(event)
+
+        in_chan = [h for h in att_doc.graph_hints if h.predicate == "IN_CHANNEL"]
+        assert len(in_chan) == 1
+        assert in_chan[0].object_id == f"slack-channel:{_TEAM}/{_CHANNEL_ID}"
+
+    def test_attachment_doc_id_format(self) -> None:
+        m = _msg(1700000000.0, user="U1", text="here")
+        att = _attachment(
+            file_id="F1",
+            name="x.pdf",
+            mime="application/pdf",
+            size=1024,
+            ts=m["ts"],
+        )
+        event = _attach_meta(_window_event(messages=[m]), attachments=[att])
+        [_parent, att_doc] = SlackParser().parse(event)
+        assert att_doc.source_id == (f"slack://{_TEAM}/{_CHANNEL_ID}/{m['ts']}/file/F1")
+
+    def test_parent_url_uses_team_domain(self) -> None:
+        m = _msg(1700000000.0, user="U1", text="here")
+        att = _attachment(
+            file_id="F1",
+            name="x.pdf",
+            mime="application/pdf",
+            size=1024,
+            ts=m["ts"],
+        )
+        event = _attach_meta(
+            _window_event(messages=[m]),
+            attachments=[att],
+            team_domain="acme",
+        )
+        [_parent, att_doc] = SlackParser().parse(event)
+        # build_parent_url('slack', ...) drops the dot in ts when forming
+        # the permalink.  Its exact format is exercised by attachments util
+        # tests; here we only confirm it landed on the node.
+        assert "acme.slack.com" in att_doc.node_props["parent_url"]
+
+
+class TestAttachmentBotUploaderFallback:
+    """A bot uploader without an email yields the slack-user fallback Person."""
+
+    def test_uploader_without_email_falls_back(self) -> None:
+        users = _users_info(
+            B1={
+                "id": "B1",
+                "name": "deploy-bot",
+                "real_name": "Deploy Bot",
+                "profile": {"display_name": "deploy-bot", "real_name": "Deploy Bot"},
+                # no email
+            }
+        )
+        m = _msg(1700000000.0, user="U1", text="bot uploaded a thing")
+        att = _attachment(
+            file_id="F1",
+            name="release.pdf",
+            mime="application/pdf",
+            size=1024,
+            ts=m["ts"],
+            user="B1",  # uploader is the bot, not the message author
+        )
+        event = _attach_meta(
+            _window_event(messages=[m], users_info=users),
+            attachments=[att],
+        )
+        [_parent, att_doc] = SlackParser().parse(event)
+
+        sent_by = [
+            h
+            for h in att_doc.graph_hints
+            if h.predicate == "SENT_BY" and h.subject_id == att_doc.source_id
+        ]
+        assert len(sent_by) == 1
+        h = sent_by[0]
+        assert h.object_id == f"slack-user:{_TEAM}/B1"
+        assert h.object_merge_key == "source_id"
+        assert h.subject_label == "Attachment"
+
+
+class TestAttachmentFailedFetchFallsBack:
+    """A fetch error downgrades to metadata-only, never crashes the parent."""
+
+    def test_failed_fetch_downgrades(self) -> None:
+        m = _msg(1700000000.0, user="U1", text="here")
+        att = _attachment(
+            file_id="F1",
+            name="report.pdf",
+            mime="application/pdf",
+            size=1024,
+            ts=m["ts"],
+        )
+        event = _attach_meta(
+            _window_event(messages=[m]),
+            attachments=[att],
+            download_attachments=True,
+            indexable=["application/pdf"],
+        )
+
+        def boom(url: str) -> bytes:
+            raise RuntimeError("network down")
+
+        parser = SlackParser()
+        parser._fetcher = boom  # type: ignore[assignment]
+        docs = parser.parse(event)
+
+        att_doc = next(d for d in docs if d.node_label == "Attachment")
+        assert att_doc.text == ""
+        assert att_doc.node_props["indexed"] is False
+
+
+class TestAttachmentSnippetIndexedAsText:
+    """Slack 'snippet' files are text/plain — indexed verbatim."""
+
+    def test_snippet_full_text_indexed(self) -> None:
+        m = _msg(1700000000.0, user="U1", text="snippet attached")
+        att = _attachment(
+            file_id="Fsnip",
+            name="pasted.txt",
+            mime="text/plain",
+            size=42,
+            ts=m["ts"],
+            filetype="text",
+        )
+        event = _attach_meta(
+            _window_event(messages=[m]),
+            attachments=[att],
+            download_attachments=True,
+            indexable=["text/plain"],
+        )
+
+        snippet_body = b"line one\nline two\nline three\n"
+
+        def fake_fetch(url: str) -> bytes:
+            return snippet_body
+
+        parser = SlackParser()
+        parser._fetcher = fake_fetch  # type: ignore[assignment]
+        docs = parser.parse(event)
+        att_doc = next(d for d in docs if d.node_label == "Attachment")
+        assert att_doc.text == snippet_body.decode("utf-8")
+        assert att_doc.node_props["indexed"] is True
+
+
+class TestThreadAttachmentParentingMatchesChunkOwner:
+    """Threaded reply file → ATTACHED_TO points at the same Document the
+    chunks are written under (the thread Document, not the reply)."""
+
+    def test_thread_reply_file_attaches_to_thread_doc(self) -> None:
+        parent = _msg(1700000000.0, user="U1", text="kickoff")
+        reply = _msg(1700000060.0, user="U2", text="here", thread_ts=1700000000.0)
+        att = _attachment(
+            file_id="F1",
+            name="diagram.png",
+            mime="image/png",
+            size=4096,
+            ts=reply["ts"],
+            user="U2",
+        )
+        event = _attach_meta(
+            _thread_event(parent=parent, replies=[reply]),
+            attachments=[att],
+        )
+        docs = SlackParser().parse(event)
+        thread_doc = docs[0]
+        att_doc = docs[1]
+        assert thread_doc.node_label == "SlackMessage"
+        assert thread_doc.node_props["has_thread"] is True
+
+        attached = [h for h in att_doc.graph_hints if h.predicate == "ATTACHED_TO"]
+        assert len(attached) == 1
+        # ATTACHED_TO points at the thread Document, not the per-reply ts.
+        assert attached[0].object_id == thread_doc.source_id
+
+
+class TestConfigureSlackParser:
+    def test_configure_sets_module_default_fetcher(self) -> None:
+        from worker.parsers.slack import SlackParser, configure_slack_parser
+
+        sentinel = lambda url: b"ok"  # noqa: E731
+        try:
+            configure_slack_parser(fetcher=sentinel)
+            # Newly constructed instances pick up the module default.
+            assert SlackParser()._fetcher is sentinel
+        finally:
+            # Cleanup so other tests aren't affected.
+            configure_slack_parser(fetcher=None)
+        assert SlackParser()._fetcher is None
