@@ -289,6 +289,55 @@ class TestSlackMessageOverlap:
         # Token count of that chunk == big message tokens (no truncation).
         assert "tok1999" in big_chunks[0].text
 
+    def test_chunker_message_overlap_clamps_to_progress(self) -> None:
+        # overlap_messages exceeds the total message count. The chunker must
+        # terminate (no infinite loop, no negative-stride iteration) and emit
+        # a single chunk because both messages fit within chunk_size.
+        text = _make_slack_doc(2, 20)
+        chunks = chunk_text(
+            text,
+            chunk_strategy={"mode": "message_overlap", "overlap_messages": 5},
+        )
+        assert len(chunks) == 1
+        assert "@user0" in chunks[0].text
+        assert "@user1" in chunks[0].text
+
+    def test_chunker_message_overlap_2_messages_overlap_2(self) -> None:
+        # 4 messages sized so that 3 fit per chunk_size=512 but 4 do not.
+        # With overlap_messages=2, the chunker must emit 2 chunks whose
+        # boundary shares the documented two-message overlap.
+        text = _make_slack_doc(4, 145)
+        chunks = chunk_text(
+            text,
+            chunk_strategy={"mode": "message_overlap", "overlap_messages": 2},
+        )
+        assert len(chunks) == 2
+        prev_msgs = chunks[0].text.split("\n")
+        curr_msgs = chunks[1].text.split("\n")
+        assert curr_msgs[:2] == prev_msgs[-2:]
+
+    def test_chunker_message_overlap_one_short_message(self) -> None:
+        # Single-message document — no clamp drama, exactly one chunk.
+        text = _make_slack_doc(1, 10)
+        chunks = chunk_text(
+            text,
+            chunk_strategy={"mode": "message_overlap", "overlap_messages": 3},
+        )
+        assert len(chunks) == 1
+        assert "@user0" in chunks[0].text
+
+    def test_chunker_message_overlap_exact_boundary(self) -> None:
+        # overlap_messages == message_count. Must terminate with a single
+        # chunk (the whole document fits) and never enter an infinite loop.
+        text = _make_slack_doc(3, 20)
+        chunks = chunk_text(
+            text,
+            chunk_strategy={"mode": "message_overlap", "overlap_messages": 3},
+        )
+        assert len(chunks) == 1
+        for i in range(3):
+            assert f"@user{i}" in chunks[0].text
+
 
 class TestDefaultModeUnchanged:
     """Regression check: omitting chunk_strategy is byte-identical to before."""
