@@ -261,6 +261,13 @@ def stream_and_parse(
     are routed to the appropriate in-process parser and released as soon as
     parsing returns; nothing is cached on disk.
 
+    Memory-release invariant: callers may rely on the attachment bytes being
+    released once this function returns.  Parsers reached from here must not
+    retain references (no module-level caches keyed by ``id()``, no holding
+    the buffer on a long-lived object); the weakref tests in
+    ``test_attachments_util.py`` lock this in for the PDF, image, and text
+    paths.
+
     Args:
         fetch: Zero-arg closure returning the attachment bytes, or raising on
             network / auth / not-found failure.

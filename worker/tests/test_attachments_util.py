@@ -4,7 +4,7 @@ Covers:
 
 * The pure ``classify_attachment`` policy helper.
 * The ``stream_and_parse`` stream-and-forget downloader (PDF / image / text /
-  error paths, temp-file cleanup, weakref-based memory release check).
+  error paths, temp-file cleanup, refcount-based memory release check).
 * The ``build_parent_url`` per-source URL builder.
 """
 
@@ -12,8 +12,8 @@ from __future__ import annotations
 
 import gc
 import os
+import sys
 import tempfile
-import weakref
 
 import io
 from unittest.mock import patch
@@ -747,39 +747,69 @@ class TestStreamAndParseErrors:
         assert exc.value.source_id == "msg-x"
 
 
-class _Holder:
-    """Tiny weakref-able container so we can track byte-buffer lifetime."""
-
-    __slots__ = ("data", "__weakref__")
-
-    def __init__(self, data: bytes) -> None:
-        self.data = data
-
-
 class TestStreamAndParseMemoryRelease:
     """The 'stream-and-forget' invariant: no reference to the bytes
-    survives the call. We allocate a 5 MiB buffer, give the helper its
-    own copy via the fetch closure, and verify the closure-internal
-    holder dies after ``stream_and_parse`` returns."""
+    survives the call. We track the bytes object's refcount across the
+    call — if it returns to baseline after ``gc.collect()``, no parser
+    is holding the buffer. ``weakref`` would be cleaner but ``bytes`` is
+    not weakref-able and a wrapper container's lifetime is independent
+    of the bytes (the wrapper dies as soon as the fetch closure returns,
+    regardless of whether the parser cached the underlying buffer).
 
-    def test_bytes_are_released_after_return(self) -> None:
-        holder_ref: list[weakref.ref[_Holder]] = []
+    Covers PDF, image, and text/* paths so a future parser that retains
+    a reference (module-level cache keyed by ``id()``, persistent-state
+    object pinning the buffer) is caught on whichever branch introduces
+    it."""
 
-        def fetch() -> bytes:
-            holder = _Holder(b"x" * (5 * 1024 * 1024))
-            holder_ref.append(weakref.ref(holder))
-            return holder.data
-
+    def _assert_released(
+        self,
+        payload: bytes,
+        *,
+        filename: str,
+        mime: str,
+        **kwargs: object,
+    ) -> None:
+        gc.collect()
+        baseline = sys.getrefcount(payload)
         stream_and_parse(
-            fetch=fetch,
+            fetch=lambda: payload,
+            filename=filename,
+            mime=mime,
+            **kwargs,  # type: ignore[arg-type]
+        )
+        gc.collect()
+        leaked = sys.getrefcount(payload) - baseline
+        assert leaked == 0, (
+            f"stream_and_parse retained {leaked} reference(s) to "
+            f"{filename!r} bytes after returning"
+        )
+
+    def test_text_bytes_are_released_after_return(self) -> None:
+        # 5 MiB so a leak would be obvious under memory pressure too.
+        self._assert_released(
+            b"x" * (5 * 1024 * 1024),
             filename="big.txt",
             mime="text/plain",
         )
 
-        gc.collect()
-        # The helper kept neither the bytes nor anything that transitively
-        # references the closure-local holder.
-        assert holder_ref[0]() is None
+    def test_pdf_bytes_are_released_after_return(self) -> None:
+        # Real parseable PDF — exercises the pymupdf branch end-to-end.
+        self._assert_released(
+            _tiny_pdf_bytes("release me"),
+            filename="release.pdf",
+            mime="application/pdf",
+        )
+
+    def test_image_bytes_are_released_after_return(self) -> None:
+        def vision(_data: bytes, _mime: str) -> _FakeVisionResult:
+            return _FakeVisionResult(description="ok")
+
+        self._assert_released(
+            _tiny_png_bytes(16, 16),
+            filename="release.png",
+            mime="image/png",
+            vision_extractor=vision,
+        )
 
 
 # --- build_parent_url -------------------------------------------------------
