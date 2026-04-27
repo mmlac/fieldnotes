@@ -1194,3 +1194,315 @@ class TestNoSerializeBypass:
         finally:
             release_migrate_lock(lock_path, held_fd)
         assert rc == 0
+
+
+# ─── migrate_queue WAL semantics under interrupt (fn-ht9) ───────────
+
+
+def _seed_many_old_rows(db_path: Path, count: int) -> None:
+    """Seed *db_path* with *count* old-shape Gmail thread rows + cursor rows.
+
+    Uses real on-disk SQLite — the same shape ``migrate_queue`` operates on,
+    so transaction semantics are exercised end-to-end (no stubs).
+    """
+    conn = sqlite3.connect(str(db_path))
+    conn.executescript(
+        """
+        CREATE TABLE queue (
+            id TEXT PRIMARY KEY,
+            source_type TEXT NOT NULL,
+            source_id TEXT NOT NULL,
+            operation TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            payload TEXT NOT NULL,
+            blob_path TEXT,
+            enqueued_at TEXT NOT NULL,
+            started_at TEXT,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            error TEXT
+        );
+        CREATE TABLE cursors (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        """
+    )
+    for i in range(count):
+        sid = f"gmail://thread/T{i}"
+        payload = json.dumps({"id": f"r{i}", "source_id": sid})
+        conn.execute(
+            "INSERT INTO queue "
+            "(id, source_type, source_id, operation, status, payload, "
+            " enqueued_at) "
+            "VALUES (?, 'gmail', ?, 'created', 'pending', ?, "
+            "'2026-04-26T00:00:00Z')",
+            (f"r{i}", sid, payload),
+        )
+    conn.execute(
+        "INSERT INTO cursors VALUES "
+        "('gmail', '{\"x\":1}', '2026-04-26T00:00:00Z')"
+    )
+    conn.execute(
+        "INSERT INTO cursors VALUES "
+        "('calendar', '{\"y\":2}', '2026-04-26T00:00:00Z')"
+    )
+    conn.commit()
+    conn.close()
+
+
+class _InterruptingConn:
+    """sqlite3.Connection wrapper that raises on the *n*-th matching call.
+
+    Forwards everything to the wrapped connection, but the first ``execute``
+    whose SQL contains ``trigger_substr`` and matches the *n*-th occurrence
+    raises ``KeyboardInterrupt``. After firing once, it returns to plain
+    forwarding so the surrounding ROLLBACK in ``migrate_queue`` can run.
+
+    Why this works: ``migrate_queue`` opens its own connection via
+    ``sqlite3.connect``. Monkey-patching ``sqlite3.connect`` in the
+    ``worker.cli.migrate`` module namespace lets the test inject a wrapper
+    *between* the real connection and the migrate code without modifying
+    the production path. The wrapper raises while the BEGIN IMMEDIATE
+    transaction is open, exercising the ROLLBACK path for real.
+    """
+
+    def __init__(self, real: sqlite3.Connection, *, trigger_substr: str, nth: int) -> None:
+        self._real = real
+        self._substr = trigger_substr
+        self._nth = nth
+        self._seen = 0
+        self._fired = False
+
+    def execute(self, sql: str, *args: Any, **kwargs: Any):
+        if not self._fired and self._substr in sql:
+            self._seen += 1
+            if self._seen == self._nth:
+                self._fired = True
+                raise KeyboardInterrupt("simulated interrupt mid-transaction")
+        return self._real.execute(sql, *args, **kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._real, name)
+
+    def close(self) -> None:
+        self._real.close()
+
+
+class _PausingConn:
+    """sqlite3.Connection wrapper that pauses on the first matching call.
+
+    Used to deterministically hold a writer transaction open so a second
+    connection can attempt ``BEGIN IMMEDIATE`` and observe the lock.
+    """
+
+    def __init__(
+        self,
+        real: sqlite3.Connection,
+        *,
+        trigger_substr: str,
+        ready: Any,
+        proceed: Any,
+    ) -> None:
+        self._real = real
+        self._substr = trigger_substr
+        self._ready = ready
+        self._proceed = proceed
+        self._paused = False
+
+    def execute(self, sql: str, *args: Any, **kwargs: Any):
+        if not self._paused and self._substr in sql:
+            self._paused = True
+            self._ready.set()
+            self._proceed.wait(timeout=5.0)
+        return self._real.execute(sql, *args, **kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._real, name)
+
+    def close(self) -> None:
+        self._real.close()
+
+
+class TestMigrateQueueWAL:
+    """Atomic-under-interrupt, idempotent-resume, and concurrent-writer
+    semantics for ``migrate_queue``'s ``BEGIN IMMEDIATE`` transaction.
+
+    Uses real on-disk SQLite (NOT stubs) so the WAL + transaction
+    semantics under test are the production semantics. The interrupt
+    technique is documented on ``_InterruptingConn``: monkey-patch
+    ``sqlite3.connect`` in the migrate module to wrap returned connections
+    and raise on the n-th matching ``execute`` call. The wrapper stops
+    raising after firing once so the ``except BaseException: ROLLBACK``
+    branch can complete cleanly.
+    """
+
+    def test_migrate_queue_atomic_under_interrupt(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        from worker.cli import migrate as migrate_mod
+
+        db = tmp_path / "queue.db"
+        _seed_many_old_rows(db, count=100)
+
+        real_connect = sqlite3.connect
+
+        def patched(*args: Any, **kwargs: Any):
+            return _InterruptingConn(
+                real_connect(*args, **kwargs),
+                trigger_substr="UPDATE queue",
+                nth=2,
+            )
+
+        monkeypatch.setattr(migrate_mod.sqlite3, "connect", patched)
+
+        with pytest.raises(KeyboardInterrupt):
+            migrate_queue(db, "personal")
+
+        # Inspect with an unwrapped connection.
+        conn = real_connect(str(db))
+        try:
+            old_count = conn.execute(
+                "SELECT count(*) FROM queue WHERE "
+                "source_id LIKE 'gmail://thread/%' OR "
+                "source_id LIKE 'gmail://message/%' OR "
+                "source_id LIKE 'google-calendar://event/%' OR "
+                "source_id LIKE 'google-calendar://series/%'"
+            ).fetchone()[0]
+            new_count = conn.execute(
+                "SELECT count(*) FROM queue WHERE "
+                "source_id LIKE 'gmail://personal/%' OR "
+                "source_id LIKE 'google-calendar://personal/%'"
+            ).fetchone()[0]
+            total = conn.execute("SELECT count(*) FROM queue").fetchone()[0]
+        finally:
+            conn.close()
+
+        assert total == 100
+        # Atomicity: ALL old (rollback ran) OR ALL new (commit beat the
+        # interrupt). Never partial.
+        assert (old_count == total and new_count == 0) or (
+            old_count == 0 and new_count == total
+        ), f"partial migration: {old_count} old, {new_count} new of {total}"
+
+    def test_migrate_queue_resumable(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        from worker.cli import migrate as migrate_mod
+
+        db = tmp_path / "queue.db"
+        _seed_many_old_rows(db, count=20)
+
+        real_connect = sqlite3.connect
+
+        def patched(*args: Any, **kwargs: Any):
+            return _InterruptingConn(
+                real_connect(*args, **kwargs),
+                trigger_substr="UPDATE queue",
+                nth=2,
+            )
+
+        monkeypatch.setattr(migrate_mod.sqlite3, "connect", patched)
+        with pytest.raises(KeyboardInterrupt):
+            migrate_queue(db, "personal")
+
+        # Restore real connect and resume.
+        monkeypatch.setattr(migrate_mod.sqlite3, "connect", real_connect)
+
+        # First successful run after the interrupt: must finish the work
+        # the rollback discarded.
+        result1 = migrate_queue(db, "personal")
+        assert result1["rows"] == 20
+        assert result1["cursors"] == 2
+
+        # Second run with the same args: idempotent — zero matches under
+        # the old-shape prefix, nothing else changes.
+        result2 = migrate_queue(db, "personal")
+        assert result2 == {"rows": 0, "cursors": 0}
+
+        # Verify post-state: no old-shape rows, no bare cursor keys.
+        conn = real_connect(str(db))
+        try:
+            old_count = conn.execute(
+                "SELECT count(*) FROM queue WHERE "
+                "source_id LIKE 'gmail://thread/%' OR "
+                "source_id LIKE 'gmail://message/%' OR "
+                "source_id LIKE 'google-calendar://event/%' OR "
+                "source_id LIKE 'google-calendar://series/%'"
+            ).fetchone()[0]
+            keys = {r[0] for r in conn.execute("SELECT key FROM cursors")}
+        finally:
+            conn.close()
+        assert old_count == 0
+        assert keys == {"gmail:personal", "calendar:personal"}
+
+    def test_migrate_queue_concurrent_writer(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        import threading
+
+        from worker.cli import migrate as migrate_mod
+
+        db = tmp_path / "queue.db"
+        _seed_many_old_rows(db, count=10)
+
+        real_connect = sqlite3.connect
+        ready = threading.Event()
+        proceed = threading.Event()
+
+        def patched(*args: Any, **kwargs: Any):
+            return _PausingConn(
+                real_connect(*args, **kwargs),
+                trigger_substr="UPDATE queue",
+                ready=ready,
+                proceed=proceed,
+            )
+
+        monkeypatch.setattr(migrate_mod.sqlite3, "connect", patched)
+
+        result: dict[str, Any] = {}
+        errors: list[BaseException] = []
+
+        def run_migrate() -> None:
+            try:
+                result["out"] = migrate_queue(db, "personal")
+            except BaseException as exc:  # pragma: no cover
+                errors.append(exc)
+
+        worker = threading.Thread(target=run_migrate)
+        worker.start()
+        try:
+            assert ready.wait(timeout=5.0), (
+                "migrate_queue did not enter its UPDATE pass"
+            )
+
+            # Loser connection (unwrapped, real sqlite3) with a short
+            # busy_timeout: BEGIN IMMEDIATE must fail-fast because the
+            # writer thread holds the WAL writer lock.
+            loser = real_connect(str(db))
+            try:
+                loser.execute("PRAGMA busy_timeout=200")
+                with pytest.raises(sqlite3.OperationalError) as exc_info:
+                    loser.execute("BEGIN IMMEDIATE")
+                msg = str(exc_info.value).lower()
+                assert "lock" in msg or "busy" in msg, (
+                    f"unexpected error: {exc_info.value!r}"
+                )
+            finally:
+                loser.close()
+        finally:
+            proceed.set()
+            worker.join(timeout=10.0)
+
+        assert not worker.is_alive()
+        assert errors == []
+        assert result["out"] == {"rows": 10, "cursors": 2}
+
+        # After commit, a fresh connection can acquire BEGIN IMMEDIATE.
+        monkeypatch.setattr(migrate_mod.sqlite3, "connect", real_connect)
+        after = real_connect(str(db))
+        try:
+            after.execute("BEGIN IMMEDIATE")
+            after.execute("ROLLBACK")
+        finally:
+            after.close()
