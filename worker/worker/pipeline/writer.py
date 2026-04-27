@@ -1014,14 +1014,28 @@ class Writer:
         and propagate it as ``display_name`` on every self-Person so a
         ``MATCH (p:Person {is_self: true})`` query returns a stable label.
 
-        Finally create ``SAME_AS`` edges between every pair of self-Persons
+        Create ``SAME_AS`` edges between every pair of self-Persons
         (n*(n-1)/2 edges, idempotent via MERGE) carrying the standard
         cross-source metadata: ``confidence = 1.0``, ``match_type =
         'self_identity'``, ``cross_source = true``.
 
-        A single email is a no-op for SAME_AS edges (the lone Person is
-        still flagged ``is_self = true``).  Returns the number of new
-        ``SAME_AS`` edges created on this run (0 on subsequent runs).
+        Then run a transitive-closure pass scoped to ``is_self = true``: any
+        pair of self-Persons reachable via a SAME_AS chain (up to 4 hops)
+        through other self-Persons gets a direct SAME_AS edge.  Closure is
+        scoped to is_self=true endpoints AND traversal so cross-source
+        SAME_AS edges to non-self Persons are not bridged into self
+        identity.  This catches late additions to ``[me].emails`` where
+        pairwise alone misses links to legacy is_self=true Persons no
+        longer in the current config.
+
+        After closure, the survivor display_name re-runs graph-wide over
+        every is_self=true Person so the canonical label covers nodes
+        revealed by the closure pass.
+
+        A single email is a no-op for SAME_AS edges and closure (the lone
+        Person is still flagged ``is_self = true``).  Returns the number
+        of new ``SAME_AS`` edges created on this run (pairwise + closure;
+        0 on subsequent runs).
         """
         return self._reconcile_self_person_neo4j(me_cfg)
 
@@ -1068,10 +1082,11 @@ class Writer:
                     chosen=chosen,
                 )
 
-            # Single self-email: no SAME_AS edges to create.
+            # Single self-email: no SAME_AS edges and no closure to run.
             if len(emails) < 2:
                 return 0
 
+            # Phase 2: pairwise SAME_AS between [me].emails Persons.
             edge_result = session.run(
                 """
                 MATCH (p:Person)
@@ -1089,12 +1104,63 @@ class Writer:
                 """,
                 emails=emails,
             )
-            created = edge_result.single()["cnt"]
+            created_pairwise = edge_result.single()["cnt"]
 
+            # Phase 3: transitive-closure pass scoped to is_self=true.
+            # Both endpoints AND every intermediate node on the SAME_AS
+            # path must be is_self=true.  This bridges legacy is_self
+            # Persons (from prior [me] configs) into the current cohort
+            # without propagating self-identity through cross-source
+            # SAME_AS edges to non-self Persons.
+            closure_result = session.run(
+                """
+                MATCH path = (a:Person {is_self: true})-[:SAME_AS*2..4]-(b:Person {is_self: true})
+                WHERE id(a) < id(b)
+                  AND NOT (a)-[:SAME_AS]-(b)
+                  AND ALL(node IN nodes(path) WHERE node.is_self = true)
+                WITH DISTINCT a, b
+                MERGE (a)-[r:SAME_AS]->(b)
+                SET r.confidence = 1.0,
+                    r.match_type = 'self_identity',
+                    r.cross_source = true
+                RETURN count(r) AS cnt
+                """
+            )
+            created_closure = closure_result.single()["cnt"]
+
+            # Phase 4: re-run survivor logic graph-wide if closure
+            # revealed new is_self=true Persons not in $emails (e.g. a
+            # legacy email dropped from [me] still carrying the flag).
+            if created_closure > 0:
+                if me_cfg.name:
+                    final_chosen = me_cfg.name
+                else:
+                    name_result = session.run(
+                        """
+                        MATCH (p:Person {is_self: true})
+                        RETURN collect(p.name) AS names
+                        """
+                    )
+                    all_names = [n for n in (name_result.single()["names"] or []) if n]
+                    final_chosen = max(all_names, key=len) if all_names else None
+
+                if final_chosen:
+                    session.run(
+                        """
+                        MATCH (p:Person {is_self: true})
+                        SET p.display_name = $chosen
+                        """,
+                        chosen=final_chosen,
+                    )
+
+        created = created_pairwise + created_closure
         if created > 0:
             logger.info(
-                "Self-identity reconciliation: created %d SAME_AS edges across %d emails",
+                "Self-identity reconciliation: created %d SAME_AS edges "
+                "(pairwise=%d, closure=%d) across %d emails",
                 created,
+                created_pairwise,
+                created_closure,
                 len(emails),
             )
         return created

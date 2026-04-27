@@ -86,30 +86,44 @@ class TestReconcileSelfPersonWriter:
         assert display_args.kwargs["chosen"] == "Alice Existing"
 
     def test_multi_email_creates_pairwise_same_as(self):
-        """Two emails → one SAME_AS edge with self_identity metadata."""
+        """Two emails → one SAME_AS edge with self_identity metadata.
+
+        Closure runs after pairwise but adds nothing here (only pairwise
+        endpoints and no legacy is_self=true Persons in the graph).
+        """
         writer, session = _make_writer_with_responses(
             [
                 {"names": ["Alice", "Alice Smith"]},  # phase 1
                 None,  # phase 2 (display_name update)
-                {"cnt": 1},  # phase 3 (SAME_AS edges)
+                {"cnt": 1},  # phase 3 (pairwise SAME_AS)
+                {"cnt": 0},  # phase 4 (closure — no new edges)
             ]
         )
         n = writer.reconcile_self_person(
             MeConfig(emails=["alice@personal.com", "alice@work.com"])
         )
+        # n is pairwise + closure = 1 + 0
         assert n == 1
-        assert session.run.call_count == 3
+        assert session.run.call_count == 4
 
         # Display-name update should choose the longest existing name.
         display_args = session.run.call_args_list[1]
         assert display_args.kwargs["chosen"] == "Alice Smith"
 
-        # SAME_AS query carries the right metadata.
+        # Pairwise SAME_AS query carries the right metadata.
         same_as_args = session.run.call_args_list[2]
         cypher = same_as_args[0][0]
         assert "match_type = 'self_identity'" in cypher
         assert "confidence = 1.0" in cypher
         assert "cross_source = true" in cypher
+
+        # Closure query is scoped to is_self=true on both endpoints and
+        # along the path.
+        closure_args = session.run.call_args_list[3]
+        closure_cypher = closure_args[0][0]
+        assert "is_self: true" in closure_cypher
+        assert "SAME_AS*2..4" in closure_cypher
+        assert "ALL(node IN nodes(path) WHERE node.is_self = true)" in closure_cypher
 
     def test_explicit_name_overrides_longest_rule(self):
         """``me.name`` always wins, even when shorter than existing names."""
@@ -128,13 +142,14 @@ class TestReconcileSelfPersonWriter:
         writer, session = _make_writer_with_responses(
             [
                 {"names": [None, None]},  # all Persons name-less
-                {"cnt": 1},  # SAME_AS query
+                {"cnt": 1},  # pairwise SAME_AS
+                {"cnt": 0},  # closure — no new edges
             ]
         )
         n = writer.reconcile_self_person(MeConfig(emails=["a@x.com", "b@x.com"]))
         assert n == 1
-        # phase 1 + phase 3 (SAME_AS), no display_name update phase
-        assert session.run.call_count == 2
+        # phase 1 + pairwise + closure, no display_name update phase
+        assert session.run.call_count == 3
         cyphers = [c[0][0] for c in session.run.call_args_list]
         assert not any("display_name = $chosen" in c for c in cyphers)
 
@@ -169,11 +184,127 @@ class TestReconcileSelfPersonWriter:
             [
                 {"names": ["Me"]},
                 None,
-                {"cnt": 0},  # Neo4j MERGE returns no new edges
+                {"cnt": 0},  # pairwise — no new edges
+                {"cnt": 0},  # closure — no new edges
             ]
         )
         n = writer.reconcile_self_person(MeConfig(emails=["me@a.com", "me@b.com"]))
         assert n == 0
+
+    def test_self_transitive_closure_after_late_addition(self):
+        """Closure links a legacy is_self=true Person no longer in [me].emails.
+
+        Scenario: an earlier run with ``[me]=[A, B]`` flagged both as
+        is_self=true and linked them with SAME_AS.  The current config
+        is ``[me]=[B, C]`` (A dropped, C added).  Pairwise creates B↔C
+        but A↔C is missing — closure walks the SAME_AS chain through
+        is_self=true intermediates and adds it.
+        """
+        writer, session = _make_writer_with_responses(
+            [
+                {"names": ["Me", "Me"]},  # phase 1: B, C names
+                None,  # phase 2: display_name on [B, C]
+                {"cnt": 1},  # pairwise: B↔C added
+                {"cnt": 1},  # closure: A↔C added via A↔B↔C
+                {"names": ["Me", "Me", "Me Old"]},  # phase 5 collect (graph-wide)
+                None,  # phase 6: display_name graph-wide
+            ]
+        )
+        n = writer.reconcile_self_person(MeConfig(emails=["me@b.com", "me@c.com"]))
+        # Returned count is pairwise + closure.
+        assert n == 2
+        assert session.run.call_count == 6
+
+        # The closure pass ran with is_self=true scoping on endpoints
+        # AND traversal — protecting against false bridging via
+        # cross-source SAME_AS to non-self Persons.
+        closure_cypher = session.run.call_args_list[3][0][0]
+        assert "is_self: true" in closure_cypher
+        assert "SAME_AS*2..4" in closure_cypher
+        assert "ALL(node IN nodes(path) WHERE node.is_self = true)" in closure_cypher
+        assert "match_type = 'self_identity'" in closure_cypher
+
+        # Phase 6 applies the longest survivor name graph-wide so legacy
+        # is_self=true Persons get the canonical display_name.
+        graph_wide_set = session.run.call_args_list[5]
+        assert "MATCH (p:Person {is_self: true})" in graph_wide_set[0][0]
+        assert "SET p.display_name = $chosen" in graph_wide_set[0][0]
+        assert graph_wide_set.kwargs["chosen"] == "Me Old"
+
+    def test_self_survivor_unchanged_after_closure(self):
+        """``me_cfg.name`` survivor stays canonical before AND after closure.
+
+        When closure adds new edges, the post-closure survivor re-run
+        applies the SAME chosen display_name graph-wide (rather than
+        electing a new survivor based on the wider name set).
+        """
+        writer, session = _make_writer_with_responses(
+            [
+                {"names": ["Me One", "Me Two"]},  # phase 1
+                None,  # phase 2: display_name on [me].emails
+                {"cnt": 1},  # pairwise
+                {"cnt": 1},  # closure adds an edge
+                None,  # phase 6: display_name graph-wide (no collect because me_cfg.name set)
+            ]
+        )
+        n = writer.reconcile_self_person(
+            MeConfig(
+                emails=["me@a.com", "me@b.com"],
+                name="Canonical Me",
+            )
+        )
+        assert n == 2
+        # me_cfg.name short-circuits the graph-wide name collection,
+        # so phase 5 collect query is skipped.
+        assert session.run.call_count == 5
+
+        # Initial display_name uses the explicit override.
+        initial_set = session.run.call_args_list[1]
+        assert initial_set.kwargs["chosen"] == "Canonical Me"
+
+        # Post-closure graph-wide set keeps the SAME survivor name —
+        # the override wins over any longer name discovered via closure.
+        post_closure_set = session.run.call_args_list[4]
+        assert "MATCH (p:Person {is_self: true})" in post_closure_set[0][0]
+        assert post_closure_set.kwargs["chosen"] == "Canonical Me"
+
+    def test_self_closure_with_cross_source_same_as(self):
+        """Closure does NOT bridge self ↔ non-self via cross-source SAME_AS.
+
+        A self-Person ``A`` may have a SAME_AS edge to non-self ``X``
+        from a cross-source merge (e.g., Slack→Gmail by email).  The
+        self-scoped closure must:
+          - only create edges between is_self=true endpoints;
+          - only traverse paths whose intermediate nodes are also
+            is_self=true.
+
+        This test inspects the closure cypher to verify both
+        constraints are encoded so that A↔non-self edges are never
+        synthesised.
+        """
+        writer, session = _make_writer_with_responses(
+            [
+                {"names": ["Me", "Me"]},
+                None,
+                {"cnt": 1},  # pairwise
+                {"cnt": 0},  # closure — no new edges (X not is_self)
+            ]
+        )
+        writer.reconcile_self_person(MeConfig(emails=["me@a.com", "me@b.com"]))
+
+        closure_cypher = session.run.call_args_list[3][0][0]
+
+        # Endpoints must both be is_self=true.
+        assert "(a:Person {is_self: true})" in closure_cypher
+        assert "(b:Person {is_self: true})" in closure_cypher
+
+        # Intermediate nodes on the SAME_AS path must also be is_self=true.
+        assert "ALL(node IN nodes(path) WHERE node.is_self = true)" in closure_cypher
+
+        # The MERGE creates SAME_AS edges only — no new is_self flag is
+        # propagated, so non-self Persons are never marked self.
+        assert "MERGE (a)-[r:SAME_AS]->(b)" in closure_cypher
+        assert "is_self = true" not in closure_cypher.split("MERGE")[1]
 
 
 # ---------------------------------------------------------------------------
@@ -278,7 +409,5 @@ class TestMeEmailCanonicalization:
         their own mailbox semantics and may treat ``+`` as literal."""
         from worker.config import _parse_me_config
 
-        me = _parse_me_config(
-            {"emails": ["me@personal.com", "me+inbox@personal.com"]}
-        )
+        me = _parse_me_config({"emails": ["me@personal.com", "me+inbox@personal.com"]})
         assert me.emails == ["me@personal.com", "me+inbox@personal.com"]

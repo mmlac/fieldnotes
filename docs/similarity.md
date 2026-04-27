@@ -47,9 +47,30 @@ previous one:
    between every pair of self-Persons (`match_type = 'self_identity'`,
    `confidence = 1.0`, `cross_source = true`).
 
+   After the pairwise pass, a **self-scoped transitive closure** runs:
+   any pair of `is_self = true` Persons reachable via a SAME_AS chain
+   (up to 4 hops) gets a direct SAME_AS edge. Both endpoints AND every
+   intermediate node on the path must carry `is_self = true`, so the
+   closure never bridges a self-Person to a non-self Person via
+   cross-source SAME_AS edges (e.g., Slack→Gmail email matches). This
+   pass catches **late additions** to `[me].emails`: when a new email
+   is added later, pairwise links it only to the current cohort, but
+   legacy `is_self = true` Persons from prior `[me]` configs (no longer
+   in `cfg.me.emails`) remain reachable via existing SAME_AS edges and
+   the closure restores direct links between them.
+
+   Step 5's general transitive closure runs *before* the self-identity
+   step and is unaware of `is_self`. The self-scoped closure
+   complements it by covering self-self links revealed only after
+   `reconcile_self_person` adds its own pairwise edges.
+
    The display name is `cfg.me.name` when set, otherwise the longest
-   existing `name` among the matched Persons. A single email is a no-op
-   for `SAME_AS` edges (the lone Person is still flagged `is_self`).
+   existing `name` among the matched Persons. After the closure adds
+   any new edges, the survivor logic re-runs **graph-wide over every
+   `is_self = true` Person** so the canonical `display_name` covers
+   every node revealed by the closure. A single email is a no-op for
+   `SAME_AS` edges and the closure (the lone Person is still flagged
+   `is_self`).
 
    This step runs last, *after* the email-based merge has already
    unified email-keyed Persons across sources. The `[me]` step then
