@@ -178,6 +178,22 @@ class ParsedAttachment:
 # --- Policy -----------------------------------------------------------------
 
 
+def _normalize_mime(mime: str) -> str:
+    """Normalize a MIME type for case/whitespace/parameter-insensitive compare.
+
+    RFC 6838 declares MIME type and subtype case-insensitive, so
+    ``image/JPEG`` and ``image/jpeg`` are the same media type. Sources also
+    occasionally emit the optional parameter suffix (``text/plain;
+    charset=utf-8``) and stray surrounding whitespace. Strip all three so
+    allowlist membership doesn't hinge on upstream label hygiene.
+    """
+    mime = mime.strip().lower()
+    semi = mime.find(";")
+    if semi != -1:
+        mime = mime[:semi].rstrip()
+    return mime
+
+
 def classify_attachment(
     mime: str,
     size_bytes: int,
@@ -188,9 +204,13 @@ def classify_attachment(
 
     Args:
         mime: MIME type as reported by the source (e.g. ``application/pdf``).
+            Compared case-insensitively, with optional parameters
+            (``;charset=...``) and surrounding whitespace stripped.
         size_bytes: Attachment size in bytes.
         indexable: Allowlist of MIME types the caller is willing to index
-            (typically ``cfg.attachment_indexable_mimetypes``).
+            (typically ``cfg.attachment_indexable_mimetypes``). Entries are
+            normalized the same way as ``mime``, so a misconfigured
+            ``IMAGE/PNG`` in the allowlist still matches ``image/png``.
         max_size_mb: Inclusive upper bound on attachment size in megabytes
             (typically ``cfg.attachment_max_size_mb``).  Sizes equal to the
             bound count as in-range.
@@ -199,7 +219,12 @@ def classify_attachment(
         ``"download_and_index"`` when the MIME is allowlisted *and* the size
         is within bound; ``"metadata_only"`` otherwise.
     """
-    if mime in indexable and size_bytes <= max_size_mb * 1024 * 1024:
+    normalized_mime = _normalize_mime(mime)
+    normalized_indexable = {_normalize_mime(m) for m in indexable}
+    if (
+        normalized_mime in normalized_indexable
+        and size_bytes <= max_size_mb * 1024 * 1024
+    ):
         return "download_and_index"
     return "metadata_only"
 

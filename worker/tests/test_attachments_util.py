@@ -188,6 +188,95 @@ class TestClassifyAttachment:
             == expected
         )
 
+    def test_classify_case_insensitive(self) -> None:
+        # RFC 6838: MIME type/subtype are case-insensitive. An upstream
+        # emitting 'image/JPEG' must still match the lowercase allowlist.
+        assert (
+            classify_attachment(
+                mime="image/JPEG",
+                size_bytes=1024,
+                indexable=DEFAULT_INDEXABLE_MIMETYPES,
+                max_size_mb=25,
+            )
+            == "download_and_index"
+        )
+        assert (
+            classify_attachment(
+                mime="APPLICATION/PDF",
+                size_bytes=1024,
+                indexable=DEFAULT_INDEXABLE_MIMETYPES,
+                max_size_mb=25,
+            )
+            == "download_and_index"
+        )
+
+    def test_classify_strips_parameters(self) -> None:
+        # 'text/plain; charset=utf-8' is the same media type as 'text/plain';
+        # the optional parameter must not block allowlist match.
+        assert (
+            classify_attachment(
+                mime="text/plain; charset=utf-8",
+                size_bytes=1024,
+                indexable=DEFAULT_INDEXABLE_MIMETYPES,
+                max_size_mb=25,
+            )
+            == "download_and_index"
+        )
+        # Parameter with no leading space is also valid syntax.
+        assert (
+            classify_attachment(
+                mime="application/json;charset=UTF-8",
+                size_bytes=1024,
+                indexable=DEFAULT_INDEXABLE_MIMETYPES,
+                max_size_mb=25,
+            )
+            == "download_and_index"
+        )
+
+    def test_classify_strips_whitespace(self) -> None:
+        # Stray surrounding whitespace from upstream label cleanup.
+        assert (
+            classify_attachment(
+                mime=" image/png ",
+                size_bytes=1024,
+                indexable=DEFAULT_INDEXABLE_MIMETYPES,
+                max_size_mb=25,
+            )
+            == "download_and_index"
+        )
+
+    def test_indexable_list_normalized_at_load(self) -> None:
+        # A misconfigured allowlist with mixed-case / parameterized /
+        # whitespace-padded entries still matches a clean incoming MIME.
+        custom = ["IMAGE/PNG", " text/Plain; charset=utf-8 ", "Application/PDF"]
+        assert (
+            classify_attachment(
+                mime="image/png",
+                size_bytes=1024,
+                indexable=custom,
+                max_size_mb=25,
+            )
+            == "download_and_index"
+        )
+        assert (
+            classify_attachment(
+                mime="text/plain",
+                size_bytes=1024,
+                indexable=custom,
+                max_size_mb=25,
+            )
+            == "download_and_index"
+        )
+        assert (
+            classify_attachment(
+                mime="application/pdf",
+                size_bytes=1024,
+                indexable=custom,
+                max_size_mb=25,
+            )
+            == "download_and_index"
+        )
+
 
 # --- helpers shared across stream_and_parse tests ---------------------------
 
