@@ -190,6 +190,16 @@ WORKER_ATTACHMENT_FETCH_FAILURES = Counter(
     registry=REGISTRY,
 )
 
+SLACK_RATE_LIMIT_HITS = Counter(
+    "worker_slack_rate_limit_hits_total",
+    "Slack Web API responses that returned a 'ratelimited' error. "
+    "Each increment represents one 429 received and absorbed by the "
+    "Retry-After backoff helper; retries that ultimately succeed do not "
+    "raise. A persistently rising counter indicates the source is "
+    "saturating Slack's per-method rate budget.",
+    registry=REGISTRY,
+)
+
 # ---------------------------------------------------------------------------
 # Pipeline histograms
 # ---------------------------------------------------------------------------

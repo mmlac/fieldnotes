@@ -49,6 +49,7 @@ from worker.metrics import (
 
 from worker.parsers.attachments import DEFAULT_INDEXABLE_MIMETYPES
 
+from ._slack_rate_limit import RateLimitedError, call_with_rate_limit_retry
 from .base import IndexedCheck, PythonSource
 from .cursor import save_json_atomic
 from .slack_auth import DEFAULT_TOKEN_PATH, SlackToken, get_slack_client
@@ -606,6 +607,12 @@ class SlackSource(PythonSource):
                             indexed_check=indexed_check,
                             is_initial_cycle=first_cycle,
                         )
+                    except RateLimitedError as exc:
+                        logger.error(
+                            "Slack rate limit exhausted polling channel %s: %s",
+                            cid,
+                            exc,
+                        )
                     except SlackApiError as exc:
                         logger.error("Slack API error polling channel %s: %s", cid, exc)
                     except Exception:
@@ -639,7 +646,7 @@ class SlackSource(PythonSource):
             team_domain = self._team_domain
             if not team_id or not team_domain:
                 # Fall back to auth.test for the workspace identifiers.
-                resp = self._client.auth_test()
+                resp = call_with_rate_limit_retry(self._client.auth_test)
                 team_id = team_id or resp.get("team_id", "")
                 team_domain = team_domain or resp.get("team_domain", "")
                 # Some auth.test responses report ``url`` instead of
@@ -675,7 +682,7 @@ class SlackSource(PythonSource):
         team_domain = ""
         if not team_id or not team_domain:
             try:
-                resp = client.auth_test()
+                resp = call_with_rate_limit_retry(client.auth_test)
                 team_id = team_id or resp.get("team_id", "")
                 team_domain = resp.get("team_domain", "") or _team_domain_from_url(
                     resp.get("url", "") or ""
@@ -712,8 +719,8 @@ class SlackSource(PythonSource):
             if cursor:
                 kwargs["cursor"] = cursor
             try:
-                resp = self._client.users_list(**kwargs)
-            except SlackApiError as exc:
+                resp = call_with_rate_limit_retry(self._client.users_list, **kwargs)
+            except (SlackApiError, RateLimitedError) as exc:
                 logger.warning("users.list failed: %s", exc)
                 return
             if not isinstance(resp, dict):
@@ -771,7 +778,9 @@ class SlackSource(PythonSource):
             }
             if cursor:
                 kwargs["cursor"] = cursor
-            resp = self._client.conversations_list(**kwargs)
+            resp = call_with_rate_limit_retry(
+                self._client.conversations_list, **kwargs
+            )
             for ch in resp.get("channels", []) or []:
                 if _channel_passes_filter(
                     ch,
@@ -930,7 +939,9 @@ class SlackSource(PythonSource):
             }
             if cursor:
                 kwargs["cursor"] = cursor
-            resp = self._client.conversations_history(**kwargs)
+            resp = call_with_rate_limit_retry(
+                self._client.conversations_history, **kwargs
+            )
             out.extend(resp.get("messages", []) or [])
             cursor = (resp.get("response_metadata") or {}).get("next_cursor") or ""
             if not cursor or not resp.get("has_more"):
@@ -950,7 +961,9 @@ class SlackSource(PythonSource):
             }
             if cursor:
                 kwargs["cursor"] = cursor
-            resp = self._client.conversations_replies(**kwargs)
+            resp = call_with_rate_limit_retry(
+                self._client.conversations_replies, **kwargs
+            )
             out.extend(resp.get("messages", []) or [])
             cursor = (resp.get("response_metadata") or {}).get("next_cursor") or ""
             if not cursor or not resp.get("has_more"):
@@ -971,7 +984,7 @@ class SlackSource(PythonSource):
             parent_ts = m.get("ts", "")
             try:
                 replies_full = self._fetch_replies(cid, parent_ts)
-            except SlackApiError as exc:
+            except (SlackApiError, RateLimitedError) as exc:
                 logger.warning(
                     "Failed to fetch replies for %s/%s: %s", cid, parent_ts, exc
                 )
@@ -1055,7 +1068,7 @@ class SlackSource(PythonSource):
                     replies_full = await asyncio.to_thread(
                         self._fetch_replies, cid, thread_ts
                     )
-                except SlackApiError as exc:
+                except (SlackApiError, RateLimitedError) as exc:
                     logger.warning(
                         "Replies refetch failed for %s/%s: %s", cid, thread_ts, exc
                     )
@@ -1097,14 +1110,15 @@ class SlackSource(PythonSource):
         assert self._client is not None
         cid = channel.get("id", "")
         try:
-            resp = self._client.conversations_history(
+            resp = call_with_rate_limit_retry(
+                self._client.conversations_history,
                 channel=cid,
                 latest=around_ts,
                 oldest=around_ts,
                 inclusive=True,
                 limit=1,
             )
-        except SlackApiError as exc:
+        except (SlackApiError, RateLimitedError) as exc:
             logger.warning("history refetch failed for %s/%s: %s", cid, around_ts, exc)
             return None
         msgs = resp.get("messages", []) or []
