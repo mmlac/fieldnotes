@@ -231,3 +231,108 @@ class TestInitialSyncTracking:
 
         initial_sync_add_items(0)
         assert initial_sync_get_total() == 0
+
+
+# ---------------------------------------------------------------------------
+# Cardinality contract: ``account`` label allowlist
+# ---------------------------------------------------------------------------
+
+
+class TestAccountLabelCardinality:
+    """Guard the cardinality contract documented at the top of metrics.py.
+
+    Any metric carrying an ``account`` label must source the value from a
+    config-validated account name (bounded by ``_ACCOUNT_NAME_RE`` in
+    ``worker.config``).  This test enumerates metric definitions in
+    ``metrics.py`` and fails when a new metric appears with the label
+    without being added to the allowlist below — forcing a reviewer to
+    inspect every call site before unbounded user input can leak in.
+    """
+
+    # Metrics explicitly reviewed and confirmed to receive ``account``
+    # only from config-validated names.  Add a new entry only after
+    # auditing every call site that invokes ``.labels(account=...)``.
+    ALLOWED_METRICS_WITH_ACCOUNT_LABEL = frozenset(
+        {
+            "WORKER_ATTACHMENT_FETCH_FAILURES",
+        }
+    )
+
+    @staticmethod
+    def _metrics_with_account_label() -> set[str]:
+        """Return the set of metric variable names in metrics.py whose
+        labels list contains ``account``."""
+        import ast
+        from pathlib import Path
+
+        import worker.metrics as metrics_module
+
+        source = Path(metrics_module.__file__).read_text()
+        tree = ast.parse(source)
+
+        metric_factories = {"Counter", "Gauge", "Histogram", "Summary"}
+        names: set[str] = set()
+
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Assign):
+                continue
+            if not isinstance(node.value, ast.Call):
+                continue
+            func = node.value.func
+            factory_name = (
+                func.id if isinstance(func, ast.Name) else
+                func.attr if isinstance(func, ast.Attribute) else None
+            )
+            if factory_name not in metric_factories:
+                continue
+
+            labels: list[str] = []
+            # Positional labels arg: Counter(name, doc, [labels], ...)
+            if len(node.value.args) >= 3 and isinstance(
+                node.value.args[2], (ast.List, ast.Tuple)
+            ):
+                labels = [
+                    elt.value
+                    for elt in node.value.args[2].elts
+                    if isinstance(elt, ast.Constant) and isinstance(elt.value, str)
+                ]
+            # Keyword labels arg: labelnames=[...]
+            for kw in node.value.keywords:
+                if kw.arg in {"labelnames", "labels"} and isinstance(
+                    kw.value, (ast.List, ast.Tuple)
+                ):
+                    labels = [
+                        elt.value
+                        for elt in kw.value.elts
+                        if isinstance(elt, ast.Constant)
+                        and isinstance(elt.value, str)
+                    ]
+
+            if "account" not in labels:
+                continue
+
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    names.add(target.id)
+
+        return names
+
+    def test_account_label_allowlist_is_exhaustive(self) -> None:
+        found = self._metrics_with_account_label()
+        new = found - self.ALLOWED_METRICS_WITH_ACCOUNT_LABEL
+        assert not new, (
+            f"New metric(s) defined with an 'account' label without review: "
+            f"{sorted(new)}.  See the 'Cardinality contract' comment block at "
+            f"the top of worker/metrics.py.  Audit every .labels(account=...) "
+            f"call site to confirm the value is config-derived, then add the "
+            f"metric to ALLOWED_METRICS_WITH_ACCOUNT_LABEL in this test."
+        )
+
+    def test_account_label_allowlist_has_no_stale_entries(self) -> None:
+        found = self._metrics_with_account_label()
+        stale = self.ALLOWED_METRICS_WITH_ACCOUNT_LABEL - found
+        assert not stale, (
+            f"Allowlist references metric(s) that no longer exist or no "
+            f"longer carry an 'account' label: {sorted(stale)}.  Remove them "
+            f"from ALLOWED_METRICS_WITH_ACCOUNT_LABEL."
+        )

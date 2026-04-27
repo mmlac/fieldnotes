@@ -41,6 +41,29 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# Cardinality contract: ``account`` label
+# ---------------------------------------------------------------------------
+#
+# Any metric in this module that carries an ``account`` label MUST receive
+# the label value from a config-validated account name only — never from
+# user-controlled input (request bodies, query params, webhook payloads,
+# external API responses, file paths, etc.).
+#
+# Why it matters: account names are constrained by ``_ACCOUNT_NAME_RE`` in
+# ``worker.config`` (``^[a-z][a-z0-9_-]{0,30}$``) and a typical user has
+# 1-3 accounts.  That bound keeps Prometheus time-series cardinality on
+# the ``account`` dimension small.  A future caller that passes an
+# unbounded string into ``.labels(account=...)`` would create one series
+# per distinct value, which can quickly exhaust Prometheus memory and
+# Pushgateway storage.
+#
+# Adding a new metric with an ``account`` label, or adding the label to
+# an existing metric, requires inspecting every call site to confirm the
+# value originates from the parsed config.  ``test_metrics.py`` keeps an
+# allowlist of metrics permitted to use the label and fails CI if a new
+# one appears without explicit review.
+#
+# ---------------------------------------------------------------------------
 # Registry — private registry to avoid default platform/process metrics
 # ---------------------------------------------------------------------------
 
@@ -182,6 +205,9 @@ SOURCE_TASK_FAILED = Counter(
     registry=REGISTRY,
 )
 
+# NOTE: ``account`` label here is bound by the config-validated account
+# name (see "Cardinality contract" comment block above).  Do not increment
+# this counter with an account value derived from user input.
 WORKER_ATTACHMENT_FETCH_FAILURES = Counter(
     "worker_attachment_fetch_failures_total",
     "Attachment fetch/parse failures broken out by source, account, and error kind. "
