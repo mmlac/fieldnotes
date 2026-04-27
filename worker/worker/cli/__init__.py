@@ -307,6 +307,23 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="json_output",
         help="Emit a stable JSON object instead of Rich panels",
     )
+    person_p.add_argument(
+        "--summary",
+        action="store_true",
+        help="Generate an LLM 'next-meeting brief' (uses [models.roles] completion)",
+    )
+    person_p.add_argument(
+        "--meeting",
+        default=None,
+        dest="meeting_id",
+        metavar="EVENT_ID",
+        help="CalendarEvent source_id whose context is added to --summary",
+    )
+    person_p.add_argument(
+        "--horizon",
+        default="30d",
+        help="Lookback window for brief inputs (default: 30d)",
+    )
 
     # ── connections ──────────────────────────────────────────────────
     connections_p = sub.add_parser(
@@ -933,6 +950,9 @@ def main(argv: list[str] | None = None) -> int:
                 use_self=args.use_self,
                 search=args.search,
                 json_output=args.json_output,
+                summary=args.summary,
+                meeting_id=args.meeting_id,
+                horizon=args.horizon,
                 config_path=args.config,
             )
         except Exception as exc:

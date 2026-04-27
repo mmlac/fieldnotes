@@ -175,7 +175,21 @@ async def test_person_tool_ambiguous_name_returns_disambiguation_error(
 
 
 @pytest.mark.asyncio
-async def test_person_tool_summary_true_without_impl_returns_clear_error() -> None:
+@patch("worker.mcp_server.generate_brief")
+@patch("worker.mcp_server.GraphDatabase")
+@patch("worker.mcp_server.get_profile")
+async def test_person_tool_summary_true_returns_next_brief(
+    mock_get_profile: MagicMock,
+    mock_graph_db: MagicMock,
+    mock_generate_brief: MagicMock,
+) -> None:
+    mock_get_profile.return_value = _build_profile()
+    mock_graph_db.driver.return_value = MagicMock()
+    mock_generate_brief.return_value = (
+        "- [Open OmniFocus tasks] follow up with Alice",
+        MagicMock(),
+    )
+
     server = _make_server()
     result = await server._call_tool(
         "person",
@@ -183,6 +197,23 @@ async def test_person_tool_summary_true_without_impl_returns_clear_error() -> No
     )
 
     payload = json.loads(result[0].text)
-    assert payload.get("error") is True
-    assert "message" in payload
-    assert "not yet implemented" in payload["message"].lower()
+    assert payload.get("error") is not True
+    assert "next_brief" in payload
+    assert "follow up with Alice" in payload["next_brief"]
+
+
+@pytest.mark.asyncio
+@patch("worker.mcp_server.get_profile")
+async def test_person_tool_summary_false_omits_next_brief(
+    mock_get_profile: MagicMock,
+) -> None:
+    mock_get_profile.return_value = _build_profile()
+
+    server = _make_server()
+    result = await server._call_tool(
+        "person",
+        {"identifier": "alice@example.com", "summary": False},
+    )
+
+    payload = json.loads(result[0].text)
+    assert "next_brief" not in payload

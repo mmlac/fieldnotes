@@ -25,6 +25,7 @@ from typing import Any
 import anyio
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
+from neo4j import GraphDatabase
 from mcp.shared.session import SessionMessage
 from mcp.types import JSONRPCMessage, TextContent, Tool
 
@@ -54,6 +55,7 @@ from worker.query.timeline import (
 from worker.query.digest import DigestQuerier
 from worker.query._time import parse_relative_time
 from worker.query.person import PersonProfile, get_profile
+from worker.cli.person import BriefError, generate_brief
 
 logger = logging.getLogger(__name__)
 
@@ -405,17 +407,30 @@ TOOLS: list[Tool] = [
                 "summary": {
                     "type": "boolean",
                     "description": (
-                        "Include an LLM-generated 'next_brief' field. Not "
-                        "yet implemented — currently returns an error."
+                        "Include an LLM-generated 'next_brief' field that "
+                        "answers 'what do I need to discuss with this "
+                        "person next?'. Uses the configured 'completion' "
+                        "role; default off so a plain person() call makes "
+                        "no LLM request."
                     ),
                     "default": False,
                 },
                 "meeting_id": {
                     "type": "string",
                     "description": (
-                        "Optional source_id of a calendar event used to "
-                        "scope the summary brief (only with summary=true)."
+                        "Optional source_id of a CalendarEvent whose "
+                        "summary, description, location, attendees, and "
+                        "linked attachments are added to the brief "
+                        "context (only meaningful with summary=true)."
                     ),
+                },
+                "horizon": {
+                    "type": "string",
+                    "description": (
+                        "Lookback window for brief inputs. ISO 8601 or "
+                        "relative ('30d', '7d'). Default: '30d'"
+                    ),
+                    "default": "30d",
                 },
             },
             "required": ["identifier"],
@@ -1187,12 +1202,11 @@ class FieldnotesServer:
         except (TypeError, ValueError):
             limit = 10
 
-        if bool(arguments.get("summary", False)):
-            return [
-                _person_error(
-                    "summary=True is not yet implemented (blocked on fn-364.4)"
-                )
-            ]
+        summary = bool(arguments.get("summary", False))
+        meeting_id = arguments.get("meeting_id") or None
+        horizon_str = arguments.get("horizon", "30d")
+        if not isinstance(horizon_str, str) or not horizon_str.strip():
+            horizon_str = "30d"
 
         try:
             since = parse_relative_time(since_str)
@@ -1214,7 +1228,34 @@ class FieldnotesServer:
                 )
             ]
 
-        payload = _person_profile_to_dict(identifier.strip(), result)
+        brief: str | None = None
+        if summary:
+            try:
+                horizon_dt = parse_relative_time(horizon_str)
+            except ValueError as exc:
+                return [_person_error(f"Invalid 'horizon': {exc}")]
+
+            drv = GraphDatabase.driver(
+                self._cfg.neo4j.uri,
+                auth=(self._cfg.neo4j.user, self._cfg.neo4j.password),
+            )
+            try:
+                brief, _ = generate_brief(
+                    result.person,
+                    cfg=self._cfg,
+                    driver=drv,
+                    since=horizon_dt,
+                    since_label=horizon_str,
+                    meeting_id=meeting_id,
+                )
+            except BriefError as exc:
+                return [_person_error(str(exc))]
+            except ValueError as exc:
+                return [_person_error(str(exc))]
+            finally:
+                drv.close()
+
+        payload = _person_profile_to_dict(identifier.strip(), result, brief=brief)
         return [TextContent(type="text", text=json.dumps(payload, default=str))]
 
     def _handle_suggest_connections(self, arguments: dict) -> list[TextContent]:
@@ -1440,7 +1481,12 @@ def _person_error(message: str, **extra: Any) -> TextContent:
     return TextContent(type="text", text=json.dumps(payload, default=str))
 
 
-def _person_profile_to_dict(identifier: str, profile: PersonProfile) -> dict:
+def _person_profile_to_dict(
+    identifier: str,
+    profile: PersonProfile,
+    *,
+    brief: str | None = None,
+) -> dict:
     p = profile.person
     last_seen = (
         profile.recent_interactions[0].timestamp
@@ -1455,7 +1501,7 @@ def _person_profile_to_dict(identifier: str, profile: PersonProfile) -> dict:
     if profile.files:
         sources_present.add("file")
 
-    return {
+    payload: dict[str, Any] = {
         "identifier": identifier,
         "resolved": {
             "name": p.name,
@@ -1512,6 +1558,9 @@ def _person_profile_to_dict(identifier: str, profile: PersonProfile) -> dict:
             for m in profile.identity_cluster
         ],
     }
+    if brief is not None:
+        payload["next_brief"] = brief
+    return payload
 
 
 def run_server(config_path: Path | None = None) -> None:

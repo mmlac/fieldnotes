@@ -136,6 +136,12 @@ def _probe_person(mod: Any) -> None:
 
     assert callable(Table)
     assert callable(mod.run_person)
+    assert callable(mod.generate_brief)
+
+
+def _probe_person_brief_prompt(mod: Any) -> None:
+    assert callable(mod.build_brief_request)
+    assert "Do not invent" in mod.SYSTEM_PROMPT
 
 
 _PROBES: dict[str, Callable[[Any], None]] = {
@@ -152,6 +158,7 @@ _PROBES: dict[str, Callable[[Any], None]] = {
     "stream": _probe_stream,
     "timeline": _probe_timeline,
     "person": _probe_person,
+    "person_brief_prompt": _probe_person_brief_prompt,
 }
 
 

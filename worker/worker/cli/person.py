@@ -23,8 +23,11 @@ from typing import Any
 
 from neo4j import Driver, GraphDatabase
 
-from worker.config import Neo4jConfig, load_config
+from worker.config import Config, Neo4jConfig, load_config
+from worker.models.resolver import ModelRegistry
 from worker.query._time import parse_relative_time
+from worker.cli.person_brief_prompt import build_brief_request
+from worker.query.person_brief import PreBrief, assemble_prebrief
 from worker.query.person import (
     FileMention,
     IdentityMember,
@@ -50,6 +53,78 @@ from worker.query.person import (
 
 _DEFAULT_SINCE = "30d"
 _DEFAULT_LIMIT = 10
+_DEFAULT_HORIZON = "30d"
+_BRIEF_ROLE = "completion"
+
+
+# ---------------------------------------------------------------------------
+# Brief orchestration
+# ---------------------------------------------------------------------------
+
+
+class BriefError(RuntimeError):
+    """Raised when the brief generator can't run (bad config, missing role)."""
+
+
+def _vault_path_from_config(cfg: Config) -> Path | None:
+    """Pick the first configured Obsidian vault path, if any."""
+    src = cfg.sources.get("obsidian")
+    if src is None:
+        return None
+    raw = src.settings.get("vault_paths") or src.settings.get("vault_path")
+    if not raw:
+        return None
+    paths = raw if isinstance(raw, list) else [raw]
+    for entry in paths:
+        candidate = Path(str(entry)).expanduser()
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def _self_emails(cfg: Config) -> list[str]:
+    if cfg.me is None:
+        return []
+    return list(cfg.me.emails or [])
+
+
+def generate_brief(
+    person: Person,
+    *,
+    cfg: Config,
+    driver: Driver,
+    since: datetime,
+    since_label: str,
+    meeting_id: str | None = None,
+    registry: ModelRegistry | None = None,
+) -> tuple[str, PreBrief]:
+    """Assemble a pre-brief and run the configured ``completion`` model.
+
+    Raises :class:`BriefError` on configuration problems before any LLM
+    call (no completion role, missing alias, etc.).  Raises
+    :class:`ValueError` for an invalid ``meeting_id``.
+    """
+    prebrief = assemble_prebrief(
+        person,
+        driver=driver,
+        since=since,
+        self_emails=_self_emails(cfg),
+        vault_path=_vault_path_from_config(cfg),
+        meeting_id=meeting_id,
+    )
+
+    reg = registry if registry is not None else ModelRegistry(cfg)
+    try:
+        resolved = reg.for_role(_BRIEF_ROLE)
+    except KeyError as exc:
+        raise BriefError(
+            f"--summary requires the {_BRIEF_ROLE!r} role in [models.roles]; "
+            f"run 'fieldnotes doctor' to verify model configuration ({exc})"
+        ) from exc
+
+    request = build_brief_request(prebrief, since_label=since_label)
+    response = resolved.complete(request, task="person_brief")
+    return response.text.strip(), prebrief
 
 
 # ---------------------------------------------------------------------------
@@ -225,6 +300,7 @@ def _emit_json(
     profile: PersonProfile,
     total_interactions: int,
     is_self: bool,
+    brief: str | None = None,
 ) -> str:
     person = profile.person
     payload = {
@@ -246,6 +322,8 @@ def _emit_json(
         "files_mentioning": [_file_dict(f) for f in profile.files],
         "identity_cluster": [_cluster_dict(m) for m in profile.identity_cluster],
     }
+    if brief is not None:
+        payload["next_brief"] = brief
     return json.dumps(payload, indent=2, default=str)
 
 
@@ -270,6 +348,7 @@ def _emit_rich(
     since_label: str,
     limit: int,
     is_self: bool,
+    brief: str | None = None,
 ) -> None:
     from rich.console import Console
     from rich.panel import Panel
@@ -388,6 +467,9 @@ def _emit_rich(
         console.print(t)
     else:
         console.print("[dim]No identity cluster (no SAME_AS edges)[/dim]")
+
+    if brief is not None:
+        console.print(Panel(brief, title="NEXT-MEETING BRIEF", expand=False))
     _ = limit  # currently informational; row caps applied at query time
 
 
@@ -457,7 +539,11 @@ def run_person(
     use_self: bool = False,
     search: str | None = None,
     json_output: bool = False,
+    summary: bool = False,
+    meeting_id: str | None = None,
+    horizon: str = _DEFAULT_HORIZON,
     config_path: Path | None = None,
+    registry: ModelRegistry | None = None,
 ) -> int:
     """Resolve a Person and render their profile.  Returns exit code."""
     cfg = load_config(config_path)
@@ -525,6 +611,30 @@ def run_person(
         profile = _build_profile(driver, person, since=since_dt, limit=int(limit))
         total = _total_interactions(driver, person.id)
 
+        brief: str | None = None
+        if summary:
+            try:
+                horizon_dt = parse_relative_time(horizon)
+            except ValueError as exc:
+                print(f"error: --horizon: {exc}", file=sys.stderr)
+                return 2
+            try:
+                brief, _prebrief = generate_brief(
+                    person,
+                    cfg=cfg,
+                    driver=driver,
+                    since=horizon_dt,
+                    since_label=horizon,
+                    meeting_id=meeting_id,
+                    registry=registry,
+                )
+            except BriefError as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                return 2
+            except ValueError as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                return 1
+
         if json_output:
             print(
                 _emit_json(
@@ -532,6 +642,7 @@ def run_person(
                     profile,
                     total_interactions=total,
                     is_self=use_self,
+                    brief=brief,
                 )
             )
         else:
@@ -541,6 +652,7 @@ def run_person(
                 since_label=since,
                 limit=int(limit),
                 is_self=use_self,
+                brief=brief,
             )
         return 0
     finally:
