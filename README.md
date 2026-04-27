@@ -537,6 +537,11 @@ event link is stored on the Attachment Document so search results can navigate
 back to the source: `mailto:`-style Gmail thread URL, Slack message permalink,
 or the Calendar event's `htmlLink`.
 
+> **`parent_url` scope:** Gmail links open the **thread** that contains the
+> message (not a deep-link to the specific message — Gmail's per-message
+> permalinks are unstable as threads grow); Slack links open the **message
+> permalink**; Calendar links open the **event detail page** (`htmlLink`).
+
 #### Filename in body
 
 Before chunking, the parser weaves attachment filenames into the parent
