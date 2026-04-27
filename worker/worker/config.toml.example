@@ -53,6 +53,10 @@ max_file_size = 104857600
 # --- Gmail (multi-account) ---
 # One [sources.gmail.<account>] section per Gmail account you want to ingest.
 # <account> must match ^[a-z][a-z0-9_-]{0,30}$ (e.g. "personal", "work").
+# Reserved names (rejected at parse time): "gmail", "calendar",
+# "google_calendar", "slack". These would produce cursor keys
+# (``{source}:{account}``) that collide with legacy single-account
+# migration state. Adjacent names like "gmail-work" or "mygmail" are fine.
 # Multiple accounts may share a client_secrets_path (same OAuth client app).
 # Presence of the section means enabled; set enabled = false to keep it
 # defined but inactive.

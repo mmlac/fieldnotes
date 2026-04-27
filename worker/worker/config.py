@@ -29,6 +29,14 @@ DEFAULT_CONFIG_PATH = Path.home() / ".fieldnotes" / "config.toml"
 # Lowercase letter to start, then up to 30 of [a-z0-9_-].
 _ACCOUNT_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,30}$")
 
+# Reserved account names. Cursor keys use the form ``{source}:{account}``
+# (e.g. ``gmail:personal``) and the legacy single-account migration uses
+# the bare source word as the old key (``gmail``, ``calendar``).  Allowing
+# an account literally named after a source produces ambiguous keys like
+# ``gmail:gmail`` that collide with migration intermediate state.  Adjacent
+# names (``gmail-work``, ``mygmail``) remain valid.
+_RESERVED_ACCOUNT_NAMES = frozenset({"gmail", "calendar", "google_calendar", "slack"})
+
 
 class MigrationRequiredError(Exception):
     """Raised when the legacy single-table source schema is detected.
@@ -708,11 +716,19 @@ def _detect_old_multiaccount_shape(source: str, settings: dict[str, Any]) -> Non
 
 
 def _validate_account_name(source: str, account: str) -> None:
-    """Account names must match ``^[a-z][a-z0-9_-]{0,30}$``."""
+    """Account names must match ``^[a-z][a-z0-9_-]{0,30}$`` and not be reserved."""
     if not _ACCOUNT_NAME_RE.match(account):
         raise ValueError(
             f"[sources.{source}] account name {account!r} is invalid: must "
             f"match ^[a-z][a-z0-9_-]{{0,30}}$"
+        )
+    if account in _RESERVED_ACCOUNT_NAMES:
+        raise ValueError(
+            f"[sources.{source}] account name {account!r} is reserved: "
+            f"names matching a source word ({', '.join(sorted(_RESERVED_ACCOUNT_NAMES))}) "
+            f"would produce cursor keys that collide with the legacy "
+            f"single-account migration state. Use a distinct name "
+            f"(e.g. {account!r} → {account!r}-work or my{account})."
         )
 
 

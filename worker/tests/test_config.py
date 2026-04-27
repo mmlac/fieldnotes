@@ -1167,6 +1167,53 @@ class TestParseCalendarMultiAccount:
             )
 
 
+class TestAccountNameReservedWords:
+    """Account names that match a source word produce ambiguous cursor keys
+    like ``gmail:gmail`` and must be rejected at config parse time."""
+
+    @pytest.mark.parametrize(
+        "source,reserved",
+        [
+            ("gmail", "gmail"),
+            ("gmail", "calendar"),
+            ("gmail", "google_calendar"),
+            ("gmail", "slack"),
+            ("google_calendar", "gmail"),
+            ("google_calendar", "calendar"),
+            ("google_calendar", "google_calendar"),
+            ("google_calendar", "slack"),
+        ],
+    )
+    def test_reserved_account_name_rejected(self, source: str, reserved: str) -> None:
+        with pytest.raises(
+            ValueError,
+            match=rf"sources\.{source}.*account name {reserved!r} is reserved",
+        ):
+            _parse(
+                {
+                    "sources": {
+                        source: {reserved: {"client_secrets_path": "/s.json"}}
+                    }
+                }
+            )
+
+    @pytest.mark.parametrize(
+        "name", ["gmail-work", "gmail2", "mygmail", "calendar-personal", "myslack"]
+    )
+    def test_adjacent_names_allowed(self, name: str) -> None:
+        cfg = _parse(
+            {"sources": {"gmail": {name: {"client_secrets_path": "/s.json"}}}}
+        )
+        assert name in cfg.gmail
+
+    def test_default_account_name_allowed(self) -> None:
+        """``default`` is the migrate fallback name and remains valid."""
+        cfg = _parse(
+            {"sources": {"gmail": {"default": {"client_secrets_path": "/s.json"}}}}
+        )
+        assert "default" in cfg.gmail
+
+
 class TestParseMeConfig:
     """[me] block parses into cfg.me with email canonicalization."""
 
