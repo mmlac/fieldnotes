@@ -174,8 +174,8 @@ def check_calendar_auth(
     grant it.
     """
     from worker.sources.calendar_auth import (
-        DRIVE_SCOPE,
-        _token_scopes,
+        ReauthRequiredError,
+        check_calendar_auth as verify_calendar_scopes,
         get_scopes,
         token_path_for_account,
     )
@@ -191,14 +191,13 @@ def check_calendar_auth(
     )
 
     if download_attachments and token_path.exists():
-        if DRIVE_SCOPE in _token_scopes(token_path):
-            _ok(f"Calendar [{account}]: drive scope granted")
-        else:
-            _fail(
-                f"Calendar [{account}]: drive scope missing — "
-                f"re-run install with download_attachments=true"
-            )
+        try:
+            verify_calendar_scopes(account, download_attachments=True)
+        except ReauthRequiredError as exc:
+            _fail(f"Calendar [{account}]: drive scope missing — {exc}")
             rc = max(rc, 1)
+        else:
+            _ok(f"Calendar [{account}]: drive scope granted")
     return rc
 
 

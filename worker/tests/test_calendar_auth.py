@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
 from google.oauth2.credentials import Credentials
 
@@ -468,3 +469,126 @@ class TestTokenSymlinkSafety:
 
         mode = token.stat().st_mode & 0o777
         assert mode == 0o600
+
+
+class TestRemoteScopeVerification:
+    """Tokeninfo introspection: the local scope claim must agree with what
+    Google says is granted at the account level.  Without this, a user who
+    revokes Drive access from the Google granted-apps page would still
+    pass the local-only check and the daemon would only learn at runtime
+    via a 403."""
+
+    @pytest.fixture(autouse=True)
+    def _clear_cache(self) -> None:
+        from worker.sources import calendar_auth
+
+        calendar_auth._TOKENINFO_CACHE.clear()
+        yield
+        calendar_auth._TOKENINFO_CACHE.clear()
+
+    def _write_token_with_drive(self, account: str = "default") -> Path:
+        token = token_path_for_account(account)
+        token.parent.mkdir(parents=True, exist_ok=True)
+        token.write_text(
+            json.dumps(
+                {
+                    "token": "access-tok",
+                    "scopes": [CALENDAR_SCOPE, DRIVE_SCOPE],
+                }
+            )
+        )
+        return token
+
+    def test_token_scope_introspection_match(self, home: Path) -> None:
+        """tokeninfo confirms drive scope: check returns silently."""
+        self._write_token_with_drive()
+        with (
+            patch(
+                "worker.sources.calendar_auth._refresh_access_token",
+                return_value="access-tok",
+            ),
+            patch(
+                "worker.sources.calendar_auth._fetch_remote_scopes",
+                return_value=frozenset([CALENDAR_SCOPE, DRIVE_SCOPE]),
+            ),
+        ):
+            check_calendar_auth("default", download_attachments=True)
+
+    def test_token_scope_revoked_remotely(self, home: Path) -> None:
+        """tokeninfo lacks drive scope: invalidate token + raise."""
+        token = self._write_token_with_drive()
+        with (
+            patch(
+                "worker.sources.calendar_auth._refresh_access_token",
+                return_value="access-tok",
+            ),
+            patch(
+                "worker.sources.calendar_auth._fetch_remote_scopes",
+                return_value=frozenset([CALENDAR_SCOPE]),
+            ),
+            pytest.raises(ReauthRequiredError, match="revoked"),
+        ):
+            check_calendar_auth("default", download_attachments=True)
+        # Stale local claim deleted so a subsequent run cannot pass the
+        # local-only check on the same on-disk file.
+        assert not token.exists()
+
+    def test_tokeninfo_cached(
+        self, home: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Two calls within 1h hit tokeninfo once; a call past 1h refetches."""
+        self._write_token_with_drive()
+
+        fetch_calls = 0
+
+        def fake_fetch(_token: str) -> frozenset[str]:
+            nonlocal fetch_calls
+            fetch_calls += 1
+            return frozenset([CALENDAR_SCOPE, DRIVE_SCOPE])
+
+        clock = [1000.0]
+
+        def fake_now() -> float:
+            return clock[0]
+
+        with (
+            patch(
+                "worker.sources.calendar_auth._refresh_access_token",
+                return_value="access-tok",
+            ),
+            patch(
+                "worker.sources.calendar_auth._fetch_remote_scopes",
+                side_effect=fake_fetch,
+            ),
+            patch(
+                "worker.sources.calendar_auth._now_monotonic",
+                side_effect=fake_now,
+            ),
+        ):
+            check_calendar_auth("default", download_attachments=True)
+            assert fetch_calls == 1
+
+            clock[0] = 1000.0 + 600  # 10 min later — well within TTL
+            check_calendar_auth("default", download_attachments=True)
+            assert fetch_calls == 1, "second call within 1h should hit cache"
+
+            clock[0] = 1000.0 + 3601  # past 1h TTL
+            check_calendar_auth("default", download_attachments=True)
+            assert fetch_calls == 2, "call past 1h should refetch"
+
+    def test_tokeninfo_network_failure_graceful(self, home: Path) -> None:
+        """Transport / HTTP errors must not block the daemon."""
+        self._write_token_with_drive()
+
+        def boom(*_args: object, **_kwargs: object) -> object:
+            raise httpx.ConnectTimeout("simulated timeout")
+
+        with (
+            patch(
+                "worker.sources.calendar_auth._refresh_access_token",
+                return_value="access-tok",
+            ),
+            patch("worker.sources.calendar_auth.httpx.get", side_effect=boom),
+        ):
+            # Must not raise — graceful degrade on transient network blip.
+            check_calendar_auth("default", download_attachments=True)

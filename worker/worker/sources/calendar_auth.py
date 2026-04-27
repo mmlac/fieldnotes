@@ -17,8 +17,10 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from pathlib import Path
 
+import httpx
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -30,6 +32,14 @@ logger = logging.getLogger(__name__)
 
 CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.events.readonly"
 DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.readonly"
+
+TOKENINFO_URL = "https://oauth2.googleapis.com/tokeninfo"
+TOKENINFO_CACHE_TTL_SECONDS = 3600
+
+# Per-token cache of (expiry_monotonic, granted_scopes) returned by
+# Google's tokeninfo endpoint.  Keyed by the on-disk token path so two
+# accounts using the same module instance keep independent cache entries.
+_TOKENINFO_CACHE: dict[Path, tuple[float, frozenset[str]]] = {}
 
 # Backwards-compatible alias — the read-only event scope alone, without
 # Drive.  Callers that need the dynamic scope set should use
@@ -145,6 +155,136 @@ def _token_scopes(token_path: Path) -> list[str]:
     return []
 
 
+def _refresh_access_token(token_path: Path) -> str | None:
+    """Load creds from *token_path*, refreshing if expired, return access token.
+
+    Returns ``None`` when the file is missing/unreadable, the JSON is
+    malformed, the token cannot be refreshed, or no access token is set
+    after load.  Refresh failures are swallowed so the caller can degrade
+    gracefully — get_credentials will surface a hard error if it sees the
+    same problem when it actually needs the token.
+    """
+    raw = read_token_safe(token_path)
+    if raw is None:
+        return None
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return None
+    try:
+        creds = Credentials.from_authorized_user_info(
+            data, [CALENDAR_SCOPE, DRIVE_SCOPE]
+        )
+    except (ValueError, KeyError):
+        return None
+    if creds.expired and creds.refresh_token:
+        try:
+            creds.refresh(Request())
+        except Exception as exc:
+            logger.warning(
+                "Calendar token refresh failed at %s: %s",
+                redact_home_path(str(token_path)),
+                exc,
+            )
+            return None
+        try:
+            write_token_atomic(token_path, creds.to_json())
+        except OSError as exc:
+            logger.warning(
+                "Calendar token persist after refresh failed at %s: %s",
+                redact_home_path(str(token_path)),
+                exc,
+            )
+    return creds.token if creds.token else None
+
+
+def _fetch_remote_scopes(access_token: str) -> frozenset[str]:
+    """Call Google's tokeninfo endpoint and return the granted scope set.
+
+    Raises ``httpx.HTTPError`` on transport errors and HTTP 4xx/5xx — the
+    caller decides whether to fail loud or degrade.  Google returns the
+    scopes as a space-separated string under the ``scope`` key.
+    """
+    resp = httpx.get(
+        TOKENINFO_URL,
+        params={"access_token": access_token},
+        timeout=httpx.Timeout(connect=5.0, read=5.0, write=5.0, pool=5.0),
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    raw = data.get("scope", "")
+    if isinstance(raw, list):
+        return frozenset(str(s) for s in raw)
+    return frozenset(str(raw).split())
+
+
+def _now_monotonic() -> float:
+    """Indirection for tests to advance the cache clock without sleeping."""
+    return time.monotonic()
+
+
+def _cached_remote_scopes(token_path: Path) -> frozenset[str] | None:
+    entry = _TOKENINFO_CACHE.get(token_path)
+    if entry is None:
+        return None
+    expiry, scopes = entry
+    if _now_monotonic() >= expiry:
+        _TOKENINFO_CACHE.pop(token_path, None)
+        return None
+    return scopes
+
+
+def _store_remote_scopes(token_path: Path, scopes: frozenset[str]) -> None:
+    _TOKENINFO_CACHE[token_path] = (
+        _now_monotonic() + TOKENINFO_CACHE_TTL_SECONDS,
+        scopes,
+    )
+
+
+def _verify_remote_drive_scope(account: str, token_path: Path) -> None:
+    """Confirm Google still grants ``drive.readonly`` for the saved token.
+
+    On mismatch (drive scope missing from tokeninfo's response) the local
+    token is deleted and :class:`ReauthRequiredError` is raised so the
+    user gets an actionable re-auth prompt instead of an opaque 403 at
+    runtime.  Network and HTTP errors degrade gracefully — a transient
+    blip should never block the daemon.
+    """
+    scopes = _cached_remote_scopes(token_path)
+    if scopes is None:
+        access_token = _refresh_access_token(token_path)
+        if access_token is None:
+            return
+        try:
+            scopes = _fetch_remote_scopes(access_token)
+        except httpx.HTTPError as exc:
+            logger.warning(
+                "tokeninfo probe failed for account=%s, skipping remote "
+                "scope check: %s",
+                account,
+                exc,
+            )
+            return
+        _store_remote_scopes(token_path, scopes)
+
+    if DRIVE_SCOPE in scopes:
+        return
+
+    # Stale local claim — drop the cache entry and the on-disk token so a
+    # subsequent run cannot pass the local-only check on the same file.
+    _TOKENINFO_CACHE.pop(token_path, None)
+    try:
+        token_path.unlink()
+    except OSError:
+        pass
+    raise ReauthRequiredError(
+        f"Calendar token for account={account!r} no longer carries "
+        f"{DRIVE_SCOPE!r} — scope was revoked at the Google account level. "
+        f"Re-run the install flow with download_attachments=true to grant "
+        f"it again."
+    )
+
+
 def check_calendar_auth(
     account: str,
     *,
@@ -152,10 +292,23 @@ def check_calendar_auth(
 ) -> None:
     """Verify the persisted token covers the scopes the caller needs.
 
-    Raises :class:`ReauthRequiredError` when *download_attachments* is True
-    but the persisted token was issued without ``drive.readonly``.  Returns
+    Performs a two-stage check when ``download_attachments`` is True:
+
+    1. Local: the saved token's ``scopes`` claim must include
+       ``drive.readonly``.  Catches the case where attachment indexing was
+       flipped on after the token was issued with the narrower scope set.
+    2. Remote: Google's tokeninfo endpoint is consulted (cached for
+       :data:`TOKENINFO_CACHE_TTL_SECONDS`) to confirm the scope is still
+       granted at the account level.  If a user revoked the app's Drive
+       access from Google's granted-apps page, the local claim is stale
+       and runtime would fail with a 403 — surfacing it here as
+       :class:`ReauthRequiredError` is much more actionable.
+
+    Raises :class:`ReauthRequiredError` on either mismatch.  Returns
     silently otherwise (including when the token file is missing — that's
-    a "not yet installed" condition the install flow handles).
+    a "not yet installed" condition the install flow handles, and when
+    tokeninfo is unreachable, since a transient blip should not block the
+    daemon).
     """
     if not download_attachments:
         return
@@ -170,3 +323,4 @@ def check_calendar_auth(
             f"delete {redact_home_path(str(token_path))} and re-run the "
             f"install flow with download_attachments=true to grant it."
         )
+    _verify_remote_drive_scope(account, token_path)
