@@ -182,6 +182,14 @@ SOURCE_TASK_FAILED = Counter(
     registry=REGISTRY,
 )
 
+WORKER_ATTACHMENT_FETCH_FAILURES = Counter(
+    "worker_attachment_fetch_failures_total",
+    "Attachment fetch/parse failures broken out by source, account, and error kind. "
+    "Surfaced by 'fieldnotes doctor' when non-zero.",
+    ["source_type", "account", "error_kind"],
+    registry=REGISTRY,
+)
+
 # ---------------------------------------------------------------------------
 # Pipeline histograms
 # ---------------------------------------------------------------------------
@@ -634,7 +642,11 @@ def init_metrics(config: Config) -> None:
     # Read from the [metrics] config section.
     metrics_cfg = getattr(config, "metrics", None)
     gateway = getattr(metrics_cfg, "pushgateway_url", "") if metrics_cfg else ""
-    interval = getattr(metrics_cfg, "push_interval", DEFAULT_PUSH_INTERVAL) if metrics_cfg else DEFAULT_PUSH_INTERVAL
+    interval = (
+        getattr(metrics_cfg, "push_interval", DEFAULT_PUSH_INTERVAL)
+        if metrics_cfg
+        else DEFAULT_PUSH_INTERVAL
+    )
 
     # Allow env-var override (convenient for containers)
     import os

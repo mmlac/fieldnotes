@@ -1321,9 +1321,7 @@ class TestDoctorCalendarAccounts:
             token_path_for_account,
         )
 
-        monkeypatch.setattr(
-            "pathlib.Path.home", classmethod(lambda cls: tmp_path)
-        )
+        monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: tmp_path))
 
         secrets = tmp_path / "secrets.json"
         secrets.write_text("{}")
@@ -1331,9 +1329,7 @@ class TestDoctorCalendarAccounts:
         # Account A: drive scope granted.
         token_a = token_path_for_account("personal")
         token_a.parent.mkdir(parents=True, exist_ok=True)
-        token_a.write_text(
-            json.dumps({"scopes": [CALENDAR_SCOPE, DRIVE_SCOPE]})
-        )
+        token_a.write_text(json.dumps({"scopes": [CALENDAR_SCOPE, DRIVE_SCOPE]}))
         token_a.chmod(0o600)
 
         # Account B: drive scope missing.
@@ -1753,3 +1749,321 @@ class TestConfigTomlExampleAttachmentKnobs:
         assert "download_attachments" in cal_block
         assert "attachment_max_size_mb" in cal_block
         assert "attachment_indexable_mimetypes" in cal_block
+
+
+def _stub_valid_google_creds(monkeypatch) -> None:
+    """Make ``Credentials.from_authorized_user_file`` return a valid creds mock.
+
+    Used by the doctor attachment tests where the actual Google auth probe
+    is not the focus — we just need ``_check_google_auth`` to return 0.
+    """
+    from unittest.mock import MagicMock
+
+    from google.oauth2.credentials import Credentials
+
+    creds = MagicMock(spec=Credentials)
+    creds.valid = True
+    creds.expired = False
+    monkeypatch.setattr(
+        Credentials,
+        "from_authorized_user_file",
+        classmethod(lambda cls, *a, **k: creds),
+    )
+
+
+class TestDoctorAttachmentStatus:
+    """Per-source attachment-indexing status lines (fn-47w)."""
+
+    def test_gmail_off_prints_off_line(self, tmp_path, capsys, monkeypatch) -> None:
+        import json
+
+        from worker import doctor
+        from worker.sources.gmail_auth import token_path_for_account
+
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+        _stub_valid_google_creds(monkeypatch)
+
+        secrets = tmp_path / "g.json"
+        secrets.write_text("{}")
+        token = token_path_for_account("personal")
+        token.parent.mkdir(parents=True, exist_ok=True)
+        token.write_text(json.dumps({"token": "t"}))
+
+        accts = {
+            "personal": GmailAccountConfig(
+                name="personal",
+                client_secrets_path=str(secrets),
+                download_attachments=False,
+            )
+        }
+        errors = doctor.check_gmail_accounts(accts)
+        out = capsys.readouterr().out
+        assert errors == 0
+        assert "Gmail [personal] attachments: OFF" in out
+        assert "filenames embedded in body" in out
+
+    def test_gmail_on_prints_on_line_with_allowlist_and_max(
+        self, tmp_path, capsys, monkeypatch
+    ) -> None:
+        import json
+
+        from worker import doctor
+        from worker.sources.gmail_auth import token_path_for_account
+
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+        _stub_valid_google_creds(monkeypatch)
+
+        secrets = tmp_path / "g.json"
+        secrets.write_text("{}")
+        token = token_path_for_account("personal")
+        token.parent.mkdir(parents=True, exist_ok=True)
+        token.write_text(json.dumps({"token": "t"}))
+
+        accts = {
+            "personal": GmailAccountConfig(
+                name="personal",
+                client_secrets_path=str(secrets),
+                download_attachments=True,
+                attachment_indexable_mimetypes=["application/pdf", "image/png"],
+                attachment_max_size_mb=10,
+            )
+        }
+        errors = doctor.check_gmail_accounts(accts)
+        out = capsys.readouterr().out
+        assert errors == 0
+        assert "Gmail [personal] attachments: ON" in out
+        assert "allowlist: 2 MIMEs" in out
+        assert "max 10 MB" in out
+
+    def test_gmail_multi_account_per_account_status(
+        self, tmp_path, capsys, monkeypatch
+    ) -> None:
+        """Two accounts with different download_attachments → reported separately."""
+        import json
+
+        from worker import doctor
+        from worker.sources.gmail_auth import token_path_for_account
+
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+        _stub_valid_google_creds(monkeypatch)
+
+        secrets = tmp_path / "g.json"
+        secrets.write_text("{}")
+        for name in ("personal", "work"):
+            token = token_path_for_account(name)
+            token.parent.mkdir(parents=True, exist_ok=True)
+            token.write_text(json.dumps({"token": "t"}))
+
+        accts = {
+            "personal": GmailAccountConfig(
+                name="personal",
+                client_secrets_path=str(secrets),
+                download_attachments=True,
+            ),
+            "work": GmailAccountConfig(
+                name="work",
+                client_secrets_path=str(secrets),
+                download_attachments=False,
+            ),
+        }
+        doctor.check_gmail_accounts(accts)
+        out = capsys.readouterr().out
+        assert "Gmail [personal] attachments: ON" in out
+        assert "Gmail [work] attachments: OFF" in out
+
+    def test_calendar_on_drive_scope_granted_ok(
+        self, tmp_path, capsys, monkeypatch
+    ) -> None:
+        """download_attachments=True + drive.readonly granted → OK + ON line."""
+        import json
+
+        from worker import doctor
+        from worker.sources.calendar_auth import (
+            CALENDAR_SCOPE,
+            DRIVE_SCOPE,
+            token_path_for_account,
+        )
+
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+        _stub_valid_google_creds(monkeypatch)
+
+        secrets = tmp_path / "c.json"
+        secrets.write_text("{}")
+        token = token_path_for_account("personal")
+        token.parent.mkdir(parents=True, exist_ok=True)
+        token.write_text(
+            json.dumps({"token": "t", "scopes": [CALENDAR_SCOPE, DRIVE_SCOPE]})
+        )
+
+        accts = {
+            "personal": CalendarAccountConfig(
+                name="personal",
+                client_secrets_path=str(secrets),
+                download_attachments=True,
+            )
+        }
+        errors = doctor.check_calendar_accounts(accts)
+        out = capsys.readouterr().out
+        assert errors == 0
+        assert "Calendar [personal]: drive scope granted" in out
+        assert "Calendar [personal] attachments: ON" in out
+
+    def test_calendar_on_drive_scope_missing_warns_and_fails(
+        self, tmp_path, capsys, monkeypatch
+    ) -> None:
+        """download_attachments=True + drive scope missing → non-zero + ON line."""
+        import json
+
+        from worker import doctor
+        from worker.sources.calendar_auth import (
+            CALENDAR_SCOPE,
+            token_path_for_account,
+        )
+
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+        _stub_valid_google_creds(monkeypatch)
+
+        secrets = tmp_path / "c.json"
+        secrets.write_text("{}")
+        token = token_path_for_account("personal")
+        token.parent.mkdir(parents=True, exist_ok=True)
+        token.write_text(json.dumps({"token": "t", "scopes": [CALENDAR_SCOPE]}))
+
+        accts = {
+            "personal": CalendarAccountConfig(
+                name="personal",
+                client_secrets_path=str(secrets),
+                download_attachments=True,
+            )
+        }
+        errors = doctor.check_calendar_accounts(accts)
+        out = capsys.readouterr().out
+        assert errors >= 1
+        assert "drive scope missing" in out
+        assert "Calendar [personal] attachments: ON" in out
+
+    def test_calendar_off_no_drive_check_no_failure(
+        self, tmp_path, capsys, monkeypatch
+    ) -> None:
+        """download_attachments=False → no drive-scope assertion, exit clean."""
+        import json
+
+        from worker import doctor
+        from worker.sources.calendar_auth import (
+            CALENDAR_SCOPE,
+            token_path_for_account,
+        )
+
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+        _stub_valid_google_creds(monkeypatch)
+
+        secrets = tmp_path / "c.json"
+        secrets.write_text("{}")
+        token = token_path_for_account("personal")
+        token.parent.mkdir(parents=True, exist_ok=True)
+        token.write_text(json.dumps({"token": "t", "scopes": [CALENDAR_SCOPE]}))
+
+        accts = {
+            "personal": CalendarAccountConfig(
+                name="personal",
+                client_secrets_path=str(secrets),
+                download_attachments=False,
+            )
+        }
+        errors = doctor.check_calendar_accounts(accts)
+        out = capsys.readouterr().out
+        assert errors == 0
+        assert "Calendar [personal] attachments: OFF" in out
+        assert "drive scope" not in out
+
+    def test_slack_on_prints_on_line(self, tmp_path, capsys, monkeypatch) -> None:
+        from worker import doctor
+
+        secrets = tmp_path / "slack.json"
+        secrets.write_text("{}")
+        cfg = SlackSourceConfig(
+            enabled=True,
+            client_secrets_path=str(secrets),
+            download_attachments=True,
+            attachment_indexable_mimetypes=["application/pdf"],
+            attachment_max_size_mb=15,
+        )
+
+        _install_fake_slack_auth(monkeypatch, lambda *a, **k: 0)
+        monkeypatch.setattr(doctor, "check_slack_auth", lambda *a, **k: 0)
+
+        errors = doctor.check_slack(cfg)
+        out = capsys.readouterr().out
+        assert errors == 0
+        assert "Slack attachments: ON" in out
+        assert "allowlist: 1 MIMEs" in out
+        assert "max 15 MB" in out
+
+    def test_slack_off_prints_off_line(self, tmp_path, capsys, monkeypatch) -> None:
+        from worker import doctor
+
+        secrets = tmp_path / "slack.json"
+        secrets.write_text("{}")
+        cfg = SlackSourceConfig(
+            enabled=True,
+            client_secrets_path=str(secrets),
+            download_attachments=False,
+        )
+
+        _install_fake_slack_auth(monkeypatch, lambda *a, **k: 0)
+        monkeypatch.setattr(doctor, "check_slack_auth", lambda *a, **k: 0)
+
+        errors = doctor.check_slack(cfg)
+        out = capsys.readouterr().out
+        assert errors == 0
+        assert "Slack attachments: OFF" in out
+
+
+class TestDoctorAttachmentFailureCounter:
+    """worker_attachment_fetch_failures counter surfacing in doctor."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_counter(self):
+        from worker.metrics import WORKER_ATTACHMENT_FETCH_FAILURES
+
+        WORKER_ATTACHMENT_FETCH_FAILURES.clear()
+        yield
+        WORKER_ATTACHMENT_FETCH_FAILURES.clear()
+
+    def test_counter_exists_with_expected_labels(self) -> None:
+        from worker.metrics import WORKER_ATTACHMENT_FETCH_FAILURES
+
+        # Sample increment with labels — must not raise.
+        WORKER_ATTACHMENT_FETCH_FAILURES.labels(
+            source_type="gmail",
+            account="personal",
+            error_kind="download",
+        ).inc(0)
+
+    def test_doctor_silent_when_no_failures(self, capsys) -> None:
+        from worker.doctor import check_attachment_failures
+
+        check_attachment_failures()
+        out = capsys.readouterr().out
+        assert "Attachment failures" not in out
+
+    def test_doctor_reports_per_source_when_nonzero(self, capsys) -> None:
+        from worker.doctor import check_attachment_failures
+        from worker.metrics import WORKER_ATTACHMENT_FETCH_FAILURES
+
+        WORKER_ATTACHMENT_FETCH_FAILURES.labels(
+            source_type="gmail",
+            account="personal",
+            error_kind="download",
+        ).inc(2)
+        WORKER_ATTACHMENT_FETCH_FAILURES.labels(
+            source_type="slack",
+            account="-",
+            error_kind="parse",
+        ).inc(1)
+
+        check_attachment_failures()
+        out = capsys.readouterr().out
+        assert "Attachment failures (last 24h)" in out
+        assert "gmail: 2 attachment fetch failure(s)" in out
+        assert "slack: 1 attachment fetch failure(s)" in out

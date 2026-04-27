@@ -27,6 +27,30 @@ def _fail(msg: str) -> None:
     print(f"  \u2717 {msg}")
 
 
+def _attachment_status_line(
+    label: str,
+    account: str | None,
+    *,
+    download_attachments: bool,
+    allowlist_count: int,
+    max_mb: int,
+) -> None:
+    """Print the per-source attachment-indexing status line.
+
+    *account* is None for sources without per-account configuration (e.g.
+    Slack); the label rendered in that case is just ``Slack`` rather than
+    ``Slack [<account>]``.
+    """
+    prefix = label if account is None else f"{label} [{account}]"
+    if download_attachments:
+        _ok(
+            f"{prefix} attachments: ON "
+            f"(allowlist: {allowlist_count} MIMEs, max {max_mb} MB)"
+        )
+    else:
+        _ok(f"{prefix} attachments: OFF (filenames embedded in body, no fetch)")
+
+
 def check_slack_auth(token_path: Path | None = None) -> int:
     """Check Slack auth status and print a result line.
 
@@ -189,6 +213,13 @@ def check_gmail_accounts(accounts: dict[str, GmailAccountConfig]) -> int:
             _ok(f"Gmail [{name}]: disabled")
             continue
         errors += check_gmail_auth(Path(acct.client_secrets_path), name)
+        _attachment_status_line(
+            "Gmail",
+            name,
+            download_attachments=acct.download_attachments,
+            allowlist_count=len(acct.attachment_indexable_mimetypes),
+            max_mb=acct.attachment_max_size_mb,
+        )
     return errors
 
 
@@ -209,7 +240,52 @@ def check_calendar_accounts(
             name,
             download_attachments=acct.download_attachments,
         )
+        _attachment_status_line(
+            "Calendar",
+            name,
+            download_attachments=acct.download_attachments,
+            allowlist_count=len(acct.attachment_indexable_mimetypes),
+            max_mb=acct.attachment_max_size_mb,
+        )
     return errors
+
+
+def _collect_attachment_failures() -> dict[str, float]:
+    """Sum ``worker_attachment_fetch_failures_total`` samples by source_type.
+
+    Returns a mapping of ``source_type → total failures``.  Empty when no
+    failures have been recorded.  Reads the in-process Prometheus counter,
+    which the doctor surfaces in its own diagnostic section when non-zero.
+    """
+    from worker.metrics import WORKER_ATTACHMENT_FETCH_FAILURES
+
+    totals: dict[str, float] = {}
+    for metric in WORKER_ATTACHMENT_FETCH_FAILURES.collect():
+        for sample in metric.samples:
+            if not sample.name.endswith("_total"):
+                continue
+            source_type = sample.labels.get("source_type", "")
+            if not source_type:
+                continue
+            totals[source_type] = totals.get(source_type, 0.0) + sample.value
+    return {k: v for k, v in totals.items() if v > 0}
+
+
+def check_attachment_failures() -> None:
+    """Print the attachment failure diagnostic section.
+
+    Reports per-source totals from the in-process counter when any source
+    has a non-zero count; silent otherwise.  Always returns 0 errors —
+    these counters reflect runtime conditions, not configuration health,
+    so they should not gate the doctor's exit code.
+    """
+    totals = _collect_attachment_failures()
+    if not totals:
+        return
+    print("\nAttachment failures (last 24h)")
+    for source_type in sorted(totals):
+        n = int(totals[source_type])
+        _warn(f"{source_type}: {n} attachment fetch failure(s)")
 
 
 def check_me(me: MeConfig | None) -> int:
@@ -252,9 +328,24 @@ def check_slack(slack_cfg: SlackSourceConfig) -> int:
             "Slack auth module not available "
             "(worker.sources.slack_auth) — skipping auth probe"
         )
+        _attachment_status_line(
+            "Slack",
+            None,
+            download_attachments=slack_cfg.download_attachments,
+            allowlist_count=len(slack_cfg.attachment_indexable_mimetypes),
+            max_mb=slack_cfg.attachment_max_size_mb,
+        )
         return 0
 
-    return check_slack_auth()
+    rc = check_slack_auth()
+    _attachment_status_line(
+        "Slack",
+        None,
+        download_attachments=slack_cfg.download_attachments,
+        allowlist_count=len(slack_cfg.attachment_indexable_mimetypes),
+        max_mb=slack_cfg.attachment_max_size_mb,
+    )
+    return rc
 
 
 def doctor(config_path: Path | None = None) -> int:
@@ -452,6 +543,9 @@ def doctor(config_path: Path | None = None) -> int:
     # ── 6e. [me] block ──────────────────────────────────────────────
     print("\n[me]")
     errors += check_me(cfg.me)
+
+    # ── 6f. Attachment failure counters ─────────────────────────────
+    check_attachment_failures()
 
     # ── 7. Reranker ──────────────────────────────────────────────────
     print("\nReranker")
