@@ -449,7 +449,11 @@ class SlackSource(PythonSource):
         self._window_overlap_messages = int(
             cfg.get("window_overlap_messages", DEFAULT_WINDOW_OVERLAP)
         )
-        self._download_files = bool(cfg.get("download_files", False))
+        # SlackSourceConfig now exposes 'download_attachments' (legacy
+        # 'download_files' aliased at parse time).  Read both for safety.
+        self._download_files = bool(
+            cfg.get("download_attachments", cfg.get("download_files", False))
+        )
         if "client_secrets_path" in cfg:
             self._client_secrets_path = cfg["client_secrets_path"]
         if "token_path" in cfg:

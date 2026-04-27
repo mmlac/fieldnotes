@@ -17,6 +17,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from worker.parsers.attachments import DEFAULT_INDEXABLE_MIMETYPES
+
 logger = logging.getLogger(__name__)
 
 
@@ -138,6 +140,11 @@ class GmailAccountConfig:
     poll_interval_seconds: int = 300
     max_initial_threads: int = 500
     label_filter: str = "INBOX"
+    download_attachments: bool = False
+    attachment_indexable_mimetypes: list[str] = field(
+        default_factory=lambda: list(DEFAULT_INDEXABLE_MIMETYPES)
+    )
+    attachment_max_size_mb: int = 25
 
 
 @dataclass
@@ -150,6 +157,11 @@ class CalendarAccountConfig:
     poll_interval_seconds: int = 300
     max_initial_days: int = 90
     calendar_ids: list[str] = field(default_factory=lambda: ["primary"])
+    download_attachments: bool = False
+    attachment_indexable_mimetypes: list[str] = field(
+        default_factory=lambda: list(DEFAULT_INDEXABLE_MIMETYPES)
+    )
+    attachment_max_size_mb: int = 25
 
 
 @dataclass
@@ -179,7 +191,11 @@ class SlackSourceConfig:
     window_max_tokens: int = 512
     window_gap_seconds: int = 1800
     window_overlap_messages: int = 3
-    download_files: bool = False
+    download_attachments: bool = False
+    attachment_indexable_mimetypes: list[str] = field(
+        default_factory=lambda: list(DEFAULT_INDEXABLE_MIMETYPES)
+    )
+    attachment_max_size_mb: int = 25
 
 
 @dataclass
@@ -434,6 +450,44 @@ def _validate_homebrew_config(settings: dict[str, Any]) -> None:
         _check_type(section, "include_system", settings["include_system"], bool)
 
 
+# Inclusive bounds enforced by _validate_attachment_settings on the
+# attachment_max_size_mb knob.  1 MB is the smallest meaningful indexable
+# attachment; 200 MB is well above any realistic email/calendar/Slack
+# upload limit and stops accidental "index multi-GB tarballs" misconfigs.
+_ATTACHMENT_MAX_SIZE_MIN_MB = 1
+_ATTACHMENT_MAX_SIZE_MAX_MB = 200
+
+
+def _validate_attachment_settings(section: str, settings: dict[str, Any]) -> None:
+    """Validate the shared attachment knobs on any source section.
+
+    Checks ``attachment_indexable_mimetypes`` (list[str]) and
+    ``attachment_max_size_mb`` (int in [1, 200]).  Type / range errors
+    raise; missing keys are fine (defaults will fill in).
+    """
+    if "attachment_indexable_mimetypes" in settings:
+        _check_list_of(
+            section,
+            "attachment_indexable_mimetypes",
+            settings["attachment_indexable_mimetypes"],
+            str,
+        )
+    if "attachment_max_size_mb" in settings:
+        _check_type(
+            section,
+            "attachment_max_size_mb",
+            settings["attachment_max_size_mb"],
+            int,
+        )
+        v = settings["attachment_max_size_mb"]
+        if not _ATTACHMENT_MAX_SIZE_MIN_MB <= v <= _ATTACHMENT_MAX_SIZE_MAX_MB:
+            raise ValueError(
+                f"[{section}] attachment_max_size_mb must be in "
+                f"[{_ATTACHMENT_MAX_SIZE_MIN_MB}, {_ATTACHMENT_MAX_SIZE_MAX_MB}], "
+                f"got {v}"
+            )
+
+
 def _parse_slack_config(settings: dict[str, Any]) -> SlackSourceConfig:
     """Validate and parse [sources.slack] settings into SlackSourceConfig."""
     section = "sources.slack"
@@ -487,6 +541,29 @@ def _parse_slack_config(settings: dict[str, Any]) -> SlackSourceConfig:
             )
     if "download_files" in settings:
         _check_type(section, "download_files", settings["download_files"], bool)
+    if "download_attachments" in settings:
+        _check_type(
+            section, "download_attachments", settings["download_attachments"], bool
+        )
+    _validate_attachment_settings(section, settings)
+
+    # Legacy alias: [sources.slack].download_files predates the unified
+    # attachment knobs.  When both keys are present, download_attachments
+    # wins and we warn; when only the legacy key is present, we silently
+    # promote it.
+    if "download_attachments" in settings and "download_files" in settings:
+        logger.warning(
+            "[%s] both 'download_attachments' and legacy 'download_files' set; "
+            "download_attachments wins",
+            section,
+        )
+        download_attachments = settings["download_attachments"]
+    elif "download_attachments" in settings:
+        download_attachments = settings["download_attachments"]
+    elif "download_files" in settings:
+        download_attachments = settings["download_files"]
+    else:
+        download_attachments = defaults.download_attachments
 
     cfg = SlackSourceConfig(
         enabled=settings.get("enabled", defaults.enabled),
@@ -512,7 +589,16 @@ def _parse_slack_config(settings: dict[str, Any]) -> SlackSourceConfig:
         window_overlap_messages=settings.get(
             "window_overlap_messages", defaults.window_overlap_messages
         ),
-        download_files=settings.get("download_files", defaults.download_files),
+        download_attachments=download_attachments,
+        attachment_indexable_mimetypes=list(
+            settings.get(
+                "attachment_indexable_mimetypes",
+                defaults.attachment_indexable_mimetypes,
+            )
+        ),
+        attachment_max_size_mb=settings.get(
+            "attachment_max_size_mb", defaults.attachment_max_size_mb
+        ),
     )
 
     # If enabled, the client_secrets file must exist on disk.
@@ -574,6 +660,11 @@ def _parse_gmail_account(account: str, settings: dict[str, Any]) -> GmailAccount
         )
     if "label_filter" in settings:
         _check_type(section, "label_filter", settings["label_filter"], str)
+    if "download_attachments" in settings:
+        _check_type(
+            section, "download_attachments", settings["download_attachments"], bool
+        )
+    _validate_attachment_settings(section, settings)
 
     enabled = settings.get("enabled", True)
     # An account section must define a credentials path when enabled.
@@ -597,6 +688,18 @@ def _parse_gmail_account(account: str, settings: dict[str, Any]) -> GmailAccount
             "max_initial_threads", defaults.max_initial_threads
         ),
         label_filter=settings.get("label_filter", defaults.label_filter),
+        download_attachments=settings.get(
+            "download_attachments", defaults.download_attachments
+        ),
+        attachment_indexable_mimetypes=list(
+            settings.get(
+                "attachment_indexable_mimetypes",
+                defaults.attachment_indexable_mimetypes,
+            )
+        ),
+        attachment_max_size_mb=settings.get(
+            "attachment_max_size_mb", defaults.attachment_max_size_mb
+        ),
     )
 
 
@@ -621,6 +724,11 @@ def _parse_calendar_account(
         _check_type(section, "max_initial_days", settings["max_initial_days"], int)
     if "calendar_ids" in settings:
         _check_list_of(section, "calendar_ids", settings["calendar_ids"], str)
+    if "download_attachments" in settings:
+        _check_type(
+            section, "download_attachments", settings["download_attachments"], bool
+        )
+    _validate_attachment_settings(section, settings)
 
     enabled = settings.get("enabled", True)
     if enabled and "client_secrets_path" not in settings:
@@ -628,6 +736,17 @@ def _parse_calendar_account(
             f"[{section}] must define client_secrets_path "
             f"(account section cannot be empty when enabled)"
         )
+
+    download_attachments = settings.get(
+        "download_attachments", defaults.download_attachments
+    )
+    # TODO(fn-ovm): when download_attachments=True, calendar attachments
+    # live on Drive, so the OAuth flow needs the drive.readonly scope in
+    # addition to calendar.events.readonly.  The calendar-attachments
+    # bead must extend worker.sources.calendar_auth.SCOPES and emit a
+    # typed warning here when SCOPES is missing drive.readonly.  The
+    # schema bead leaves the wiring to that bead to avoid a circular
+    # import between worker.config and worker.sources.calendar_auth.
 
     return CalendarAccountConfig(
         name=account,
@@ -640,6 +759,16 @@ def _parse_calendar_account(
         ),
         max_initial_days=settings.get("max_initial_days", defaults.max_initial_days),
         calendar_ids=list(settings.get("calendar_ids", defaults.calendar_ids)),
+        download_attachments=download_attachments,
+        attachment_indexable_mimetypes=list(
+            settings.get(
+                "attachment_indexable_mimetypes",
+                defaults.attachment_indexable_mimetypes,
+            )
+        ),
+        attachment_max_size_mb=settings.get(
+            "attachment_max_size_mb", defaults.attachment_max_size_mb
+        ),
     )
 
 

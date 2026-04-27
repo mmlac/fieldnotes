@@ -62,6 +62,14 @@ max_file_size = 104857600
 # poll_interval_seconds = 300
 # max_initial_threads = 500
 # label_filter = "INBOX"
+# # Attachment indexing (per-account):
+# download_attachments = false                  # off by default
+# attachment_max_size_mb = 25                   # 1..200 inclusive
+# attachment_indexable_mimetypes = [
+#     "application/pdf",
+#     "image/png", "image/jpeg",
+#     "text/plain", "text/markdown", "text/csv",
+# ]
 #
 # [sources.gmail.work]
 # client_secrets_path = "~/.fieldnotes/gmail_credentials.json"
@@ -78,6 +86,16 @@ max_file_size = 104857600
 # poll_interval_seconds = 300
 # max_initial_days = 90
 # calendar_ids = ["primary"]
+# # Attachment indexing (per-account).  Calendar attachments live on
+# # Drive, so download_attachments=true also requires the
+# # drive.readonly OAuth scope (added at install time).
+# download_attachments = false                  # off by default
+# attachment_max_size_mb = 25                   # 1..200 inclusive
+# attachment_indexable_mimetypes = [
+#     "application/pdf",
+#     "image/png", "image/jpeg",
+#     "text/plain", "text/markdown", "text/csv",
+# ]
 #
 # [sources.google_calendar.work]
 # client_secrets_path = "~/.fieldnotes/gmail_credentials.json"
@@ -98,7 +116,15 @@ include_archived = false
 window_max_tokens = 512                # burst-window upper bound (token count) [128..4096]
 window_gap_seconds = 1800              # quiet-gap that closes a window (30 min) [60..86400]
 window_overlap_messages = 3            # whole-message overlap between windows [0..10]
-download_files = false                 # v1: skip file uploads (separate later bead)
+# Attachment indexing.  Legacy 'download_files' is still accepted and
+# silently aliased to download_attachments; setting both warns.
+download_attachments = false           # off by default
+attachment_max_size_mb = 25            # 1..200 inclusive
+# attachment_indexable_mimetypes = [
+#     "application/pdf",
+#     "image/png", "image/jpeg",
+#     "text/plain", "text/markdown", "text/csv",
+# ]
 
 # --- Clustering ---
 

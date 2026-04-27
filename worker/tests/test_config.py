@@ -20,6 +20,7 @@ from worker.config import (
     load_config,
     _parse,
 )
+from worker.parsers.attachments import DEFAULT_INDEXABLE_MIMETYPES
 
 
 class TestParseDefaults:
@@ -542,7 +543,7 @@ class TestParseSlackSource:
         assert cfg.slack.window_max_tokens == 512
         assert cfg.slack.window_gap_seconds == 1800
         assert cfg.slack.window_overlap_messages == 3
-        assert cfg.slack.download_files is False
+        assert cfg.slack.download_attachments is False
         # When disabled, no [sources.slack] entry leaks into cfg.sources.
         assert "slack" not in cfg.sources
 
@@ -1343,3 +1344,361 @@ class TestDoctorMe:
         assert errors == 0
         assert "alice@gmail.com" in out
         assert "googlemail.com" not in out
+
+
+# --------------------------------------------------------------------- #
+# Attachment knobs (download_attachments / attachment_indexable_mimetypes
+# / attachment_max_size_mb) on Gmail / Calendar / Slack source sections.
+# --------------------------------------------------------------------- #
+
+
+class TestAttachmentKnobsDefaults:
+    """All three sources default to download_attachments=False with the
+    DEFAULT_INDEXABLE_MIMETYPES allowlist and a 25 MB cap."""
+
+    def test_slack_defaults(self) -> None:
+        cfg = _parse({})
+        assert cfg.slack.download_attachments is False
+        assert cfg.slack.attachment_indexable_mimetypes == DEFAULT_INDEXABLE_MIMETYPES
+        assert cfg.slack.attachment_max_size_mb == 25
+
+    def test_gmail_account_defaults(self) -> None:
+        cfg = _parse(
+            {"sources": {"gmail": {"personal": {"client_secrets_path": "/s.json"}}}}
+        )
+        acct = cfg.gmail["personal"]
+        assert acct.download_attachments is False
+        assert acct.attachment_indexable_mimetypes == DEFAULT_INDEXABLE_MIMETYPES
+        assert acct.attachment_max_size_mb == 25
+
+    def test_calendar_account_defaults(self) -> None:
+        cfg = _parse(
+            {
+                "sources": {
+                    "google_calendar": {"personal": {"client_secrets_path": "/s.json"}}
+                }
+            }
+        )
+        acct = cfg.google_calendar["personal"]
+        assert acct.download_attachments is False
+        assert acct.attachment_indexable_mimetypes == DEFAULT_INDEXABLE_MIMETYPES
+        assert acct.attachment_max_size_mb == 25
+
+    def test_indexable_default_is_a_copy_per_account(self) -> None:
+        """Mutating one account's allowlist must not affect another."""
+        cfg = _parse(
+            {
+                "sources": {
+                    "gmail": {
+                        "a": {"client_secrets_path": "/a.json"},
+                        "b": {"client_secrets_path": "/b.json"},
+                    }
+                }
+            }
+        )
+        cfg.gmail["a"].attachment_indexable_mimetypes.append("application/zip")
+        assert "application/zip" not in cfg.gmail["b"].attachment_indexable_mimetypes
+
+
+class TestAttachmentKnobsOverrides:
+    """Per-source overrides land in the parsed dataclass."""
+
+    def test_slack_override_all_three_knobs(self, tmp_path) -> None:
+        secrets = tmp_path / "slack.json"
+        secrets.write_text("{}")
+        cfg = _parse(
+            {
+                "sources": {
+                    "slack": {
+                        "enabled": True,
+                        "client_secrets_path": str(secrets),
+                        "download_attachments": True,
+                        "attachment_indexable_mimetypes": [
+                            "application/pdf",
+                            "image/png",
+                        ],
+                        "attachment_max_size_mb": 50,
+                    }
+                }
+            }
+        )
+        assert cfg.slack.download_attachments is True
+        assert cfg.slack.attachment_indexable_mimetypes == [
+            "application/pdf",
+            "image/png",
+        ]
+        assert cfg.slack.attachment_max_size_mb == 50
+
+    def test_gmail_account_override(self) -> None:
+        cfg = _parse(
+            {
+                "sources": {
+                    "gmail": {
+                        "personal": {
+                            "client_secrets_path": "/s.json",
+                            "download_attachments": True,
+                            "attachment_indexable_mimetypes": ["application/pdf"],
+                            "attachment_max_size_mb": 10,
+                        }
+                    }
+                }
+            }
+        )
+        acct = cfg.gmail["personal"]
+        assert acct.download_attachments is True
+        assert acct.attachment_indexable_mimetypes == ["application/pdf"]
+        assert acct.attachment_max_size_mb == 10
+
+    def test_calendar_account_override(self) -> None:
+        cfg = _parse(
+            {
+                "sources": {
+                    "google_calendar": {
+                        "personal": {
+                            "client_secrets_path": "/s.json",
+                            "download_attachments": True,
+                            "attachment_indexable_mimetypes": ["text/plain"],
+                            "attachment_max_size_mb": 100,
+                        }
+                    }
+                }
+            }
+        )
+        acct = cfg.google_calendar["personal"]
+        assert acct.download_attachments is True
+        assert acct.attachment_indexable_mimetypes == ["text/plain"]
+        assert acct.attachment_max_size_mb == 100
+
+
+class TestAttachmentMaxSizeBounds:
+    """attachment_max_size_mb is enforced to lie in [1, 200] inclusive."""
+
+    @pytest.mark.parametrize("v", [0, -1, 201, 1000])
+    def test_out_of_range_raises_for_slack(self, v: int) -> None:
+        with pytest.raises(
+            ValueError,
+            match=r"\[sources\.slack\] attachment_max_size_mb must be in \[1, 200\]",
+        ):
+            _parse({"sources": {"slack": {"attachment_max_size_mb": v}}})
+
+    @pytest.mark.parametrize("v", [0, 500])
+    def test_out_of_range_raises_for_gmail(self, v: int) -> None:
+        with pytest.raises(
+            ValueError,
+            match=r"sources\.gmail\.personal.*attachment_max_size_mb must be in \[1, 200\]",
+        ):
+            _parse(
+                {
+                    "sources": {
+                        "gmail": {
+                            "personal": {
+                                "client_secrets_path": "/s.json",
+                                "attachment_max_size_mb": v,
+                            }
+                        }
+                    }
+                }
+            )
+
+    def test_out_of_range_raises_for_calendar(self) -> None:
+        with pytest.raises(
+            ValueError,
+            match=r"sources\.google_calendar\.personal.*attachment_max_size_mb must be in",
+        ):
+            _parse(
+                {
+                    "sources": {
+                        "google_calendar": {
+                            "personal": {
+                                "client_secrets_path": "/s.json",
+                                "attachment_max_size_mb": 0,
+                            }
+                        }
+                    }
+                }
+            )
+
+    @pytest.mark.parametrize("v", [1, 25, 200])
+    def test_inclusive_bounds_accepted(self, v: int) -> None:
+        cfg = _parse({"sources": {"slack": {"attachment_max_size_mb": v}}})
+        assert cfg.slack.attachment_max_size_mb == v
+
+
+class TestAttachmentKnobsTypeValidation:
+    def test_indexable_must_be_list(self) -> None:
+        with pytest.raises(
+            TypeError,
+            match=r"\[sources\.slack\] attachment_indexable_mimetypes: expected list",
+        ):
+            _parse(
+                {
+                    "sources": {
+                        "slack": {"attachment_indexable_mimetypes": "application/pdf"}
+                    }
+                }
+            )
+
+    def test_indexable_items_must_be_strings(self) -> None:
+        with pytest.raises(
+            TypeError,
+            match=r"\[sources\.slack\] attachment_indexable_mimetypes\[1\]: expected str",
+        ):
+            _parse(
+                {
+                    "sources": {
+                        "slack": {
+                            "attachment_indexable_mimetypes": [
+                                "application/pdf",
+                                42,
+                            ]
+                        }
+                    }
+                }
+            )
+
+    def test_max_size_must_be_int(self) -> None:
+        with pytest.raises(
+            TypeError,
+            match=r"\[sources\.slack\] attachment_max_size_mb: expected int",
+        ):
+            _parse({"sources": {"slack": {"attachment_max_size_mb": "25"}}})
+
+    def test_download_attachments_must_be_bool(self) -> None:
+        with pytest.raises(
+            TypeError,
+            match=r"\[sources\.slack\] download_attachments: expected bool",
+        ):
+            _parse({"sources": {"slack": {"download_attachments": "yes"}}})
+
+    def test_gmail_account_indexable_wrong_item_type(self) -> None:
+        with pytest.raises(
+            TypeError,
+            match=r"sources\.gmail\.personal.*attachment_indexable_mimetypes\[0\]",
+        ):
+            _parse(
+                {
+                    "sources": {
+                        "gmail": {
+                            "personal": {
+                                "client_secrets_path": "/s.json",
+                                "attachment_indexable_mimetypes": [123],
+                            }
+                        }
+                    }
+                }
+            )
+
+
+class TestSlackDownloadFilesAlias:
+    """[sources.slack].download_files is the legacy spelling of
+    download_attachments.  Alone it's silently promoted; together with
+    download_attachments it warns and download_attachments wins."""
+
+    def test_legacy_key_alone_is_silently_aliased(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level("WARNING", logger="worker.config"):
+            cfg = _parse({"sources": {"slack": {"download_files": True}}})
+        assert cfg.slack.download_attachments is True
+        assert not any(
+            "download_attachments" in r.getMessage()
+            and "download_files" in r.getMessage()
+            for r in caplog.records
+        )
+
+    def test_legacy_key_alone_false(self) -> None:
+        cfg = _parse({"sources": {"slack": {"download_files": False}}})
+        assert cfg.slack.download_attachments is False
+
+    def test_both_keys_warns_and_new_key_wins(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level("WARNING", logger="worker.config"):
+            cfg = _parse(
+                {
+                    "sources": {
+                        "slack": {
+                            "download_files": True,
+                            "download_attachments": False,
+                        }
+                    }
+                }
+            )
+        # download_attachments wins, even though it's "less permissive".
+        assert cfg.slack.download_attachments is False
+        assert any(
+            "download_attachments" in r.getMessage()
+            and "download_files" in r.getMessage()
+            for r in caplog.records
+        )
+
+    def test_both_keys_warns_when_new_key_true(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level("WARNING", logger="worker.config"):
+            cfg = _parse(
+                {
+                    "sources": {
+                        "slack": {
+                            "download_files": False,
+                            "download_attachments": True,
+                        }
+                    }
+                }
+            )
+        assert cfg.slack.download_attachments is True
+        assert any("download_attachments" in r.getMessage() for r in caplog.records)
+
+    def test_legacy_key_type_error_still_caught(self) -> None:
+        with pytest.raises(
+            TypeError, match=r"\[sources\.slack\] download_files: expected bool"
+        ):
+            _parse({"sources": {"slack": {"download_files": "yes"}}})
+
+
+class TestSlackSourceConfigDataclassDefaults:
+    """SlackSourceConfig now exposes download_attachments instead of the
+    legacy download_files field."""
+
+    def test_dataclass_default_field_present(self) -> None:
+        cfg = SlackSourceConfig()
+        assert cfg.download_attachments is False
+        assert cfg.attachment_max_size_mb == 25
+        assert cfg.attachment_indexable_mimetypes == DEFAULT_INDEXABLE_MIMETYPES
+        assert not hasattr(cfg, "download_files")
+
+
+class TestConfigTomlExampleAttachmentKnobs:
+    """The shipped config.toml.example demonstrates the new knobs in
+    each of the three source sections."""
+
+    def test_example_mentions_attachment_keys_in_each_section(self) -> None:
+        from pathlib import Path as _P
+
+        example = (
+            _P(__file__).resolve().parent.parent / "worker" / "config.toml.example"
+        )
+        text = example.read_text()
+
+        # Slack section: knobs live below the [sources.slack] header.
+        slack_idx = text.index("[sources.slack]")
+        slack_block = text[slack_idx:]
+        assert "download_attachments" in slack_block
+        assert "attachment_max_size_mb" in slack_block
+        assert "attachment_indexable_mimetypes" in slack_block
+
+        # Gmail per-account stub block.
+        assert "[sources.gmail.personal]" in text
+        gmail_idx = text.index("[sources.gmail.personal]")
+        gmail_block = text[gmail_idx : gmail_idx + 1500]
+        assert "download_attachments" in gmail_block
+        assert "attachment_max_size_mb" in gmail_block
+        assert "attachment_indexable_mimetypes" in gmail_block
+
+        # Calendar per-account stub block.
+        assert "[sources.google_calendar.personal]" in text
+        cal_idx = text.index("[sources.google_calendar.personal]")
+        cal_block = text[cal_idx : cal_idx + 1500]
+        assert "download_attachments" in cal_block
+        assert "attachment_max_size_mb" in cal_block
+        assert "attachment_indexable_mimetypes" in cal_block
