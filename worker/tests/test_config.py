@@ -1308,6 +1308,57 @@ class TestDoctorCalendarAccounts:
         assert errors == 1
         assert "Calendar [personal]: client_secrets file missing" in out
 
+    def test_drive_scope_reported_per_account(
+        self, tmp_path, monkeypatch, capsys
+    ) -> None:
+        """When download_attachments=True, doctor reports the drive scope status."""
+        import json
+
+        from worker.doctor import check_calendar_accounts
+        from worker.sources.calendar_auth import (
+            CALENDAR_SCOPE,
+            DRIVE_SCOPE,
+            token_path_for_account,
+        )
+
+        monkeypatch.setattr(
+            "pathlib.Path.home", classmethod(lambda cls: tmp_path)
+        )
+
+        secrets = tmp_path / "secrets.json"
+        secrets.write_text("{}")
+
+        # Account A: drive scope granted.
+        token_a = token_path_for_account("personal")
+        token_a.parent.mkdir(parents=True, exist_ok=True)
+        token_a.write_text(
+            json.dumps({"scopes": [CALENDAR_SCOPE, DRIVE_SCOPE]})
+        )
+        token_a.chmod(0o600)
+
+        # Account B: drive scope missing.
+        token_b = token_path_for_account("work")
+        token_b.write_text(json.dumps({"scopes": [CALENDAR_SCOPE]}))
+        token_b.chmod(0o600)
+
+        accts = {
+            "personal": CalendarAccountConfig(
+                name="personal",
+                client_secrets_path=str(secrets),
+                download_attachments=True,
+            ),
+            "work": CalendarAccountConfig(
+                name="work",
+                client_secrets_path=str(secrets),
+                download_attachments=True,
+            ),
+        }
+
+        check_calendar_accounts(accts)
+        out = capsys.readouterr().out
+        assert "Calendar [personal]: drive scope granted" in out
+        assert "Calendar [work]: drive scope missing" in out
+
 
 class TestDoctorMe:
     """doctor.check_me — [me] block status reporting."""

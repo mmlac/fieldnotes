@@ -740,14 +740,6 @@ def _parse_calendar_account(
     download_attachments = settings.get(
         "download_attachments", defaults.download_attachments
     )
-    # TODO(fn-ovm): when download_attachments=True, calendar attachments
-    # live on Drive, so the OAuth flow needs the drive.readonly scope in
-    # addition to calendar.events.readonly.  The calendar-attachments
-    # bead must extend worker.sources.calendar_auth.SCOPES and emit a
-    # typed warning here when SCOPES is missing drive.readonly.  The
-    # schema bead leaves the wiring to that bead to avoid a circular
-    # import between worker.config and worker.sources.calendar_auth.
-
     return CalendarAccountConfig(
         name=account,
         enabled=enabled,

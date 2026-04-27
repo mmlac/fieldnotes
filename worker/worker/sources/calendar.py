@@ -39,8 +39,10 @@ from worker.metrics import (
     initial_sync_source_done,
 )
 
+from worker.parsers.attachments import DEFAULT_INDEXABLE_MIMETYPES
+
 from .base import IndexedCheck, PythonSource
-from .calendar_auth import get_credentials
+from .calendar_auth import check_calendar_auth, get_credentials
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +50,35 @@ logger = logging.getLogger(__name__)
 DEFAULT_POLL_INTERVAL = 300  # 5 minutes
 DEFAULT_MAX_INITIAL_DAYS = 90  # backfill ~3 months
 DEFAULT_CALENDAR_IDS = ["primary"]
+DEFAULT_ATTACHMENT_MAX_SIZE_MB = 25
 API_CALL_TIMEOUT = 60
+
+
+def _extract_attachment_metadata(
+    event: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Pull the ``attachments`` array off a Calendar API event resource.
+
+    Surfaces ``(title, mime_type, file_id, file_url, icon_link)`` per
+    attachment.  The ``size_bytes`` field is left at ``0`` here — the
+    Drive ``files.get`` size lookup happens in the source layer when the
+    account opts in to attachment indexing.
+    """
+    out: list[dict[str, Any]] = []
+    for att in event.get("attachments", []) or []:
+        if not isinstance(att, dict):
+            continue
+        out.append(
+            {
+                "title": att.get("title", ""),
+                "mime_type": att.get("mimeType", ""),
+                "file_id": att.get("fileId", ""),
+                "file_url": att.get("fileUrl", ""),
+                "icon_link": att.get("iconLink", ""),
+                "size_bytes": 0,
+            }
+        )
+    return out
 
 
 def _event_start_iso(event: dict[str, Any]) -> str:
@@ -132,6 +162,8 @@ def _build_ingest_event(
     updated = event.get("updated", "")
     source_modified = updated or datetime.now(timezone.utc).isoformat()
 
+    attachments = _extract_attachment_metadata(event)
+
     meta: dict[str, Any] = {
         "event_id": event_id,
         "calendar_id": calendar_id,
@@ -148,6 +180,7 @@ def _build_ingest_event(
         "html_link": html_link,
         "recurring_event_id": recurring_event_id,
         "status": status,
+        "attachments": attachments,
     }
 
     return {
@@ -177,6 +210,11 @@ class GoogleCalendarSource(PythonSource):
         self._max_initial_days = DEFAULT_MAX_INITIAL_DAYS
         self._calendar_ids: list[str] = list(DEFAULT_CALENDAR_IDS)
         self._client_secrets_path = "~/.fieldnotes/credentials.json"
+        self._download_attachments = False
+        self._attachment_indexable_mimetypes: list[str] = list(
+            DEFAULT_INDEXABLE_MIMETYPES
+        )
+        self._attachment_max_size_mb = DEFAULT_ATTACHMENT_MAX_SIZE_MB
 
     def name(self) -> str:
         return "google_calendar"
@@ -215,6 +253,14 @@ class GoogleCalendarSource(PythonSource):
             self._calendar_ids = list(cfg["calendar_ids"])
         if "client_secrets_path" in cfg:
             self._client_secrets_path = cfg["client_secrets_path"]
+        if "download_attachments" in cfg:
+            self._download_attachments = bool(cfg["download_attachments"])
+        if "attachment_indexable_mimetypes" in cfg:
+            self._attachment_indexable_mimetypes = list(
+                cfg["attachment_indexable_mimetypes"]
+            )
+        if "attachment_max_size_mb" in cfg:
+            self._attachment_max_size_mb = int(cfg["attachment_max_size_mb"])
         if "cursor_path" in cfg:
             raise ValueError(
                 "GoogleCalendarSource: 'cursor_path' is no longer supported. "
@@ -238,10 +284,34 @@ class GoogleCalendarSource(PythonSource):
             while True:
                 await asyncio.sleep(3600)
 
+        # Fail fast if attachment indexing was just turned on but the
+        # persisted token still has the narrower calendar-only scope.
+        try:
+            check_calendar_auth(
+                self._account,
+                download_attachments=self._download_attachments,
+            )
+        except Exception as exc:
+            logger.error(
+                "Calendar account=%s scope check failed: %s — staying idle",
+                self._account,
+                exc,
+            )
+            while True:
+                await asyncio.sleep(3600)
+
         creds = await asyncio.to_thread(
-            get_credentials, secrets_path, self._account
+            get_credentials,
+            secrets_path,
+            self._account,
+            download_attachments=self._download_attachments,
         )
         service = build("calendar", "v3", credentials=creds)
+        drive_service = (
+            build("drive", "v3", credentials=creds)
+            if self._download_attachments
+            else None
+        )
 
         # Load persisted cursor state from queue DB (single source of truth).
         raw_cursor = queue.load_cursor(self._cursor_key)
@@ -278,6 +348,7 @@ class GoogleCalendarSource(PythonSource):
                             service, queue, cal_id, sync_token,
                             sync_tokens, seen_series,
                             indexed_check=indexed_check,
+                            drive_service=drive_service,
                         )
                         if new_token:
                             sync_tokens[cal_id] = new_token
@@ -308,6 +379,53 @@ class GoogleCalendarSource(PythonSource):
             WATCHER_ACTIVE.labels(source_type="google_calendar").set(0)
             raise
 
+    async def _enrich_attachment_sizes(
+        self,
+        drive_service: Any,
+        attachments: list[dict[str, Any]],
+    ) -> None:
+        """Populate ``size_bytes`` on attachments whose MIME may be indexed.
+
+        Drive ``files.get(fields='size')`` is one HTTP round-trip per
+        file.  We skip attachments whose MIME is already disqualified by
+        the indexable allowlist — those are guaranteed to land in
+        ``metadata_only`` regardless of size, so the size call is wasted
+        quota.  On 404 / 403 / other errors the size is left at 0; the
+        parser treats unknown size as 'too large' under a conservative
+        ``max_size_mb`` and falls back to metadata-only.
+        """
+        for att in attachments:
+            mime = att.get("mime_type", "")
+            file_id = att.get("file_id", "")
+            if not file_id:
+                continue
+            if mime not in self._attachment_indexable_mimetypes:
+                continue
+            try:
+                meta = await asyncio.to_thread(
+                    lambda: drive_service.files()
+                    .get(fileId=file_id, fields="size")
+                    .execute()
+                )
+            except HttpError as exc:
+                logger.info(
+                    "Drive files.get(size) failed for %s: %s — leaving size=0",
+                    file_id,
+                    exc,
+                )
+                continue
+            except Exception:
+                logger.warning(
+                    "Unexpected Drive size lookup error for %s",
+                    file_id,
+                    exc_info=True,
+                )
+                continue
+            try:
+                att["size_bytes"] = int(meta.get("size", 0) or 0)
+            except (TypeError, ValueError):
+                att["size_bytes"] = 0
+
     async def _poll_calendar(
         self,
         service: Any,
@@ -318,6 +436,7 @@ class GoogleCalendarSource(PythonSource):
         seen_series: set[str] | None = None,
         *,
         indexed_check: IndexedCheck | None = None,
+        drive_service: Any | None = None,
     ) -> str | None:
         """Fetch events for a single calendar.  Returns new sync token."""
         is_backfill = sync_token is None
@@ -405,6 +524,26 @@ class GoogleCalendarSource(PythonSource):
                         event, synthetic_id, self._account
                     )
                     if ingest is not None:
+                        # Stamp attachment policy onto every event so the
+                        # parser can apply classify_attachment uniformly,
+                        # and (when enabled) batch a Drive size lookup for
+                        # any attachment whose MIME could be indexed.
+                        meta = ingest["meta"]
+                        meta["download_attachments"] = self._download_attachments
+                        meta["attachment_indexable_mimetypes"] = list(
+                            self._attachment_indexable_mimetypes
+                        )
+                        meta["attachment_max_size_mb"] = (
+                            self._attachment_max_size_mb
+                        )
+                        if (
+                            self._download_attachments
+                            and drive_service is not None
+                            and meta.get("attachments")
+                        ):
+                            await self._enrich_attachment_sizes(
+                                drive_service, meta["attachments"]
+                            )
                         # Phase 1: skip events already chunked in Neo4j.
                         if (
                             is_backfill

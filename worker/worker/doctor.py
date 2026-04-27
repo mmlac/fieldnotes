@@ -133,21 +133,49 @@ def check_gmail_auth(client_secrets_path: Path, account: str) -> int:
     )
 
 
-def check_calendar_auth(client_secrets_path: Path, account: str) -> int:
+def check_calendar_auth(
+    client_secrets_path: Path,
+    account: str,
+    *,
+    download_attachments: bool = False,
+) -> int:
     """Check Google Calendar auth status for *account* and print a result line.
 
     Returns 0 on OK / not-configured, 1 if the client secrets file is
     missing or the saved token is rejected / unreadable.
-    """
-    from worker.sources.calendar_auth import SCOPES, token_path_for_account
 
-    return _check_google_auth(
+    When *download_attachments* is True, also reports whether the
+    persisted token covers the ``drive.readonly`` scope and surfaces a
+    failure when it does not — the user must re-run the install flow to
+    grant it.
+    """
+    from worker.sources.calendar_auth import (
+        DRIVE_SCOPE,
+        _token_scopes,
+        get_scopes,
+        token_path_for_account,
+    )
+
+    scopes = get_scopes(download_attachments)
+    token_path = token_path_for_account(account)
+    rc = _check_google_auth(
         "Calendar",
         account,
         Path(client_secrets_path),
-        SCOPES,
-        token_path_for_account(account),
+        scopes,
+        token_path,
     )
+
+    if download_attachments and token_path.exists():
+        if DRIVE_SCOPE in _token_scopes(token_path):
+            _ok(f"Calendar [{account}]: drive scope granted")
+        else:
+            _fail(
+                f"Calendar [{account}]: drive scope missing — "
+                f"re-run install with download_attachments=true"
+            )
+            rc = max(rc, 1)
+    return rc
 
 
 def check_gmail_accounts(accounts: dict[str, GmailAccountConfig]) -> int:
@@ -176,7 +204,11 @@ def check_calendar_accounts(
         if not acct.enabled:
             _ok(f"Calendar [{name}]: disabled")
             continue
-        errors += check_calendar_auth(Path(acct.client_secrets_path), name)
+        errors += check_calendar_auth(
+            Path(acct.client_secrets_path),
+            name,
+            download_attachments=acct.download_attachments,
+        )
     return errors
 
 

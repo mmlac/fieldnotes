@@ -9,10 +9,17 @@ Obsidian (via entity resolution on person names).
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Callable
 
 from bs4 import BeautifulSoup
 
+from .attachments import (
+    AttachmentDownloadError,
+    AttachmentParseError,
+    build_parent_url,
+    classify_attachment,
+    stream_and_parse,
+)
 from .base import BaseParser, GraphHint, ParsedDocument, canonicalize_email
 from .registry import register
 
@@ -20,6 +27,64 @@ logger = logging.getLogger(__name__)
 
 _MAX_HTML_SIZE = 10 * 1024 * 1024  # 10 MiB
 _MAX_ATTENDEES = 200  # prevent graph explosion for all-hands meetings
+
+
+# Module-level seam so tests can substitute a fake Drive fetch closure
+# without standing up real OAuth credentials.  In production this builds
+# a closure that pulls the bytes via ``drive.files.get_media`` on a Drive
+# service constructed from the per-account Calendar token (which has the
+# ``drive.readonly`` scope when ``download_attachments=True``).
+def _build_drive_fetcher(account: str, file_id: str) -> Callable[[], bytes]:
+    """Return a zero-arg closure that downloads *file_id* from Drive.
+
+    Lazily imports the Google client libs so the parser still loads
+    cleanly when only the Calendar parser is used (no Drive access).
+    """
+
+    def fetch() -> bytes:
+        from googleapiclient.discovery import build
+        from googleapiclient.http import MediaIoBaseDownload
+
+        from worker.sources.calendar_auth import (
+            get_credentials,
+            token_path_for_account,
+        )
+
+        # We rely on the persisted token, which must already carry
+        # drive.readonly because the source ran the install flow with
+        # download_attachments=True.  Passing a non-existent secrets
+        # path would only matter if we needed to run a fresh OAuth
+        # flow, which by construction we do not.
+        token_path = token_path_for_account(account)
+        creds = get_credentials(
+            token_path,  # unused when token already valid
+            account,
+            download_attachments=True,
+        )
+        drive = build("drive", "v3", credentials=creds)
+
+        import io
+
+        request = drive.files().get_media(fileId=file_id)
+        buf = io.BytesIO()
+        downloader = MediaIoBaseDownload(buf, request)
+        done = False
+        while not done:
+            _, done = downloader.next_chunk()
+        return buf.getvalue()
+
+    return fetch
+
+
+def _format_size(size_bytes: int) -> str:
+    """Render an attachment size as a short human-friendly string."""
+    if size_bytes <= 0:
+        return "size unknown"
+    if size_bytes < 1024:
+        return f"{size_bytes} B"
+    if size_bytes < 1024 * 1024:
+        return f"{size_bytes / 1024:.1f} KB"
+    return f"{size_bytes / (1024 * 1024):.1f} MB"
 
 
 def _strip_html(html: str) -> str:
@@ -248,21 +313,211 @@ class GoogleCalendarParser(BaseParser):
                 )
             )
 
-        return [
-            ParsedDocument(
-                source_type=self.source_type,
-                source_id=source_id,
-                operation=operation,
-                text=body,
-                mime_type="text/plain",
-                node_label="CalendarEvent",
-                node_props=node_props,
-                graph_hints=graph_hints,
-                source_metadata={
-                    "source_type": "calendar",
-                    "calendar_id": calendar_id,
-                    "start_time": start_time,
-                    "account": account,
-                },
+        # --- Attachments (Drive links surfaced by the source) ---
+        attachments_meta: list[dict[str, Any]] = meta.get("attachments", []) or []
+        download_attachments: bool = bool(meta.get("download_attachments", False))
+        indexable: list[str] = list(
+            meta.get("attachment_indexable_mimetypes", [])
+        )
+        max_size_mb: int = int(meta.get("attachment_max_size_mb", 25))
+
+        if attachments_meta:
+            body = self._augment_text_with_attachments(body, attachments_meta)
+
+        attachment_docs: list[ParsedDocument] = self._build_attachment_documents(
+            attachments_meta=attachments_meta,
+            event_source_id=source_id,
+            event_id=event_id,
+            account=account,
+            html_link=html_link,
+            edge_props=edge_props,
+            download_attachments=download_attachments,
+            indexable=indexable,
+            max_size_mb=max_size_mb,
+        )
+
+        event_doc = ParsedDocument(
+            source_type=self.source_type,
+            source_id=source_id,
+            operation=operation,
+            text=body,
+            mime_type="text/plain",
+            node_label="CalendarEvent",
+            node_props=node_props,
+            graph_hints=graph_hints,
+            source_metadata={
+                "source_type": "calendar",
+                "calendar_id": calendar_id,
+                "start_time": start_time,
+                "account": account,
+            },
+        )
+        return [event_doc, *attachment_docs]
+
+    @staticmethod
+    def _augment_text_with_attachments(
+        body: str,
+        attachments: list[dict[str, Any]],
+    ) -> str:
+        """Append a human-readable 'Attachments:' section to *body*.
+
+        The section ships into the chunker so a search for 'budget.pdf'
+        will land on the parent event even when the attachment itself is
+        metadata-only (no body chunks of its own).
+        """
+        lines = ["Attachments:"]
+        for att in attachments:
+            title = att.get("title") or "(untitled)"
+            mime = att.get("mime_type", "")
+            size = _format_size(int(att.get("size_bytes", 0) or 0))
+            lines.append(f"- {title} ({mime}, {size})")
+        section = "\n".join(lines)
+        return f"{body}\n\n{section}" if body else section
+
+    def _build_attachment_documents(
+        self,
+        *,
+        attachments_meta: list[dict[str, Any]],
+        event_source_id: str,
+        event_id: str,
+        account: str,
+        html_link: str,
+        edge_props: dict[str, Any],
+        download_attachments: bool,
+        indexable: list[str],
+        max_size_mb: int,
+    ) -> list[ParsedDocument]:
+        """Emit one ParsedDocument per attachment.
+
+        Each Attachment is linked to the parent CalendarEvent via an
+        ATTACHED_TO graph hint.  ORGANIZED_BY / ATTENDED_BY edges that
+        the parent event already carries are deliberately NOT propagated
+        — the graph keeps them on the event only.
+        """
+        if not attachments_meta:
+            return []
+
+        parent_url = ""
+        if html_link:
+            try:
+                parent_url = build_parent_url("calendar", html_link=html_link)
+            except ValueError:
+                parent_url = ""
+
+        out: list[ParsedDocument] = []
+        for att in attachments_meta:
+            file_id = att.get("file_id", "")
+            if not file_id:
+                continue
+            mime = att.get("mime_type", "")
+            title = att.get("title", "")
+            size_bytes = int(att.get("size_bytes", 0) or 0)
+
+            att_source_id = (
+                f"google-calendar://{account}/event/{event_id}"
+                f"/attachment/{file_id}"
             )
-        ]
+
+            # Unknown size + an explicit max bound = treat as too-large so
+            # we don't accidentally pull a multi-GB file by guessing wrong.
+            decision = (
+                classify_attachment(
+                    mime=mime,
+                    size_bytes=size_bytes
+                    if size_bytes > 0
+                    else (max_size_mb * 1024 * 1024 + 1),
+                    indexable=indexable,
+                    max_size_mb=max_size_mb,
+                )
+                if download_attachments
+                else "metadata_only"
+            )
+
+            text = ""
+            description = ""
+            extra_hints: list[GraphHint] = []
+            if decision == "download_and_index":
+                fetch = _build_drive_fetcher(account, file_id)
+                try:
+                    parsed = stream_and_parse(
+                        fetch=fetch,
+                        filename=title or file_id,
+                        mime=mime,
+                        source_id=att_source_id,
+                    )
+                    text = parsed.text
+                    description = parsed.description
+                    extra_hints.extend(parsed.extracted_entities)
+                except (AttachmentDownloadError, AttachmentParseError) as exc:
+                    # Drive 404s, 403s, vision failures, etc. — log and
+                    # downgrade to metadata-only so the event itself
+                    # still indexes cleanly.
+                    logger.info(
+                        "Calendar attachment %s/%s fell back to metadata-only: %s",
+                        event_id,
+                        file_id,
+                        exc,
+                    )
+                    decision = "metadata_only"
+
+            if decision == "metadata_only" and not description:
+                description = (
+                    f"Calendar attachment '{title}' ({mime}) on event "
+                    f"{event_id}"
+                )
+
+            node_props: dict[str, Any] = {
+                "title": title,
+                "mime_type": mime,
+                "file_id": file_id,
+                "decision": decision,
+                "account": account,
+            }
+            if size_bytes > 0:
+                node_props["size_bytes"] = size_bytes
+            if att.get("file_url"):
+                node_props["file_url"] = att["file_url"]
+            if att.get("icon_link"):
+                node_props["icon_link"] = att["icon_link"]
+            if description:
+                node_props["description"] = description
+
+            attachment_hints: list[GraphHint] = [
+                GraphHint(
+                    subject_id=att_source_id,
+                    subject_label="Attachment",
+                    predicate="ATTACHED_TO",
+                    object_id=event_source_id,
+                    object_label="CalendarEvent",
+                    object_merge_key="source_id",
+                    edge_props=edge_props,
+                    confidence=1.0,
+                ),
+                *extra_hints,
+            ]
+
+            source_metadata: dict[str, Any] = {
+                "source_type": "calendar_attachment",
+                "account": account,
+                "event_id": event_id,
+                "file_id": file_id,
+                "mime_type": mime,
+                "decision": decision,
+            }
+            if parent_url:
+                source_metadata["parent_url"] = parent_url
+
+            out.append(
+                ParsedDocument(
+                    source_type=self.source_type,
+                    source_id=att_source_id,
+                    operation="created",
+                    text=text or description,
+                    mime_type="text/plain",
+                    node_label="Attachment",
+                    node_props=node_props,
+                    graph_hints=attachment_hints,
+                    source_metadata=source_metadata,
+                )
+            )
+        return out

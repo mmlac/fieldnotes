@@ -1,5 +1,13 @@
 """Tests for the Google Calendar parser."""
 
+from unittest.mock import patch
+
+import worker.parsers.calendar as calendar_parser_module
+from worker.parsers.attachments import (
+    AttachmentDownloadError,
+    AttachmentParseError,
+    ParsedAttachment,
+)
 from worker.parsers.calendar import GoogleCalendarParser, _strip_html
 
 
@@ -301,6 +309,323 @@ class TestGoogleCalendarParser:
 
         parser = get("google_calendar")
         assert isinstance(parser, GoogleCalendarParser)
+
+
+def _attachment(
+    file_id: str,
+    title: str,
+    mime: str,
+    size_bytes: int = 0,
+) -> dict:
+    return {
+        "title": title,
+        "mime_type": mime,
+        "file_id": file_id,
+        "file_url": f"https://drive.google.com/file/d/{file_id}",
+        "icon_link": f"https://example.com/icons/{mime.replace('/', '-')}.png",
+        "size_bytes": size_bytes,
+    }
+
+
+_DOCX_MIME = (
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+)
+
+
+class TestCalendarAttachmentsMetadataOnly:
+    """download_attachments=False keeps every attachment metadata-only."""
+
+    def setup_method(self):
+        self.parser = GoogleCalendarParser()
+
+    def _three_attachment_event(self) -> dict:
+        return _make_event(
+            meta={
+                "download_attachments": False,
+                "attachment_indexable_mimetypes": [
+                    "application/pdf",
+                    "image/png",
+                ],
+                "attachment_max_size_mb": 25,
+                "attachments": [
+                    _attachment("drv-pdf", "report.pdf", "application/pdf"),
+                    _attachment("drv-img", "photo.png", "image/png"),
+                    _attachment("drv-doc", "spec.docx", _DOCX_MIME),
+                ],
+            }
+        )
+
+    def test_emits_three_metadata_only_documents(self):
+        """No Drive calls are made; sizes stay unknown but every attachment
+        still surfaces as its own Document so search can find them."""
+        # Patch the Drive fetcher seam to a sentinel that explodes when
+        # called.  download_attachments=False must never reach this code path.
+        def boom(_account, _file_id):
+            raise AssertionError("Drive fetcher must not be invoked")
+
+        with patch.object(calendar_parser_module, "_build_drive_fetcher", boom):
+            docs = self.parser.parse(self._three_attachment_event())
+
+        # 1 event Document + 3 attachment Documents
+        assert len(docs) == 4
+        attachment_docs = [d for d in docs if d.node_label == "Attachment"]
+        assert len(attachment_docs) == 3
+        for d in attachment_docs:
+            assert d.node_props["decision"] == "metadata_only"
+
+    def test_event_text_contains_attachments_section(self):
+        docs = self.parser.parse(self._three_attachment_event())
+        event_doc = docs[0]
+        assert "Attachments:" in event_doc.text
+        assert "report.pdf" in event_doc.text
+        assert "photo.png" in event_doc.text
+        assert "spec.docx" in event_doc.text
+
+    def test_attachment_source_id_uses_account_event_file(self):
+        docs = self.parser.parse(self._three_attachment_event())
+        att_docs = [d for d in docs if d.node_label == "Attachment"]
+        ids = {d.source_id for d in att_docs}
+        assert (
+            "google-calendar://personal/event/evt-123/attachment/drv-pdf" in ids
+        )
+        assert (
+            "google-calendar://personal/event/evt-123/attachment/drv-img" in ids
+        )
+
+    def test_attached_to_edge_points_at_event(self):
+        docs = self.parser.parse(self._three_attachment_event())
+        att_docs = [d for d in docs if d.node_label == "Attachment"]
+        for doc in att_docs:
+            attached = [
+                h for h in doc.graph_hints if h.predicate == "ATTACHED_TO"
+            ]
+            assert len(attached) == 1
+            edge = attached[0]
+            assert edge.subject_id == doc.source_id
+            assert edge.subject_label == "Attachment"
+            assert (
+                edge.object_id == "google-calendar://personal/event/evt-123"
+            )
+            assert edge.object_label == "CalendarEvent"
+            assert edge.edge_props == {"account": "personal"}
+
+    def test_attendee_edges_not_propagated_to_attachment(self):
+        """ORGANIZED_BY / ATTENDED_BY must not be cloned onto attachments."""
+        docs = self.parser.parse(self._three_attachment_event())
+        att_docs = [d for d in docs if d.node_label == "Attachment"]
+        for doc in att_docs:
+            preds = {h.predicate for h in doc.graph_hints}
+            assert "ORGANIZED_BY" not in preds
+            assert "ATTENDED_BY" not in preds
+
+    def test_parent_url_uses_event_html_link(self):
+        docs = self.parser.parse(self._three_attachment_event())
+        att_docs = [d for d in docs if d.node_label == "Attachment"]
+        for doc in att_docs:
+            assert (
+                doc.source_metadata["parent_url"]
+                == "https://calendar.google.com/calendar/event?eid=evt123"
+            )
+
+
+class TestCalendarAttachmentsDownloadAndIndex:
+    """download_attachments=True routes indexable MIMEs through stream_and_parse."""
+
+    def setup_method(self):
+        self.parser = GoogleCalendarParser()
+
+    def _three_attachment_event(self) -> dict:
+        return _make_event(
+            meta={
+                "download_attachments": True,
+                "attachment_indexable_mimetypes": [
+                    "application/pdf",
+                    "image/png",
+                ],
+                "attachment_max_size_mb": 25,
+                "attachments": [
+                    _attachment(
+                        "drv-pdf", "report.pdf", "application/pdf",
+                        size_bytes=2048,
+                    ),
+                    _attachment(
+                        "drv-img", "photo.png", "image/png",
+                        size_bytes=4096,
+                    ),
+                    _attachment(
+                        "drv-doc", "spec.docx", _DOCX_MIME,
+                        size_bytes=0,
+                    ),
+                ],
+            }
+        )
+
+    def test_indexable_mimes_invoke_stream_and_parse_others_metadata_only(self):
+        fetched: list[tuple[str, str]] = []
+
+        def fake_fetcher(account: str, file_id: str):
+            fetched.append((account, file_id))
+            return lambda: b"FAKEBYTES"
+
+        # Track which file_ids land in stream_and_parse and supply
+        # plausible parsed bytes for each.
+        parsed_for: list[str] = []
+
+        def fake_stream_and_parse(*, fetch, filename, mime, source_id=None):
+            parsed_for.append(filename)
+            fetch()  # exercise the closure to confirm the fetcher reached
+            return ParsedAttachment(
+                text=f"parsed {filename}",
+                description=f"summary of {filename}",
+            )
+
+        with (
+            patch.object(
+                calendar_parser_module,
+                "_build_drive_fetcher",
+                fake_fetcher,
+            ),
+            patch.object(
+                calendar_parser_module,
+                "stream_and_parse",
+                fake_stream_and_parse,
+            ),
+        ):
+            docs = self.parser.parse(self._three_attachment_event())
+
+        # PDF and PNG flow through; .docx stays metadata-only.
+        assert sorted(parsed_for) == ["photo.png", "report.pdf"]
+        # Only the indexable file_ids reached the fetcher seam.
+        assert sorted(f for _, f in fetched) == ["drv-img", "drv-pdf"]
+
+        att_docs_by_id = {
+            d.node_props["file_id"]: d
+            for d in docs
+            if d.node_label == "Attachment"
+        }
+        assert (
+            att_docs_by_id["drv-pdf"].node_props["decision"]
+            == "download_and_index"
+        )
+        assert (
+            att_docs_by_id["drv-img"].node_props["decision"]
+            == "download_and_index"
+        )
+        assert (
+            att_docs_by_id["drv-doc"].node_props["decision"] == "metadata_only"
+        )
+
+        # Indexed attachments carry their parsed text.
+        assert "parsed report.pdf" in att_docs_by_id["drv-pdf"].text
+        assert "parsed photo.png" in att_docs_by_id["drv-img"].text
+
+    def test_404_on_get_media_falls_back_to_metadata_only(self):
+        def fake_fetcher(_account, _file_id):
+            return lambda: b""
+
+        def boom(*, fetch, filename, mime, source_id=None):
+            raise AttachmentDownloadError(
+                f"404 not found: {filename}", source_id=source_id
+            )
+
+        evt = _make_event(
+            meta={
+                "download_attachments": True,
+                "attachment_indexable_mimetypes": ["application/pdf"],
+                "attachment_max_size_mb": 25,
+                "attachments": [
+                    _attachment(
+                        "drv-pdf", "deleted.pdf", "application/pdf",
+                        size_bytes=2048,
+                    )
+                ],
+            }
+        )
+
+        with (
+            patch.object(
+                calendar_parser_module,
+                "_build_drive_fetcher",
+                fake_fetcher,
+            ),
+            patch.object(
+                calendar_parser_module, "stream_and_parse", boom,
+            ),
+        ):
+            docs = self.parser.parse(evt)
+
+        att_docs = [d for d in docs if d.node_label == "Attachment"]
+        assert len(att_docs) == 1
+        assert att_docs[0].node_props["decision"] == "metadata_only"
+
+    def test_unsupported_mime_parse_error_falls_back_to_metadata_only(self):
+        """Unexpected parser errors must downgrade to metadata-only, not crash."""
+        def fake_fetcher(_account, _file_id):
+            return lambda: b""
+
+        def boom(*, fetch, filename, mime, source_id=None):
+            raise AttachmentParseError(
+                f"refused {mime}", source_id=source_id
+            )
+
+        evt = _make_event(
+            meta={
+                "download_attachments": True,
+                "attachment_indexable_mimetypes": ["application/pdf"],
+                "attachment_max_size_mb": 25,
+                "attachments": [
+                    _attachment(
+                        "drv-x", "weird.pdf", "application/pdf",
+                        size_bytes=1024,
+                    )
+                ],
+            }
+        )
+
+        with (
+            patch.object(
+                calendar_parser_module,
+                "_build_drive_fetcher",
+                fake_fetcher,
+            ),
+            patch.object(
+                calendar_parser_module, "stream_and_parse", boom,
+            ),
+        ):
+            docs = self.parser.parse(evt)
+
+        att = next(d for d in docs if d.node_label == "Attachment")
+        assert att.node_props["decision"] == "metadata_only"
+
+    def test_unknown_size_treated_as_too_large(self):
+        """size_bytes=0 must not slip past the max_size_mb gate when the
+        caller has set a conservative bound — an attachment of unknown
+        size is treated as 'too large' and stays metadata-only."""
+        evt = _make_event(
+            meta={
+                "download_attachments": True,
+                "attachment_indexable_mimetypes": ["application/pdf"],
+                "attachment_max_size_mb": 1,
+                "attachments": [
+                    _attachment(
+                        "drv-mystery", "huge.pdf", "application/pdf",
+                        size_bytes=0,
+                    )
+                ],
+            }
+        )
+
+        # If we erroneously hit the fetcher this test fails loudly.
+        def boom(*_args, **_kwargs):
+            raise AssertionError("unknown-size attachment must stay metadata-only")
+
+        with patch.object(
+            calendar_parser_module, "_build_drive_fetcher", boom,
+        ):
+            docs = self.parser.parse(evt)
+
+        att = next(d for d in docs if d.node_label == "Attachment")
+        assert att.node_props["decision"] == "metadata_only"
 
 
 class TestCrossAccount:

@@ -545,6 +545,177 @@ class TestMultiAccount:
         assert src_a._account != src_b._account
 
     @pytest.mark.asyncio
+    async def test_source_surfaces_attachments_for_event(self) -> None:
+        """events.attachments[] from Google should land in meta.attachments."""
+        source = GoogleCalendarSource()
+        source.configure({"account": "default"})
+        queue = _TestQueue()
+
+        evt = _calendar_event(event_id="evt-with-att")
+        evt["attachments"] = [
+            {
+                "title": "report.pdf",
+                "mimeType": "application/pdf",
+                "fileId": "drv-1",
+                "fileUrl": "https://drive.google.com/file/d/drv-1",
+                "iconLink": "https://example.com/pdf.png",
+            },
+            {
+                "title": "photo.png",
+                "mimeType": "image/png",
+                "fileId": "drv-2",
+                "fileUrl": "https://drive.google.com/file/d/drv-2",
+                "iconLink": "https://example.com/png.png",
+            },
+            {
+                "title": "spec.docx",
+                "mimeType": (
+                    "application/vnd.openxmlformats-officedocument."
+                    "wordprocessingml.document"
+                ),
+                "fileId": "drv-3",
+                "fileUrl": "https://drive.google.com/file/d/drv-3",
+                "iconLink": "https://example.com/doc.png",
+            },
+        ]
+
+        result_page = {"items": [evt], "nextSyncToken": "tok"}
+        mock_events = MagicMock()
+        mock_list = MagicMock()
+        mock_list.execute.return_value = result_page
+        mock_events.list.return_value = mock_list
+        mock_service = MagicMock()
+        mock_service.events.return_value = mock_events
+
+        await source._poll_calendar(mock_service, queue, "primary", None, {})
+
+        ev = queue.get_nowait()
+        atts = ev["meta"]["attachments"]
+        assert len(atts) == 3
+        assert {a["file_id"] for a in atts} == {"drv-1", "drv-2", "drv-3"}
+        assert atts[0]["mime_type"] == "application/pdf"
+        # Source defaults: download_attachments=False — sizes left at 0,
+        # no Drive call possible (drive_service is None).
+        assert all(a["size_bytes"] == 0 for a in atts)
+        assert ev["meta"]["download_attachments"] is False
+
+    @pytest.mark.asyncio
+    async def test_drive_size_lookup_skips_non_indexable_mimes(self) -> None:
+        """Drive files.get(size) must only fire for MIMEs we'd actually index."""
+        source = GoogleCalendarSource()
+        source.configure({
+            "account": "work",
+            "download_attachments": True,
+            "attachment_indexable_mimetypes": ["application/pdf", "image/png"],
+            "attachment_max_size_mb": 25,
+        })
+        queue = _TestQueue()
+
+        evt = _calendar_event(event_id="evt-mix")
+        evt["attachments"] = [
+            {
+                "title": "report.pdf",
+                "mimeType": "application/pdf",
+                "fileId": "drv-pdf",
+            },
+            {
+                "title": "photo.png",
+                "mimeType": "image/png",
+                "fileId": "drv-png",
+            },
+            {
+                "title": "spec.docx",
+                "mimeType": (
+                    "application/vnd.openxmlformats-officedocument."
+                    "wordprocessingml.document"
+                ),
+                "fileId": "drv-docx",
+            },
+        ]
+        result_page = {"items": [evt], "nextSyncToken": "tok"}
+        mock_events = MagicMock()
+        mock_list = MagicMock()
+        mock_list.execute.return_value = result_page
+        mock_events.list.return_value = mock_list
+        mock_service = MagicMock()
+        mock_service.events.return_value = mock_events
+
+        size_lookups: list[str] = []
+
+        def files_get(fileId: str, fields: str) -> MagicMock:
+            size_lookups.append(fileId)
+            ex = MagicMock()
+            ex.execute.return_value = {"size": "12345"}
+            return ex
+
+        mock_drive = MagicMock()
+        mock_drive.files.return_value.get.side_effect = files_get
+
+        await source._poll_calendar(
+            mock_service, queue, "primary", None, {},
+            drive_service=mock_drive,
+        )
+
+        # Only the two indexable MIMEs trigger a size lookup.
+        assert sorted(size_lookups) == ["drv-pdf", "drv-png"]
+
+        ev = queue.get_nowait()
+        att_by_id = {a["file_id"]: a for a in ev["meta"]["attachments"]}
+        assert att_by_id["drv-pdf"]["size_bytes"] == 12345
+        assert att_by_id["drv-png"]["size_bytes"] == 12345
+        assert att_by_id["drv-docx"]["size_bytes"] == 0
+
+    @pytest.mark.asyncio
+    async def test_drive_size_lookup_404_leaves_size_zero(self) -> None:
+        """A 404 on the size lookup must not abort enqueue."""
+        from googleapiclient.errors import HttpError
+
+        source = GoogleCalendarSource()
+        source.configure({
+            "account": "work",
+            "download_attachments": True,
+        })
+        queue = _TestQueue()
+
+        evt = _calendar_event(event_id="evt-404")
+        evt["attachments"] = [
+            {
+                "title": "gone.pdf",
+                "mimeType": "application/pdf",
+                "fileId": "drv-deleted",
+            }
+        ]
+        result_page = {"items": [evt], "nextSyncToken": "tok"}
+        mock_events = MagicMock()
+        mock_list = MagicMock()
+        mock_list.execute.return_value = result_page
+        mock_events.list.return_value = mock_list
+        mock_service = MagicMock()
+        mock_service.events.return_value = mock_events
+
+        class _Resp:
+            status = 404
+            reason = "Not Found"
+
+        def files_get(fileId: str, fields: str) -> MagicMock:
+            ex = MagicMock()
+            ex.execute.side_effect = HttpError(
+                resp=_Resp(), content=b'{"error":"not found"}'
+            )
+            return ex
+
+        mock_drive = MagicMock()
+        mock_drive.files.return_value.get.side_effect = files_get
+
+        await source._poll_calendar(
+            mock_service, queue, "primary", None, {},
+            drive_service=mock_drive,
+        )
+
+        ev = queue.get_nowait()
+        assert ev["meta"]["attachments"][0]["size_bytes"] == 0
+
+    @pytest.mark.asyncio
     async def test_stray_legacy_cursor_file_is_ignored(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

@@ -13,8 +13,13 @@ import pytest
 from google.oauth2.credentials import Credentials
 
 from worker.sources.calendar_auth import (
+    CALENDAR_SCOPE,
+    DRIVE_SCOPE,
     SCOPES,
+    ReauthRequiredError,
+    check_calendar_auth,
     get_credentials,
+    get_scopes,
     token_path_for_account,
 )
 
@@ -240,3 +245,120 @@ class TestGetCredentials:
         """Calling without account raises TypeError (no silent default)."""
         with pytest.raises(TypeError):
             get_credentials("unused.json")  # type: ignore[call-arg]
+
+
+class TestGetScopes:
+    """Scope set toggles between calendar-only and calendar+drive."""
+
+    def test_default_excludes_drive(self) -> None:
+        scopes = get_scopes(False)
+        assert CALENDAR_SCOPE in scopes
+        assert DRIVE_SCOPE not in scopes
+        # Backward-compat alias still names the narrower scope set.
+        assert SCOPES == [CALENDAR_SCOPE]
+
+    def test_download_attachments_adds_drive(self) -> None:
+        scopes = get_scopes(True)
+        assert CALENDAR_SCOPE in scopes
+        assert DRIVE_SCOPE in scopes
+
+    def test_get_credentials_uses_widened_scopes(
+        self, home: Path, tmp_path: Path
+    ) -> None:
+        """download_attachments=True flows the wider scope set into
+        InstalledAppFlow so Drive scope is requested at consent time."""
+        secrets = tmp_path / "secrets.json"
+        secrets.write_text('{"installed": {}}')
+
+        mock_flow = MagicMock()
+        mock_flow.run_local_server.return_value = _fake_creds(valid=True)
+
+        with patch(
+            "worker.sources.calendar_auth.InstalledAppFlow.from_client_secrets_file",
+            return_value=mock_flow,
+        ) as mock_from_file:
+            get_credentials(secrets, account="default", download_attachments=True)
+
+        passed_scopes = mock_from_file.call_args[0][1]
+        assert DRIVE_SCOPE in passed_scopes
+
+
+class TestCheckCalendarAuth:
+    """check_calendar_auth raises when scope drift would silently break runtime."""
+
+    def test_silent_when_download_attachments_false(self, home: Path) -> None:
+        # No token on disk + narrower scope requested = nothing to verify.
+        check_calendar_auth("default", download_attachments=False)
+
+    def test_silent_when_token_missing(self, home: Path) -> None:
+        # Install flow handles missing tokens; do not raise here.
+        check_calendar_auth("default", download_attachments=True)
+
+    def test_silent_when_drive_scope_present(self, home: Path) -> None:
+        token = token_path_for_account("default")
+        token.parent.mkdir(parents=True, exist_ok=True)
+        token.write_text(json.dumps({"scopes": [CALENDAR_SCOPE, DRIVE_SCOPE]}))
+        check_calendar_auth("default", download_attachments=True)
+
+    def test_raises_when_drive_scope_missing(self, home: Path) -> None:
+        token = token_path_for_account("default")
+        token.parent.mkdir(parents=True, exist_ok=True)
+        # Token only has the narrower calendar scope.
+        token.write_text(json.dumps({"scopes": [CALENDAR_SCOPE]}))
+        with pytest.raises(ReauthRequiredError):
+            check_calendar_auth("default", download_attachments=True)
+
+    def test_handles_scopes_as_string(self, home: Path) -> None:
+        """Older google-auth tokens persist scopes as a space-separated string."""
+        token = token_path_for_account("default")
+        token.parent.mkdir(parents=True, exist_ok=True)
+        token.write_text(
+            json.dumps({"scopes": f"{CALENDAR_SCOPE} {DRIVE_SCOPE}"})
+        )
+        check_calendar_auth("default", download_attachments=True)
+
+
+class TestMultiAccountTokenIsolation:
+    """Account A enabling drive scope must not contaminate account B's token."""
+
+    def test_independent_scope_sets_per_account(
+        self, home: Path, tmp_path: Path
+    ) -> None:
+        secrets = tmp_path / "secrets.json"
+        secrets.write_text('{"installed": {}}')
+
+        creds_a = _fake_creds(valid=True)
+        creds_a.to_json.return_value = json.dumps(
+            {"token": "A", "scopes": [CALENDAR_SCOPE, DRIVE_SCOPE]}
+        )
+        creds_b = _fake_creds(valid=True)
+        creds_b.to_json.return_value = json.dumps(
+            {"token": "B", "scopes": [CALENDAR_SCOPE]}
+        )
+
+        flow_a = MagicMock()
+        flow_a.run_local_server.return_value = creds_a
+        flow_b = MagicMock()
+        flow_b.run_local_server.return_value = creds_b
+
+        scope_calls: list[list[str]] = []
+
+        def factory(_secrets: str, scopes: list[str]) -> MagicMock:
+            scope_calls.append(list(scopes))
+            return flow_a if len(scope_calls) == 1 else flow_b
+
+        with patch(
+            "worker.sources.calendar_auth.InstalledAppFlow.from_client_secrets_file",
+            side_effect=factory,
+        ):
+            get_credentials(secrets, account="work", download_attachments=True)
+            get_credentials(secrets, account="home", download_attachments=False)
+
+        assert DRIVE_SCOPE in scope_calls[0]
+        assert DRIVE_SCOPE not in scope_calls[1]
+
+        # Validate account B's token does not silently pass the drive
+        # scope check just because account A authorised drive.
+        with pytest.raises(ReauthRequiredError):
+            check_calendar_auth("home", download_attachments=True)
+        check_calendar_auth("work", download_attachments=True)
