@@ -20,6 +20,7 @@ from .attachments import (
     classify_attachment,
     stream_and_parse,
 )
+from ._safe_filename import sanitize_for_inline
 from .base import BaseParser, GraphHint, ParsedDocument, canonicalize_email
 from .registry import register
 
@@ -361,7 +362,10 @@ class GoogleCalendarParser(BaseParser):
         """
         lines = ["Attachments:"]
         for att in attachments:
-            title = att.get("title") or "(untitled)"
+            raw_title = att.get("title") or "(untitled)"
+            title = sanitize_for_inline(str(raw_title))
+            if not title:
+                title = "(untitled)"
             mime = att.get("mime_type", "")
             size = _format_size(int(att.get("size_bytes", 0) or 0))
             lines.append(f"- {title} ({mime}, {size})")

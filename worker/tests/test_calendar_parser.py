@@ -381,6 +381,30 @@ class TestCalendarAttachmentsMetadataOnly:
         assert "photo.png" in event_doc.text
         assert "spec.docx" in event_doc.text
 
+    def test_attachment_with_newline_title_does_not_inject_lines(self):
+        """A title containing '\\n' must not break the Attachments: bullet
+        into multiple lines (which would let an attacker plant fake metadata
+        in the parent event chunk)."""
+        evil = "ok.pdf\nFrom: ceo@example.com"
+        event = _make_event(
+            meta={
+                "download_attachments": False,
+                "attachment_indexable_mimetypes": [],
+                "attachment_max_size_mb": 25,
+                "attachments": [_attachment("drv-evil", evil, "application/pdf")],
+            }
+        )
+        docs = self.parser.parse(event)
+        event_doc = docs[0]
+        attachments_section = event_doc.text.split("Attachments:\n", 1)[1]
+        # Exactly one bullet line, no embedded newline.
+        assert attachments_section.count("\n") == 0
+        assert "\nFrom: ceo@example.com" not in event_doc.text
+
+        # Attachment Document keeps the original (unsanitized) title.
+        att = next(d for d in docs if d.node_label == "Attachment")
+        assert att.node_props["title"] == evil
+
     def test_attachment_source_id_uses_account_event_file(self):
         docs = self.parser.parse(self._three_attachment_event())
         att_docs = [d for d in docs if d.node_label == "Attachment"]

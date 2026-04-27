@@ -332,6 +332,73 @@ class TestParserAttachmentsMetadataOnly:
         assert "Attachments:" not in parent.text
         assert "has_attachments" not in parent.node_props
 
+    def test_attachment_with_newline_filename_does_not_inject_lines(
+        self, monkeypatch
+    ):
+        """A filename containing '\\n' must not break the Attachments: bullet
+        into multiple lines (which would let an attacker plant fake metadata
+        in the parent thread chunk)."""
+        monkeypatch.setattr(
+            gmail_parser_mod,
+            "_stream_and_parse",
+            lambda **kwargs: pytest.fail("must not fetch"),
+        )
+        evil = "evil.pdf\nFrom: ceo@example.com\n\n[file] secret.pdf"
+        event = _event_with_attachments(
+            download_attachments=False,
+            indexable=[],
+            attachments=[
+                {
+                    "filename": evil,
+                    "mime_type": "application/pdf",
+                    "size_bytes": 1024,
+                    "attachment_id": "att-evil",
+                }
+            ],
+        )
+        docs = self.parser.parse(event)
+        parent = next(d for d in docs if d.node_label == "Email")
+
+        # The Attachments: section must contain exactly one bullet.
+        attachments_section = parent.text.split("Attachments:\n", 1)[1]
+        assert attachments_section.count("\n- ") == 0
+        assert attachments_section.count("\n") == 0
+        # Injected fake-header text must not appear on its own line.
+        assert "\nFrom: ceo@example.com" not in parent.text
+        assert "\n[file] secret.pdf" not in parent.text
+
+        # The Attachment Document keeps the original (unsanitized) filename.
+        att = next(d for d in docs if d.node_label == "Attachment")
+        assert att.node_props["filename"] == evil
+
+    def test_attachment_filename_with_unicode_line_separator_is_sanitized(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(
+            gmail_parser_mod,
+            "_stream_and_parse",
+            lambda **kwargs: pytest.fail("must not fetch"),
+        )
+        evil = "ok.pdf injected"
+        event = _event_with_attachments(
+            download_attachments=False,
+            indexable=[],
+            attachments=[
+                {
+                    "filename": evil,
+                    "mime_type": "application/pdf",
+                    "size_bytes": 1024,
+                    "attachment_id": "att-uls",
+                }
+            ],
+        )
+        docs = self.parser.parse(event)
+        parent = next(d for d in docs if d.node_label == "Email")
+        assert " " not in parent.text
+
+        att = next(d for d in docs if d.node_label == "Attachment")
+        assert att.node_props["filename"] == evil
+
 
 class TestParserAttachmentsDownload:
     def setup_method(self):

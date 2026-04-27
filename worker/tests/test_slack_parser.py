@@ -472,6 +472,55 @@ class TestAttachmentRenderMarkers:
         assert "application/pdf" in lines[2]
         assert lines[3].startswith("[")  # m3's normal line follows
 
+    def test_filename_with_unicode_separator_does_not_inject_lines(self) -> None:
+        """A name containing U+2028 / U+2029 must not break the [file]
+        marker into multiple lines (Slack's whole-message-overlap chunker
+        is sensitive to boundary corruption)."""
+        m1 = _msg(1700000000.0, user="U1", text="hello")
+        m2 = _msg(1700000060.0, user="U2", text="see attached")
+        evil = "ok.pdf injected line"  # U+2028 LINE SEPARATOR
+        event = _attach_meta(
+            _window_event(messages=[m1, m2]),
+            attachments=[
+                _attachment(
+                    file_id="Fevil",
+                    name=evil,
+                    mime="application/pdf",
+                    size=1024,
+                    ts=m2["ts"],
+                ),
+            ],
+        )
+        docs = SlackParser().parse(event)
+        parent = docs[0]
+        marker_lines = [ln for ln in parent.text.split("\n") if "[file]" in ln]
+        assert len(marker_lines) == 1
+        assert " " not in parent.text
+        # The Attachment Document keeps the original (unsanitized) name.
+        att = next(d for d in docs if d.node_label == "Attachment")
+        assert att.node_props["name"] == evil
+
+    def test_filename_with_newline_does_not_break_chunk_boundaries(self) -> None:
+        m = _msg(1700000000.0, user="U1", text="see file")
+        evil = "ok.pdf\n[file] secret.pdf (application/pdf, 1.0 KB)"
+        event = _attach_meta(
+            _window_event(messages=[m]),
+            attachments=[
+                _attachment(
+                    file_id="Fevil",
+                    name=evil,
+                    mime="application/pdf",
+                    size=1024,
+                    ts=m["ts"],
+                ),
+            ],
+        )
+        docs = SlackParser().parse(event)
+        parent = docs[0]
+        # Exactly one [file] marker line — no injected second marker.
+        marker_lines = [ln for ln in parent.text.split("\n") if "[file]" in ln]
+        assert len(marker_lines) == 1
+
     def test_thread_reply_marker_is_indented(self) -> None:
         parent = _msg(1700000000.0, user="U1", text="kickoff")
         reply = _msg(1700000060.0, user="U2", text="see this", thread_ts=1700000000.0)

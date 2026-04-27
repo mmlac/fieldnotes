@@ -38,6 +38,7 @@ from .attachments import (
     classify_attachment,
     stream_and_parse,
 )
+from ._safe_filename import sanitize_for_inline
 from .base import (
     _EMAIL_RE,
     BaseParser,
@@ -336,8 +337,9 @@ def _render_text(
         by_ts.setdefault(ts, []).append(a)
 
     def _file_marker(att: dict[str, Any], *, indent: bool) -> str:
+        safe_name = sanitize_for_inline(str(att.get("name", "")))
         line = (
-            f"[file] {att.get('name', '')} "
+            f"[file] {safe_name} "
             f"({att.get('mimetype', '')}, {_human_size(int(att.get('size') or 0))})"
         )
         return f"  {line}" if indent else line

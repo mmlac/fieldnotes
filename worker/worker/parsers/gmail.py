@@ -30,6 +30,7 @@ from .attachments import (
     classify_attachment,
     stream_and_parse,
 )
+from ._safe_filename import sanitize_for_inline
 from .base import BaseParser, GraphHint, ParsedDocument, canonicalize_email
 from .registry import register
 
@@ -146,8 +147,9 @@ def _human_size(size_bytes: int) -> str:
 
 
 def _render_attachment_bullet(att: dict[str, Any]) -> str:
+    safe_name = sanitize_for_inline(str(att.get("filename", "")))
     return (
-        f"- {att.get('filename', '')} "
+        f"- {safe_name} "
         f"({_mime_label(att.get('mime_type', ''))}, "
         f"{_human_size(int(att.get('size_bytes') or 0))})"
     )
