@@ -263,3 +263,22 @@ class TestMeEmailCanonicalization:
 
         me = _parse_me_config({"emails": ["me@googlemail.com", "me@gmail.com"]})
         assert me.emails == ["me@gmail.com", "me@gmail.com"]
+
+    def test_me_block_with_plus_tags_dedupes_to_gmail(self):
+        """``me@gmail.com`` and ``me+inbox@gmail.com`` collapse to the same
+        canonical mailbox so the writer reconciles them onto a single Person.
+        """
+        from worker.config import _parse_me_config
+
+        me = _parse_me_config({"emails": ["me@gmail.com", "me+inbox@gmail.com"]})
+        assert me.emails == ["me@gmail.com", "me@gmail.com"]
+
+    def test_me_block_preserves_plus_tag_on_non_gmail(self):
+        """Plus-addressing is preserved on non-Google providers — they have
+        their own mailbox semantics and may treat ``+`` as literal."""
+        from worker.config import _parse_me_config
+
+        me = _parse_me_config(
+            {"emails": ["me@personal.com", "me+inbox@personal.com"]}
+        )
+        assert me.emails == ["me@personal.com", "me+inbox@personal.com"]

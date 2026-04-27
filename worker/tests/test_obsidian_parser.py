@@ -43,6 +43,26 @@ class TestCanonicalizeEmail:
     def test_googlemail_case_insensitive(self):
         assert canonicalize_email("User@GOOGLEMAIL.COM") == "user@gmail.com"
 
+    def test_strips_plus_tag_gmail(self):
+        assert canonicalize_email("alice+work@gmail.com") == "alice@gmail.com"
+
+    def test_strips_plus_tag_googlemail(self):
+        assert canonicalize_email("alice+work@googlemail.com") == "alice@gmail.com"
+
+    def test_preserves_plus_other(self):
+        # Non-Google providers may treat plus as a literal local-part
+        # character; do not rewrite their mailboxes.
+        assert (
+            canonicalize_email("alice+work@example.com") == "alice+work@example.com"
+        )
+
+    def test_strips_plus_tag_only_first_plus(self):
+        # Everything from the first '+' to the '@' is the tag.
+        assert canonicalize_email("alice+a+b@gmail.com") == "alice@gmail.com"
+
+    def test_plus_tag_stripped_with_uppercase_gmail(self):
+        assert canonicalize_email("Alice+Work@Gmail.COM") == "alice@gmail.com"
+
 
 class TestObsidianParser:
     def setup_method(self):

@@ -22,6 +22,12 @@ def canonicalize_email(raw: str) -> str:
 
     * Strips whitespace, lower-cases.
     * Rewrites ``@googlemail.com`` → ``@gmail.com``.
+    * Strips ``+tag`` plus-addressing from the local part on Google
+      mailboxes (``@gmail.com`` / ``@googlemail.com``).  Google treats
+      ``alice+work@gmail.com`` and ``alice@gmail.com`` as the same
+      mailbox.  Plus-addressing is NOT stripped on other domains —
+      mailbox semantics vary across providers and some treat ``+`` as a
+      literal local-part character.
     """
     email = raw.strip().lower()
     if not email or "@" not in email:
@@ -29,6 +35,8 @@ def canonicalize_email(raw: str) -> str:
     local, domain = email.rsplit("@", 1)
     if domain in _GMAIL_ALIASES:
         domain = "gmail.com"
+    if domain == "gmail.com":
+        local = local.split("+", 1)[0]
     return f"{local}@{domain}"
 
 

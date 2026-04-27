@@ -196,6 +196,39 @@ class TestGmailParser:
         assert docs[0].text == ""
         assert docs[0].graph_hints == []
 
+    def test_gmail_plus_addressing_dedupes_to_single_person(self):
+        """Two Gmail messages — one to me@gmail.com, one to me+work@gmail.com —
+        produce hints that target a single canonical Person merge key.
+        """
+        event_plain = _make_event(
+            "body",
+            meta={
+                "message_id": "msg-plain",
+                "sender_email": "me@gmail.com",
+                "recipients": ["other@example.com"],
+            },
+        )
+        event_tagged = _make_event(
+            "body",
+            meta={
+                "message_id": "msg-tagged",
+                "sender_email": "me+work@gmail.com",
+                "recipients": ["other@example.com"],
+            },
+        )
+        sent_plain = [
+            h for h in self.parser.parse(event_plain)[0].graph_hints
+            if h.predicate == "SENT"
+        ]
+        sent_tagged = [
+            h for h in self.parser.parse(event_tagged)[0].graph_hints
+            if h.predicate == "SENT"
+        ]
+        assert sent_plain[0].subject_id == "person:me@gmail.com"
+        assert sent_tagged[0].subject_id == "person:me@gmail.com"
+        assert sent_plain[0].subject_props == {"email": "me@gmail.com"}
+        assert sent_tagged[0].subject_props == {"email": "me@gmail.com"}
+
     def test_no_sender_no_sent_hint(self):
         event = _make_event("body", meta={"sender_email": ""})
         docs = self.parser.parse(event)
