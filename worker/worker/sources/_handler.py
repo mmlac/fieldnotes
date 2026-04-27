@@ -8,7 +8,6 @@ each handler subclass.
 from __future__ import annotations
 
 import asyncio
-import fnmatch
 import hashlib
 import json
 import logging
@@ -36,6 +35,7 @@ from worker.metrics import (
     SOURCE_WATCHER_EVENTS,
     WATCHER_LAST_EVENT_TIMESTAMP,
 )
+from worker.parsers._pattern_match import matches_any
 
 from .cursor import FileEntry, serialize_file_cursor
 
@@ -225,39 +225,23 @@ class BaseHandler(FileSystemEventHandler):
     def _should_skip(self, path: str) -> bool:
         if self._extra_skip(path):
             return True
-        p = Path(path)
-        suffix = p.suffix.lower()
+        suffix = Path(path).suffix.lower()
         if self._include_extensions and suffix not in self._include_extensions:
             # Image extensions always pass through so standalone images
             # reach the vision pipeline even with a restricted extension list.
             if suffix not in IMAGE_EXTENSIONS:
                 return True
-        for pattern in self._exclude_patterns:
-            if fnmatch.fnmatch(path, pattern) or fnmatch.fnmatch(p.name, pattern):
-                return True
-            # Check if any parent directory component matches the pattern,
-            # so excluding "Photos Library.photoslibrary" skips all files
-            # inside that directory.
-            if any(fnmatch.fnmatch(part, pattern) for part in p.parts):
-                return True
-        return False
+        return matches_any(path, self._exclude_patterns)
 
     def _is_index_only(self, path: str) -> bool:
         """Check if *path* matches any ``index_only_patterns``.
 
         Matching files are indexed by filename/metadata only — their content
-        is not read or embedded.  Uses the same matching rules as
-        ``_should_skip`` (full path, basename, and directory components).
+        is not read or embedded.
         """
         if not self._index_only_patterns:
             return False
-        p = Path(path)
-        for pattern in self._index_only_patterns:
-            if fnmatch.fnmatch(path, pattern) or fnmatch.fnmatch(p.name, pattern):
-                return True
-            if any(fnmatch.fnmatch(part, pattern) for part in p.parts):
-                return True
-        return False
+        return matches_any(path, self._index_only_patterns)
 
     # -- Event mapping ------------------------------------------------------
 
@@ -443,9 +427,7 @@ class BaseHandler(FileSystemEventHandler):
             cursor_value: str | None = None
             if self._cursor_key is not None:
                 cursor_key = self._cursor_key
-                cursor_value = serialize_file_cursor(
-                    self.get_cursor_snapshot()
-                )
+                cursor_value = serialize_file_cursor(self.get_cursor_snapshot())
 
             SOURCE_WATCHER_EVENTS.labels(
                 source_type=self._source_type,

@@ -8,7 +8,6 @@ and exclude patterns.
 from __future__ import annotations
 
 import asyncio
-import fnmatch
 import logging
 import os
 import time
@@ -26,6 +25,7 @@ from worker.metrics import (
     initial_sync_add_items,
     initial_sync_source_done,
 )
+from worker.parsers._pattern_match import matches_any
 
 from ._handler import (
     DEFAULT_MAX_FILE_SIZE,
@@ -106,32 +106,17 @@ class FileSource(PythonSource):
 
     def _should_skip(self, path: str) -> bool:
         """Apply the same filtering rules as the watchdog handler."""
-        p = Path(path)
-        suffix = p.suffix.lower()
+        suffix = Path(path).suffix.lower()
         if self._include_extensions and suffix not in self._include_extensions:
             if suffix not in IMAGE_EXTENSIONS:
                 return True
-        for pattern in self._exclude_patterns:
-            if fnmatch.fnmatch(path, pattern) or fnmatch.fnmatch(p.name, pattern):
-                return True
-            # Check if any parent directory component matches the pattern,
-            # so excluding "Photos Library.photoslibrary" skips all files
-            # inside that directory.
-            if any(fnmatch.fnmatch(part, pattern) for part in p.parts):
-                return True
-        return False
+        return matches_any(path, self._exclude_patterns)
 
     def _is_index_only(self, path: str) -> bool:
         """Check if *path* matches any ``index_only_patterns``."""
         if not self._index_only_patterns:
             return False
-        p = Path(path)
-        for pattern in self._index_only_patterns:
-            if fnmatch.fnmatch(path, pattern) or fnmatch.fnmatch(p.name, pattern):
-                return True
-            if any(fnmatch.fnmatch(part, pattern) for part in p.parts):
-                return True
-        return False
+        return matches_any(path, self._index_only_patterns)
 
     def _scan_directories(self) -> dict[str, FileEntry]:
         """Walk all watch_paths and build a map of path → FileEntry.
@@ -169,9 +154,7 @@ class FileSource(PythonSource):
         """
         try:
             if not watch_path.exists():
-                logger.warning(
-                    "Watch path does not exist, skipping: %s", watch_path
-                )
+                logger.warning("Watch path does not exist, skipping: %s", watch_path)
                 return
             if not watch_path.is_dir():
                 logger.warning(
@@ -179,9 +162,7 @@ class FileSource(PythonSource):
                 )
                 return
         except OSError as exc:
-            logger.warning(
-                "Cannot stat watch path %s, skipping: %s", watch_path, exc
-            )
+            logger.warning("Cannot stat watch path %s, skipping: %s", watch_path, exc)
             return
 
         def _on_walk_error(exc: OSError) -> None:
@@ -201,9 +182,7 @@ class FileSource(PythonSource):
             try:
                 top_entries = list(watch_path.iterdir())
             except OSError as exc:
-                logger.warning(
-                    "Cannot list %s, skipping: %s", watch_path, exc
-                )
+                logger.warning("Cannot list %s, skipping: %s", watch_path, exc)
                 return
             top_files = [e.name for e in top_entries if not e.is_dir()]
             walker = [(str(watch_path), [], top_files)]

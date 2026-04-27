@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import fnmatch
 import json
 import sys
 from pathlib import Path
 from typing import Any
 
 from worker.config import load_config
+from worker.parsers._pattern_match import matches_any
 from worker.queue import PersistentQueue
 
 
@@ -191,14 +191,12 @@ def run_queue_migrate(*, config_path: Path | None = None) -> int:
 
 
 def _matches_any_pattern(path: str, patterns: list[str]) -> bool:
-    """Check if *path* matches any glob pattern (full path, basename, or component)."""
-    p = Path(path)
-    for pattern in patterns:
-        if fnmatch.fnmatch(path, pattern) or fnmatch.fnmatch(p.name, pattern):
-            return True
-        if any(fnmatch.fnmatch(part, pattern) for part in p.parts):
-            return True
-    return False
+    """Check if *path* matches any glob pattern.
+
+    Thin wrapper around :func:`worker.parsers._pattern_match.matches_any`
+    so existing call sites keep their internal name.
+    """
+    return matches_any(path, patterns)
 
 
 # Source types whose queued events carry a file path that can be
@@ -368,7 +366,9 @@ def run_queue_retag(
         if tagged_index_only:
             parts.append(f"{tagged_index_only} tagged index-only")
         if cleared_index_only:
-            parts.append(f"{cleared_index_only} cleared index-only (content needs re-scan)")
+            parts.append(
+                f"{cleared_index_only} cleared index-only (content needs re-scan)"
+            )
         print(f"{prefix}Retagged: {', '.join(parts)}.")
 
     return 0

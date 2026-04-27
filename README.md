@@ -291,6 +291,16 @@ index_only_patterns = ["*.iso", "*.dmg"] # index filename only, skip content
 recursive = true
 max_file_size = 104857600               # 100 MB
 
+# Pattern matching: `exclude_patterns` and `index_only_patterns` are glob
+# patterns. A pattern containing `/` (e.g. `Library/Uni`) matches contiguous
+# path segments anywhere in the path — so `Library/Uni` matches
+# `~/Documents/Library/Uni/syllabus.pdf` but not `~/Library/foo/Uni`.
+# Single-segment patterns (e.g. `*.iso`, `node_modules/`) match the full path,
+# basename, or any single path segment. Both patterns and paths are
+# NFC-normalized before comparison, so accented characters (`Bücher`) match
+# regardless of whether the on-disk filename is stored as NFC (Linux) or NFD
+# (macOS HFS+/APFS).
+
 [sources.obsidian]
 vault_paths = ["~/obsidian-vault"]
 # index_only_patterns = ["attachments/"] # index filename only, skip content
