@@ -1137,7 +1137,7 @@ make docker-up
 | Target | Description |
 |---|---|
 | `make install` | Install fieldnotes worker into `worker/.venv` |
-| `make install-dev` | Editable install with dev deps (pytest, ruff) |
+| `make install-dev` | Editable install with dev deps (pytest, ruff). **Re-run whenever `worker/pyproject.toml` changes** (new dependency added, version bumped) — the venv is not auto-refreshed. A stale venv shows up as `ModuleNotFoundError` during test collection; `tests/test_cli_imports.py` is the fast-failing canary for this. |
 | `make lint` | Run ruff linter on worker |
 | `make fmt` | Auto-format worker code with ruff |
 | `make test` | Run worker test suite |
