@@ -353,6 +353,34 @@ def test_system_only_messages_produce_metadata_only_chunk() -> None:
     assert len(in_channel) == 1
 
 
+def test_parser_defensive_filter() -> None:
+    """An empty bot_message that slips past the source-side filter
+    (e.g., a queue entry written before fn-dge shipped) must still be
+    stripped from the rendered text.  The parser keeps a backstop for
+    forward-compat / replay safety."""
+    real = _msg(1700000000.0, user="U1", text="hello world")
+    empty_bot = {
+        "ts": "1700000005.000000",
+        "user": "",
+        "bot_id": "B0",
+        "text": "",
+        "subtype": "bot_message",
+    }
+    join = _msg(1700000010.0, user="U2", text="", subtype="channel_join")
+    real2 = _msg(1700000020.0, user="U2", text="goodbye world")
+    event = _window_event(messages=[real, empty_bot, join, real2])
+
+    [doc] = SlackParser().parse(event)
+    lines = [ln for ln in doc.text.split("\n") if ln.strip()]
+    # Only the two real messages render — the empty bot_message and
+    # channel_join are stripped by the defensive filter.
+    assert len(lines) == 2
+    assert "hello world" in doc.text
+    assert "goodbye world" in doc.text
+    assert "B0" not in doc.text
+    assert "channel_join" not in doc.text
+
+
 # ---------------------------------------------------------------------------
 # Delete passthrough
 # ---------------------------------------------------------------------------

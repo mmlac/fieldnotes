@@ -30,6 +30,8 @@ import re
 from datetime import datetime, timezone
 from typing import Any, Callable
 
+from worker.sources._slack_filters import is_filtered_subtype
+
 from .attachments import (
     AttachmentDownloadError,
     AttachmentParseError,
@@ -70,11 +72,6 @@ _default_vision_extractor: VisionExtractor | None = None
 # Slack mention syntax inside message text.
 _USER_MENTION_RE = re.compile(r"<@([UW][A-Z0-9]+)>")
 _CHANNEL_MENTION_RE = re.compile(r"<#(C[A-Z0-9]+)(?:\|[^>]*)?>")
-
-# Subtypes that carry no meaningful body text.  ``bot_message`` is
-# retained when it has body text; the empty-detection below catches the
-# silent variants automatically.
-_SYSTEM_SUBTYPES = frozenset({"channel_join", "channel_leave"})
 
 
 def _conversation_type(meta: dict[str, Any]) -> str:
@@ -162,15 +159,15 @@ def _format_message(
 
 
 def _is_system_message(msg: dict[str, Any]) -> bool:
-    """Return True if the message has no body and a system subtype."""
-    if (msg.get("text") or "").strip():
-        return False
-    subtype = msg.get("subtype")
-    if subtype in _SYSTEM_SUBTYPES:
-        return True
-    if subtype == "bot_message":
-        return True
-    return False
+    """Defense-in-depth backstop for filtered Slack subtypes.
+
+    The canonical filter lives in
+    :mod:`worker.sources._slack_filters` and is applied at the source
+    layer before window-splitting (fn-dge).  This wrapper exists so the
+    parser keeps a backstop in case a stray system event slips through
+    a queue entry written before the source-side filter was deployed.
+    """
+    return is_filtered_subtype(msg)
 
 
 @register
@@ -230,13 +227,17 @@ class SlackParser(BaseParser):
         )
         has_thread = kind == "thread"
 
-        text = _render_text(messages, users_info, kind=kind, attachments=attachments)
+        # Defense-in-depth: drop filtered subtypes the source should have
+        # already stripped before window-splitting.  Rendering the
+        # filtered list keeps the embedded text aligned with the
+        # token-budget the source used to size this window.
+        meaningful = [m for m in messages if not _is_system_message(m)]
+        text = _render_text(meaningful, users_info, kind=kind, attachments=attachments)
 
         # Empty/system path: produce a metadata-only chunk so the document
         # still exists in the graph.  We bypass the rendered (empty) text
         # in favour of a one-line synthetic body so the chunker has
         # something to embed.
-        meaningful = [m for m in messages if not _is_system_message(m)]
         if messages and not meaningful:
             text = (
                 f"[Slack {conversation_type} #{channel_name}: "

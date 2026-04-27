@@ -49,6 +49,7 @@ from worker.metrics import (
 
 from worker.parsers.attachments import DEFAULT_INDEXABLE_MIMETYPES
 
+from ._slack_filters import is_filtered_subtype
 from ._slack_rate_limit import RateLimitedError, call_with_rate_limit_retry
 from .base import IndexedCheck, PythonSource
 from .cursor import save_json_atomic
@@ -998,12 +999,18 @@ class SlackSource(PythonSource):
             self._build_thread_events, channel, messages
         )
 
+        # Filter system events and empty bot_messages BEFORE window
+        # splitting so the token-budget accounting matches what the
+        # parser will render (fn-dge).  Without this, the source would
+        # count every join/leave/empty-bot in the burst budget while the
+        # parser later strips them, shifting chunk boundaries.
         non_thread = [
             m
             for m in messages
             if not _is_thread_parent(m)
             and not _is_thread_reply(m)
             and m.get("subtype") not in {"message_changed", "message_deleted"}
+            and not is_filtered_subtype(m)
         ]
         windows = split_into_windows(
             non_thread,

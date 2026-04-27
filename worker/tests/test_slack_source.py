@@ -633,6 +633,111 @@ class TestSlackSourcePolling:
 
 
 # ---------------------------------------------------------------------------
+# System / empty-bot subtype filter (fn-dge)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+class TestFilteredSubtypes:
+    """The source must drop system and empty bot_messages BEFORE window
+    splitting so the token budget driving chunk boundaries matches the
+    text the parser ultimately renders."""
+
+    async def test_source_filters_empty_bot_message_from_window(self) -> None:
+        """A window with one real msg + one empty bot_message + one
+        channel_join must emit a single window containing only the real
+        message — both filtered events drop out at the source layer."""
+        source = SlackSource()
+        source.configure({})
+        _seed_source(source)
+        ch = _channel("C1", "general")
+
+        history = [
+            _msg(100.0, "real text", user="U1"),
+            _msg(110.0, "", user="U1", subtype="channel_join"),
+            _msg(120.0, "", user="", subtype="bot_message", extra={"bot_id": "B1"}),
+        ]
+        source._client.conversations_history.return_value = {
+            "messages": history,
+            "has_more": False,
+            "response_metadata": {"next_cursor": ""},
+        }
+
+        queue = _ListQueue()
+        team_cursor: dict[str, dict[str, Any]] = {}
+        await source._poll_conversation(ch, team_cursor, queue)
+
+        windows = [e for e in queue.enqueued if e["meta"]["kind"] == "window"]
+        assert len(windows) == 1
+        meta = windows[0]["meta"]
+        assert meta["message_count"] == 1
+        assert meta["message_ts"] == ["100.000000"]
+        # Rendered body matches what the parser sees: only the real msg.
+        assert "real text" in windows[0]["text"]
+        assert "channel_join" not in windows[0]["text"]
+
+    async def test_window_boundaries_after_filter(self) -> None:
+        """Adding empty bot_messages between real messages must not
+        shift burst-window boundaries — the source filter strips them
+        before split_into_windows runs, so chunk count is stable."""
+        cfg = {"window_max_tokens": 512, "window_overlap_messages": 0}
+        ch = _channel("C1", "general")
+
+        # Baseline: only real messages.
+        text_chunk = "x" * 200  # ~50 estimated tokens each
+        plain_msgs = [_msg(float(i * 30), text_chunk, user="U1") for i in range(12)]
+
+        baseline = SlackSource()
+        baseline.configure(cfg)
+        _seed_source(baseline)
+        baseline._client.conversations_history.return_value = {
+            "messages": plain_msgs,
+            "has_more": False,
+            "response_metadata": {"next_cursor": ""},
+        }
+        baseline_queue = _ListQueue()
+        await baseline._poll_conversation(ch, {}, baseline_queue)
+        baseline_windows = [
+            e for e in baseline_queue.enqueued if e["meta"]["kind"] == "window"
+        ]
+
+        # Same 12 real messages, but with an empty bot_message inserted
+        # between every consecutive pair.  The filter strips them
+        # before window splitting, so the resulting chunks are identical.
+        polluted: list[dict[str, Any]] = []
+        for i, m in enumerate(plain_msgs):
+            polluted.append(m)
+            polluted.append(
+                _msg(
+                    float(i * 30) + 0.5,
+                    "",
+                    user="",
+                    subtype="bot_message",
+                    extra={"bot_id": f"B{i}"},
+                )
+            )
+
+        polluted_source = SlackSource()
+        polluted_source.configure(cfg)
+        _seed_source(polluted_source)
+        polluted_source._client.conversations_history.return_value = {
+            "messages": polluted,
+            "has_more": False,
+            "response_metadata": {"next_cursor": ""},
+        }
+        polluted_queue = _ListQueue()
+        await polluted_source._poll_conversation(ch, {}, polluted_queue)
+        polluted_windows = [
+            e for e in polluted_queue.enqueued if e["meta"]["kind"] == "window"
+        ]
+
+        assert len(polluted_windows) == len(baseline_windows)
+        for base_win, polluted_win in zip(baseline_windows, polluted_windows):
+            assert polluted_win["meta"]["message_ts"] == base_win["meta"]["message_ts"]
+            assert polluted_win["source_id"] == base_win["source_id"]
+
+
+# ---------------------------------------------------------------------------
 # Backfill resume / cursor monotonicity (fn-fhr)
 # ---------------------------------------------------------------------------
 
