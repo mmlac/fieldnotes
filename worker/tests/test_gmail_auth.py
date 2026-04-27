@@ -67,7 +67,7 @@ class TestGetCredentials:
 
         mock_creds = _fake_creds(valid=True)
         with patch.object(
-            Credentials, "from_authorized_user_file", return_value=mock_creds
+            Credentials, "from_authorized_user_info", return_value=mock_creds
         ):
             result = get_credentials("unused_secrets.json", account="default")
 
@@ -83,7 +83,7 @@ class TestGetCredentials:
 
         with (
             patch.object(
-                Credentials, "from_authorized_user_file", return_value=mock_creds
+                Credentials, "from_authorized_user_info", return_value=mock_creds
             ),
             patch("worker.sources.gmail_auth.Request") as MockRequest,
         ):
@@ -135,7 +135,7 @@ class TestGetCredentials:
 
         with (
             patch.object(
-                Credentials, "from_authorized_user_file", return_value=stale_creds
+                Credentials, "from_authorized_user_info", return_value=stale_creds
             ),
             patch(
                 "worker.sources.gmail_auth.InstalledAppFlow.from_client_secrets_file",
@@ -181,7 +181,7 @@ class TestGetCredentials:
 
         with (
             patch.object(
-                Credentials, "from_authorized_user_file", return_value=mock_creds
+                Credentials, "from_authorized_user_info", return_value=mock_creds
             ),
             patch("worker.sources.gmail_auth.Request"),
         ):
@@ -190,9 +190,7 @@ class TestGetCredentials:
         mode = token.stat().st_mode & 0o777
         assert mode == 0o600, f"Expected 0o600, got {oct(mode)}"
 
-    def test_creates_parent_directories(
-        self, home: Path, tmp_path: Path
-    ) -> None:
+    def test_creates_parent_directories(self, home: Path, tmp_path: Path) -> None:
         """Token parent dirs are created if they don't exist."""
         secrets = tmp_path / "secrets.json"
         secrets.write_text('{"installed": {}}')
@@ -225,16 +223,14 @@ class TestGetCredentials:
 
         with (
             patch.object(
-                Credentials, "from_authorized_user_file", return_value=mock_creds
+                Credentials, "from_authorized_user_info", return_value=mock_creds
             ),
             patch("worker.sources.gmail_auth.Request"),
             pytest.raises(Exception, match="refresh failed"),
         ):
             get_credentials("unused.json", account="default")
 
-    def test_two_accounts_no_collision(
-        self, home: Path, tmp_path: Path
-    ) -> None:
+    def test_two_accounts_no_collision(self, home: Path, tmp_path: Path) -> None:
         """Saving account A then account B leaves both files intact."""
         secrets = tmp_path / "secrets.json"
         secrets.write_text('{"installed": {}}')
@@ -265,9 +261,7 @@ class TestGetCredentials:
         assert json.loads(path_a.read_text())["token"] == "A"
         assert json.loads(path_b.read_text())["token"] == "B"
 
-    def test_round_trip_save_then_load(
-        self, home: Path, tmp_path: Path
-    ) -> None:
+    def test_round_trip_save_then_load(self, home: Path, tmp_path: Path) -> None:
         """First call saves; second call loads the same file."""
         secrets = tmp_path / "secrets.json"
         secrets.write_text('{"installed": {}}')
@@ -289,7 +283,7 @@ class TestGetCredentials:
         cached = _fake_creds(valid=True)
         with (
             patch.object(
-                Credentials, "from_authorized_user_file", return_value=cached
+                Credentials, "from_authorized_user_info", return_value=cached
             ) as mock_load,
             patch(
                 "worker.sources.gmail_auth.InstalledAppFlow.from_client_secrets_file"
@@ -306,3 +300,126 @@ class TestGetCredentials:
         """Calling without account raises TypeError (no silent default)."""
         with pytest.raises(TypeError):
             get_credentials("unused.json")  # type: ignore[call-arg]
+
+
+class TestTokenSymlinkSafety:
+    """Symlink and atomicity invariants on the persisted token file."""
+
+    def test_token_save_refuses_symlink(self, home: Path, tmp_path: Path) -> None:
+        """If the token path is a symlink, save raises before writing."""
+        token = token_path_for_account("default")
+        token.parent.mkdir(parents=True, exist_ok=True)
+        attacker = tmp_path / "attacker.json"
+        attacker.write_text('{"sentinel": true}')
+        token.symlink_to(attacker)
+
+        secrets = tmp_path / "secrets.json"
+        secrets.write_text('{"installed": {}}')
+        mock_flow = MagicMock()
+        mock_flow.run_local_server.return_value = _fake_creds(valid=True)
+
+        with patch(
+            "worker.sources.gmail_auth.InstalledAppFlow.from_client_secrets_file",
+            return_value=mock_flow,
+        ):
+            with pytest.raises(OSError, match="symlink"):
+                get_credentials(secrets, account="default")
+
+        # Attacker target untouched; no creds written
+        assert attacker.read_text() == '{"sentinel": true}'
+
+    def test_token_load_refuses_symlink(self, home: Path) -> None:
+        """Pre-existing symlink at the token path must not be silently followed."""
+        token = token_path_for_account("default")
+        token.parent.mkdir(parents=True, exist_ok=True)
+        attacker = token.parent / "attacker.json"
+        attacker.write_text('{"token": "evil"}')
+        token.symlink_to(attacker)
+
+        with pytest.raises(OSError, match="symlink"):
+            get_credentials("unused.json", account="default")
+
+    def test_token_save_refuses_symlinked_parent(
+        self, home: Path, tmp_path: Path
+    ) -> None:
+        """Save bails when the token's parent dir is a symlink."""
+        real = tmp_path / "real_data"
+        real.mkdir()
+        # Replace the data dir with a symlink to a different real dir
+        token = token_path_for_account("default")
+        token.parent.parent.mkdir(parents=True, exist_ok=True)
+        token.parent.symlink_to(real, target_is_directory=True)
+
+        secrets = tmp_path / "secrets.json"
+        secrets.write_text('{"installed": {}}')
+        mock_flow = MagicMock()
+        mock_flow.run_local_server.return_value = _fake_creds(valid=True)
+
+        with patch(
+            "worker.sources.gmail_auth.InstalledAppFlow.from_client_secrets_file",
+            return_value=mock_flow,
+        ):
+            with pytest.raises(OSError, match="symlink"):
+                get_credentials(secrets, account="default")
+
+        # Nothing landed under the real dir either
+        assert list(real.iterdir()) == []
+
+    def test_token_save_atomic_under_crash(
+        self, home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A write interrupted before rename leaves the prior token intact."""
+        token = token_path_for_account("default")
+        token.parent.mkdir(parents=True, exist_ok=True)
+        token.write_text(json.dumps({"token": "orig"}))
+        token.chmod(0o600)
+        original_text = token.read_text()
+
+        # Force the OAuth flow path: existing creds are invalid + no refresh.
+        stale = _fake_creds(valid=False, expired=True, refresh_token=None)
+        mock_flow = MagicMock()
+        mock_flow.run_local_server.return_value = _fake_creds(valid=True)
+
+        import worker.sources._token_io as token_io
+
+        def boom(*args: object, **kwargs: object) -> None:
+            raise RuntimeError("simulated crash before rename")
+
+        monkeypatch.setattr(token_io.os, "rename", boom)
+
+        with (
+            patch.object(Credentials, "from_authorized_user_info", return_value=stale),
+            patch(
+                "worker.sources.gmail_auth.InstalledAppFlow.from_client_secrets_file",
+                return_value=mock_flow,
+            ),
+            pytest.raises(RuntimeError, match="simulated crash"),
+        ):
+            get_credentials("unused.json", account="default")
+
+        assert token.read_text() == original_text
+
+    def test_token_save_mode_0600_survives_rename(
+        self, home: Path, tmp_path: Path
+    ) -> None:
+        """0o600 holds even when overwriting a stale loose-mode file."""
+        token = token_path_for_account("default")
+        token.parent.mkdir(parents=True, exist_ok=True)
+        token.write_text('{"token": "old"}')
+        token.chmod(0o644)
+
+        stale = _fake_creds(valid=False, expired=True, refresh_token=None)
+        mock_flow = MagicMock()
+        mock_flow.run_local_server.return_value = _fake_creds(valid=True)
+
+        with (
+            patch.object(Credentials, "from_authorized_user_info", return_value=stale),
+            patch(
+                "worker.sources.gmail_auth.InstalledAppFlow.from_client_secrets_file",
+                return_value=mock_flow,
+            ),
+        ):
+            get_credentials("unused.json", account="default")
+
+        mode = token.stat().st_mode & 0o777
+        assert mode == 0o600

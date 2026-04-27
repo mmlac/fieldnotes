@@ -35,6 +35,7 @@ from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 
 from worker.log_sanitizer import redact_home_path
+from worker.sources._token_io import read_token_safe, write_token_atomic
 
 logger = logging.getLogger(__name__)
 
@@ -132,19 +133,16 @@ class SlackToken:
 
 def _load_token(token_path: str | Path) -> SlackToken | None:
     p = Path(token_path)
-    if not p.exists():
+    raw = read_token_safe(p)
+    if raw is None:
         return None
-    return SlackToken.from_dict(json.loads(p.read_text()))
+    return SlackToken.from_dict(json.loads(raw))
 
 
 def _save_token(token_path: str | Path, token: SlackToken) -> None:
     p = Path(token_path)
     p.parent.mkdir(parents=True, exist_ok=True)
-    # Create with restrictive mode, then re-chmod after write to enforce
-    # 0600 even if the file already existed with looser perms.
-    p.touch(mode=0o600, exist_ok=True)
-    p.write_text(json.dumps(token.to_dict(), indent=2))
-    p.chmod(0o600)
+    write_token_atomic(p, json.dumps(token.to_dict(), indent=2))
 
 
 def _build_authorize_url(

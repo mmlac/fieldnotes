@@ -147,6 +147,81 @@ class TestSaveAndLoadToken:
         loaded = _load_token(path)
         assert loaded == token
 
+    def test_token_save_refuses_symlink(self, tmp_path: Path) -> None:
+        """Pre-existing symlink at the target path makes save raise."""
+        attacker = tmp_path / "attacker.json"
+        attacker.write_text('{"sentinel": true}')
+        path = tmp_path / "slack_token.json"
+        path.symlink_to(attacker)
+
+        token = SlackToken("xoxb", None, "T", "UB", "UH", "s")
+        with pytest.raises(OSError, match="symlink"):
+            _save_token(path, token)
+        # Attacker file untouched
+        assert attacker.read_text() == '{"sentinel": true}'
+
+    def test_token_load_refuses_symlink(self, tmp_path: Path) -> None:
+        """Symlinked token path makes load raise rather than read attacker."""
+        attacker = tmp_path / "attacker.json"
+        attacker.write_text(
+            json.dumps(SlackToken("xoxb-evil", None, "T", "UB", "UH", "s").to_dict())
+        )
+        path = tmp_path / "slack_token.json"
+        path.symlink_to(attacker)
+
+        with pytest.raises(OSError, match="symlink"):
+            _load_token(path)
+
+    def test_token_save_refuses_symlinked_parent(self, tmp_path: Path) -> None:
+        """Symlinked parent dir is rejected before any write."""
+        real_parent = tmp_path / "real"
+        real_parent.mkdir()
+        link_parent = tmp_path / "link"
+        link_parent.symlink_to(real_parent, target_is_directory=True)
+
+        path = link_parent / "slack_token.json"
+        token = SlackToken("xoxb", None, "T", "UB", "UH", "s")
+        with pytest.raises(OSError, match="symlink"):
+            _save_token(path, token)
+        # No file was written under the real parent either
+        assert not (real_parent / "slack_token.json").exists()
+
+    def test_token_save_atomic_under_crash(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """If the rename never happens, the prior token is untouched and tmp cleaned."""
+        path = tmp_path / "slack_token.json"
+        original = SlackToken("xoxb-orig", None, "T", "UB", "UH", "s")
+        _save_token(path, original)
+        original_text = path.read_text()
+
+        import worker.sources._token_io as token_io
+
+        def boom(*args: object, **kwargs: object) -> None:
+            raise RuntimeError("simulated crash before rename")
+
+        monkeypatch.setattr(token_io.os, "rename", boom)
+
+        with pytest.raises(RuntimeError, match="simulated crash"):
+            _save_token(path, SlackToken("xoxb-new", None, "T", "UB", "UH", "s"))
+
+        # Original token preserved
+        assert path.read_text() == original_text
+        # tmp file may exist but did not clobber the target
+        assert path.is_file() and not path.is_symlink()
+
+    def test_token_save_mode_0600_survives_rename(self, tmp_path: Path) -> None:
+        """Mode invariant: 0o600 holds across the rename, not just initial create."""
+        path = tmp_path / "slack_token.json"
+        # Pre-existing loose-mode file gets replaced via rename
+        path.write_text("{}")
+        path.chmod(0o644)
+
+        token = SlackToken("xoxb", None, "T", "UB", "UH", "s")
+        _save_token(path, token)
+        mode = path.stat().st_mode & 0o777
+        assert mode == 0o600
+
 
 class TestInstallSlack:
     def test_fresh_install_persists_tokens_with_mode_0600(

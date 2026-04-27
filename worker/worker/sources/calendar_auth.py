@@ -15,6 +15,7 @@ flow.
 
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 
@@ -23,6 +24,7 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 
 from worker.log_sanitizer import redact_home_path
+from worker.sources._token_io import read_token_safe, write_token_atomic
 
 logger = logging.getLogger(__name__)
 
@@ -85,8 +87,9 @@ def get_credentials(
     token_path = token_path_for_account(account)
     creds: Credentials | None = None
 
-    if token_path.exists():
-        creds = Credentials.from_authorized_user_file(str(token_path), scopes)
+    raw = read_token_safe(token_path)
+    if raw is not None:
+        creds = Credentials.from_authorized_user_info(json.loads(raw), scopes)
 
     if creds and creds.valid:
         return creds
@@ -103,13 +106,10 @@ def get_credentials(
         )
         creds = flow.run_local_server(port=0)
 
-    # Persist for next run.  Create with restrictive mode, then re-chmod
-    # after write to enforce 0600 even if the file already existed with
-    # looser perms.
+    # Persist for next run via the symlink-safe atomic helper: writes go to
+    # a tmp file with O_NOFOLLOW + 0o600, then rename onto the final path.
     token_path.parent.mkdir(parents=True, exist_ok=True)
-    token_path.touch(mode=0o600, exist_ok=True)
-    token_path.write_text(creds.to_json())
-    token_path.chmod(0o600)
+    write_token_atomic(token_path, creds.to_json())
     logger.info(
         "Calendar token saved for account=%s at %s",
         account,
@@ -126,13 +126,15 @@ def _token_scopes(token_path: Path) -> list[str]:
     no ``scopes`` field — the caller should treat that as "scope unknown"
     rather than "no scopes granted".
     """
-    if not token_path.exists():
+    try:
+        raw = read_token_safe(token_path)
+    except OSError:
+        return []
+    if raw is None:
         return []
     try:
-        import json
-
-        data = json.loads(token_path.read_text())
-    except (OSError, ValueError):
+        data = json.loads(raw)
+    except ValueError:
         return []
     raw = data.get("scopes")
     if isinstance(raw, list):
