@@ -437,6 +437,56 @@ TOOLS: list[Tool] = [
         },
     ),
     Tool(
+        name="itinerary",
+        description=(
+            "Aggregated daily agenda for a single day: calendar events with "
+            "their linked open OmniFocus tasks, vector-similar notes "
+            "(File / Obsidian / Slack), and the most recent email or Slack "
+            "thread covering all attendees. Resolution order for 'day': "
+            "'today' or 'tomorrow' (relative to the user's local timezone) "
+            "or an explicit ISO date 'YYYY-MM-DD'. When 'brief' is true "
+            "the per-event LLM summary is skipped and 'next_brief' is "
+            "returned as null on every event."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "day": {
+                    "type": "string",
+                    "description": (
+                        "Day to render: 'today' (default), 'tomorrow', or "
+                        "an ISO date 'YYYY-MM-DD'."
+                    ),
+                    "default": "today",
+                },
+                "account": {
+                    "type": "string",
+                    "description": (
+                        "Optional google_calendar.<account> to filter to a "
+                        "single calendar account. Unknown account names "
+                        "return a tool error listing the configured ones."
+                    ),
+                },
+                "brief": {
+                    "type": "boolean",
+                    "description": (
+                        "If true, skip the LLM-generated per-event summary "
+                        "(next_brief is always null). Default false."
+                    ),
+                    "default": False,
+                },
+                "horizon": {
+                    "type": "string",
+                    "description": (
+                        "Lookback window for linked tasks/notes/threads. "
+                        "Relative ('30d', '7d') or ISO 8601. Default '30d'."
+                    ),
+                    "default": "30d",
+                },
+            },
+        },
+    ),
+    Tool(
         name="digest",
         description=(
             "Summarize recent activity across all indexed sources in a time window. "
@@ -632,6 +682,8 @@ class FieldnotesServer:
                 return self._handle_suggest_connections(arguments)
             if name == "digest":
                 return await self._handle_digest(arguments)
+            if name == "itinerary":
+                return await self._handle_itinerary(arguments)
             if name == "persons_inspect":
                 return self._handle_persons_inspect(arguments)
             if name == "persons_split":
@@ -1188,6 +1240,66 @@ class FieldnotesServer:
         text = await loop.run_in_executor(self._executor, _run)
         return [TextContent(type="text", text=text)]
 
+    async def _handle_itinerary(self, arguments: dict) -> list[TextContent]:
+        """Aggregate daily agenda and return as JSON.
+
+        Returns a documented dict shape mirroring the ``fieldnotes
+        itinerary --json`` payload (see fn-wbc.2 schema).  ``brief`` and
+        the absence of fn-wbc.4 both leave ``next_brief`` null on every
+        event in the current bead.
+        """
+        day = arguments.get("day", "today")
+        if not isinstance(day, str) or not day.strip():
+            day = "today"
+
+        account = arguments.get("account") or None
+        if account is not None and not isinstance(account, str):
+            return [_itinerary_error("'account' must be a string")]
+
+        if account is not None:
+            configured = sorted(self._cfg.google_calendar.keys())
+            if account not in configured:
+                return [
+                    _itinerary_error(
+                        f"Unknown account {account!r}",
+                        configured_accounts=configured,
+                    )
+                ]
+
+        brief = bool(arguments.get("brief", False))
+        horizon_str = arguments.get("horizon", "30d")
+        if not isinstance(horizon_str, str) or not horizon_str.strip():
+            horizon_str = "30d"
+
+        try:
+            horizon_td = _parse_horizon(horizon_str)
+        except ValueError as exc:
+            return [_itinerary_error(f"Invalid 'horizon': {exc}")]
+
+        loop = asyncio.get_running_loop()
+
+        def _run() -> dict | str:
+            from worker.query.itinerary import get_itinerary
+
+            try:
+                itin = get_itinerary(
+                    day=day,
+                    account=account,
+                    horizon=horizon_td,
+                    registry=self._registry,
+                    qdrant_cfg=self._cfg.qdrant,
+                    neo4j_cfg=self._cfg.neo4j,
+                )
+            except ValueError as exc:
+                return f"error:{exc}"
+            return _itinerary_to_dict(itin, brief=brief)
+
+        result = await loop.run_in_executor(self._executor, _run)
+        if isinstance(result, str) and result.startswith("error:"):
+            return [_itinerary_error(result[len("error:") :])]
+        assert isinstance(result, dict)
+        return [TextContent(type="text", text=json.dumps(result, default=str))]
+
     def _handle_person(self, arguments: dict) -> list[TextContent]:
         identifier = arguments.get("identifier", "")
         if not isinstance(identifier, str) or not identifier.strip():
@@ -1473,6 +1585,105 @@ class FieldnotesServer:
 
         # Wrap original stream to replay *first*, then forward everything.
         return _PrefixedReceiveStream(first, read_stream)
+
+
+def _itinerary_error(message: str, **extra: Any) -> TextContent:
+    payload: dict[str, Any] = {"error": True, "message": message}
+    payload.update(extra)
+    return TextContent(type="text", text=json.dumps(payload, default=str))
+
+
+def _parse_horizon(s: str):
+    """Parse a horizon string like ``'30d'`` into a positive ``timedelta``.
+
+    Reuses :func:`parse_relative_time` (which returns ``now - horizon``)
+    and inverts back to a duration.
+    """
+    from datetime import datetime, timezone
+
+    parsed = parse_relative_time(s)
+    delta = datetime.now(timezone.utc) - parsed
+    if delta.total_seconds() < 0:
+        delta = -delta
+    return delta
+
+
+def _itinerary_to_dict(itin: Any, *, brief: bool) -> dict:
+    """Serialize an Itinerary to the documented JSON schema (fn-wbc.2).
+
+    ``next_brief`` is always ``None`` until fn-wbc.4 lands.  The ``brief``
+    flag is accepted today so callers don't have to change shape later;
+    today both true and false yield ``None``.
+    """
+    del brief  # next_brief is always None pre-fn-wbc.4
+
+    def _person(p: Any) -> dict | None:
+        if p is None:
+            return None
+        return {"name": p.name, "email": p.email}
+
+    events: list[dict] = []
+    for ewl in itin.events:
+        ev = ewl.event
+        events.append(
+            {
+                "event_id": str(ev.id),
+                "source_id": ev.source_id,
+                "title": ev.title,
+                "start": ev.start_ts,
+                "end": ev.end_ts,
+                "account": ev.account,
+                "calendar_id": ev.calendar_id,
+                "organizer": _person(ev.organizer),
+                "attendees": [_person(a) for a in ev.attendees if a is not None],
+                "location": ev.location,
+                "html_link": ev.html_link,
+                "linked": {
+                    "tasks": [
+                        {
+                            "title": t.title,
+                            "project": t.project,
+                            "tags": list(t.tags),
+                            "due": t.due,
+                            "defer": t.defer,
+                            "flagged": bool(t.flagged),
+                            "source_id": t.source_id,
+                        }
+                        for t in ewl.tasks
+                    ],
+                    "notes": [
+                        {
+                            "source_id": n.source_id,
+                            "title": n.title,
+                            "snippet": n.snippet,
+                            "mtime": n.mtime,
+                            "attendee_overlap": bool(n.attendee_overlap),
+                            "score": float(n.score),
+                        }
+                        for n in ewl.notes
+                    ],
+                    "thread": (
+                        None
+                        if ewl.thread is None
+                        else {
+                            "kind": ewl.thread.kind,
+                            "source_id": ewl.thread.source_id,
+                            "title": ewl.thread.title,
+                            "last_ts": ewl.thread.last_ts,
+                        }
+                    ),
+                },
+                "next_brief": None,
+            }
+        )
+
+    return {
+        "day": itin.day.isoformat()
+        if hasattr(itin.day, "isoformat")
+        else str(itin.day),
+        "timezone": itin.timezone,
+        "events": events,
+    }
 
 
 def _person_error(message: str, **extra: Any) -> TextContent:

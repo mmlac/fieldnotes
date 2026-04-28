@@ -1259,6 +1259,7 @@ Fieldnotes exposes tools over the [Model Context Protocol](https://modelcontextp
 | `timeline(since?, until?, source_type?, limit?)` | Chronological activity feed across all sources within a time range |
 | `suggest_connections(source_id?, source_type?, threshold?, limit?, cross_source?)` | Find semantically similar but unlinked documents across the knowledge graph |
 | `digest(since?, summarize?)` | Aggregate activity summary with per-source counts, highlights, and new connections |
+| `itinerary(day?, account?, brief?, horizon?)` | Aggregated daily agenda: calendar events with linked open OmniFocus tasks, vector-similar notes, and the most recent email/Slack thread covering all attendees. `day` accepts `today` (default), `tomorrow`, or `YYYY-MM-DD`. `brief=true` skips the LLM per-event summary (`next_brief` stays null). |
 | `list_topics(source?)` | List topics (`all`, `cluster`, or `user`) with document counts |
 | `show_topic(name)` | Topic details: description, documents, related entities and topics |
 | `topic_gaps()` | Cluster-discovered topics missing from your manual taxonomy |
