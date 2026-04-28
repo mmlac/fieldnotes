@@ -204,7 +204,13 @@ def seeded(driver: Driver) -> dict[str, int]:
 
 
 def _run(*, with_accounts: bool = True, **kwargs: Any) -> tuple[int, str, str]:
-    """Invoke :func:`run_itinerary` with a patched ``load_config`` and capture I/O."""
+    """Invoke :func:`run_itinerary` with a patched ``load_config`` and capture I/O.
+
+    Defaults ``brief=True`` so the LLM path is skipped — these tests
+    cover the non-LLM rendering and JSON schema.  LLM coverage lives in
+    :mod:`worker.tests.cli.test_itinerary_summary`.
+    """
+    kwargs.setdefault("brief", True)
     cfg = _make_config(with_accounts=with_accounts)
     out = io.StringIO()
     err = io.StringIO()
@@ -230,7 +236,7 @@ class TestItineraryParser:
         assert args.horizon == "30d"
         assert args.json_output is False
 
-    def test_itinerary_brief_flag_parses_but_is_no_op_in_this_bead(self) -> None:
+    def test_itinerary_brief_flag_parses(self) -> None:
         parser = _build_parser()
         args = parser.parse_args(["itinerary", "--brief"])
         assert args.brief is True
@@ -382,8 +388,11 @@ def test_itinerary_json_schema_stable(seeded: dict[str, int]) -> None:
 
 
 @_NEEDS_NEO4J
-def test_itinerary_json_next_brief_is_null(seeded: dict[str, int]) -> None:
-    code, out, _err = _run(day="2026-04-27", json_output=True)
+def test_itinerary_json_brief_flag_emits_null_next_brief(
+    seeded: dict[str, int],
+) -> None:
+    """With ``--brief``, no LLM is invoked and ``next_brief`` is null."""
+    code, out, _err = _run(day="2026-04-27", brief=True, json_output=True)
     assert code == 0
     payload = json.loads(out)
     assert payload["events"]
@@ -408,17 +417,16 @@ def test_itinerary_json_empty_day_emits_empty_events(
 
 
 @_NEEDS_NEO4J
-def test_itinerary_brief_flag_parses_but_is_no_op_in_this_bead(
+def test_itinerary_brief_flag_skips_llm_and_keeps_schema(
     seeded: dict[str, int],
 ) -> None:
-    code_default, out_default, _ = _run(day="2026-04-27", json_output=True)
-    code_brief, out_brief, _ = _run(day="2026-04-27", brief=True, json_output=True)
-    assert code_default == code_brief == 0
-    payload_default = json.loads(out_default)
-    payload_brief = json.loads(out_brief)
-    # Schemas match: --brief produces the same output as default in fn-wbc.2.
-    assert payload_default == payload_brief
-    for ev in payload_brief["events"]:
+    """``--brief`` skips the LLM but produces the same schema shape."""
+    code, out, _err = _run(day="2026-04-27", brief=True, json_output=True)
+    assert code == 0
+    payload = json.loads(out)
+    assert payload["events"]
+    for ev in payload["events"]:
+        assert "next_brief" in ev
         assert ev["next_brief"] is None
 
 

@@ -144,6 +144,11 @@ def _probe_person_brief_prompt(mod: Any) -> None:
     assert "Do not invent" in mod.SYSTEM_PROMPT
 
 
+def _probe_itinerary_brief_prompt(mod: Any) -> None:
+    assert callable(mod.build_event_brief_request)
+    assert "Do not invent" in mod.SYSTEM_PROMPT
+
+
 def _probe_itinerary(mod: Any) -> None:
     # _parse_horizon backs --horizon validation; exercise the real parser
     # so a regression in the relative-time handling fails this canary
@@ -172,6 +177,7 @@ _PROBES: dict[str, Callable[[Any], None]] = {
     "timeline": _probe_timeline,
     "person": _probe_person,
     "person_brief_prompt": _probe_person_brief_prompt,
+    "itinerary_brief_prompt": _probe_itinerary_brief_prompt,
 }
 
 

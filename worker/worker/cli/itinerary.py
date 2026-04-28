@@ -1,8 +1,9 @@
 """CLI handler for ``fieldnotes itinerary`` — daily agenda renderer.
 
 Wires :mod:`worker.query.itinerary` (fn-wbc.1) into a Rich-rendered terminal
-view and a stable ``--json`` schema.  No LLM in this bead — the
-``--brief`` flag is parsed and accepted as a no-op until fn-wbc.4 lands.
+view and a stable ``--json`` schema.  Default-on per-meeting LLM briefs
+go through :mod:`worker.query.itinerary_brief` and
+:mod:`worker.cli.itinerary_brief_prompt` (fn-wbc.4); ``--brief`` opts out.
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from typing import Any
 
 from neo4j import Driver, GraphDatabase
 
+from worker.cli.itinerary_brief_prompt import build_event_brief_request
 from worker.config import Config, Neo4jConfig, load_config
 from worker.query.itinerary import (
     EventWithLinks,
@@ -30,6 +32,7 @@ from worker.query.itinerary import (
     _resolve_day,
     get_itinerary,
 )
+from worker.query.itinerary_brief import assemble_event_brief
 
 logger = logging.getLogger(__name__)
 
@@ -39,8 +42,13 @@ _DEFAULT_HORIZON = "30d"
 _MAX_TASKS = 2
 _MAX_NOTES = 2
 _MAX_ATTENDEES_INLINE = 3
+_BRIEF_ROLE = "completion"
 
 _HORIZON_RE = re.compile(r"^(\d+)\s*(h|d|w|m)$", re.IGNORECASE)
+
+
+class BriefError(RuntimeError):
+    """Raised when the per-meeting brief generator can't run."""
 
 
 def _open_driver(neo4j_cfg: Neo4jConfig) -> Driver:
@@ -84,6 +92,57 @@ def _build_registry(cfg: Config) -> Any | None:
     except Exception:  # noqa: BLE001 - any failure means "skip notes"
         logger.debug("itinerary: failed to build embed registry", exc_info=True)
         return None
+
+
+def _resolve_completion(cfg: Config, registry: Any | None) -> Any:
+    """Resolve the ``completion`` role, fail-fast on missing config.
+
+    *registry* may be a pre-built ``ModelRegistry`` (or test stub).  If
+    ``None``, a fresh ``ModelRegistry`` is constructed from *cfg*.
+    Failure to construct or to resolve the role surfaces as
+    :class:`BriefError`.
+    """
+    reg = registry
+    if reg is None:
+        try:
+            from worker.models.resolver import ModelRegistry
+            import worker.models.providers.ollama  # noqa: F401
+
+            reg = ModelRegistry(cfg)
+        except Exception as exc:  # noqa: BLE001
+            raise BriefError(
+                f"itinerary brief requires the {_BRIEF_ROLE!r} role in "
+                f"[models.roles]; run 'fieldnotes doctor' to verify model "
+                f"configuration ({exc})"
+            ) from exc
+    try:
+        return reg.for_role(_BRIEF_ROLE)
+    except KeyError as exc:
+        raise BriefError(
+            f"itinerary brief requires the {_BRIEF_ROLE!r} role in "
+            f"[models.roles]; run 'fieldnotes doctor' to verify model "
+            f"configuration ({exc})"
+        ) from exc
+
+
+def generate_event_briefs(
+    itinerary: Itinerary,
+    *,
+    driver: Driver,
+    completion_model: Any,
+) -> dict[int, str]:
+    """Generate one LLM brief per event, sequentially.
+
+    Returns a mapping ``event_id → brief text``.  Per-meeting fidelity is
+    a hard requirement (no batching).
+    """
+    out: dict[int, str] = {}
+    for ew in itinerary.events:
+        prebrief = assemble_event_brief(ew, driver=driver)
+        request = build_event_brief_request(prebrief)
+        response = completion_model.complete(request, task="itinerary_brief")
+        out[ew.event.id] = response.text.strip()
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -234,6 +293,7 @@ def _thread_json(hit: ThreadHit | None, last_from: str | None) -> dict[str, Any]
 def _emit_json(
     itinerary: Itinerary,
     thread_details: dict[int, _ThreadDetail],
+    briefs: dict[int, str],
 ) -> str:
     payload = {
         "day": itinerary.day.strftime("%Y-%m-%d"),
@@ -261,7 +321,7 @@ def _emit_json(
                         thread_details.get(ew.event.id, _ThreadDetail()).last_from,
                     ),
                 },
-                "next_brief": None,
+                "next_brief": briefs.get(ew.event.id),
             }
             for ew in itinerary.events
         ],
@@ -277,6 +337,7 @@ def _emit_json(
 def _emit_rich(
     itinerary: Itinerary,
     thread_details: dict[int, _ThreadDetail],
+    briefs: dict[int, str],
     tz: tzinfo,
 ) -> None:
     from rich.console import Console
@@ -309,8 +370,10 @@ def _emit_rich(
         console.print(f"[bold]{time_range}[/bold]  {title}  [dim]\\[{account}][/dim]")
         console.print(f"  Attendees: {_fmt_attendee_list(ew.event.attendees)}")
 
-        # Empty placeholder for summary section (filled by fn-wbc.4).
-        # We render an empty line here so the section structure is stable.
+        # Per-meeting LLM brief (fn-wbc.4): one line, '▸ ' marker.
+        brief_text = briefs.get(ew.event.id)
+        if brief_text:
+            console.print(f"  ▸ {brief_text}")
 
         # Tasks
         tasks = ew.tasks[:_MAX_TASKS]
@@ -366,11 +429,11 @@ def run_itinerary(
 ) -> int:
     """Render the daily itinerary.  Returns process exit code.
 
-    *brief* is parsed and accepted but is a no-op until fn-wbc.4 lands —
-    no LLM is invoked in this bead.
+    Default-on per-meeting LLM brief: when *brief* is ``False`` (the
+    default), one ``completion``-role call per event populates
+    ``next_brief``.  When *brief* is ``True``, no LLM calls are made and
+    ``next_brief`` stays ``None`` on every event.
     """
-    _ = brief  # parsed for forward compatibility (fn-wbc.4)
-
     cfg = load_config(config_path)
     tz = _local_tz(None)
 
@@ -401,6 +464,16 @@ def run_itinerary(
 
     reg = registry if registry is not None else _build_registry(cfg)
 
+    # Resolve completion role early (fail-fast, before any LLM call) when
+    # the per-meeting brief is enabled.
+    completion_model: Any = None
+    if not brief:
+        try:
+            completion_model = _resolve_completion(cfg, reg)
+        except BriefError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+
     itinerary = get_itinerary(
         target_day,
         account=account,
@@ -411,19 +484,26 @@ def run_itinerary(
         neo4j_cfg=cfg.neo4j,
     )
 
-    # Fetch last_from for each event with a thread (one short query each).
     thread_details: dict[int, _ThreadDetail] = {}
-    if any(ew.thread is not None for ew in itinerary.events):
+    briefs: dict[int, str] = {}
+    needs_driver = any(ew.thread is not None for ew in itinerary.events) or (
+        completion_model is not None and itinerary.events
+    )
+    if needs_driver:
         drv = _open_driver(cfg.neo4j)
         try:
             for ew in itinerary.events:
                 if ew.thread is not None:
                     thread_details[ew.event.id] = _fetch_thread_detail(drv, ew.thread)
+            if completion_model is not None:
+                briefs = generate_event_briefs(
+                    itinerary, driver=drv, completion_model=completion_model
+                )
         finally:
             drv.close()
 
     if json_output:
-        print(_emit_json(itinerary, thread_details))
+        print(_emit_json(itinerary, thread_details, briefs))
     else:
-        _emit_rich(itinerary, thread_details, tz)
+        _emit_rich(itinerary, thread_details, briefs, tz)
     return 0

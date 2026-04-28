@@ -15,6 +15,7 @@ from worker.config import (
     QdrantConfig,
 )
 from worker.mcp_server import TOOLS, FieldnotesServer
+from worker.models.base import CompletionResponse
 from worker.query.itinerary import (
     Event,
     EventWithLinks,
@@ -26,7 +27,11 @@ from worker.query.itinerary import (
 )
 
 
-def _make_server(*, accounts: list[str] | None = None) -> FieldnotesServer:
+def _make_server(
+    *,
+    accounts: list[str] | None = None,
+    brief_text: str | None = None,
+) -> FieldnotesServer:
     cfg = Config(
         neo4j=Neo4jConfig(uri="bolt://localhost:7687", user="neo4j", password="x"),
         qdrant=QdrantConfig(host="localhost", port=6333, collection="fieldnotes"),
@@ -35,7 +40,14 @@ def _make_server(*, accounts: list[str] | None = None) -> FieldnotesServer:
         cfg.google_calendar = {
             name: CalendarAccountConfig(name=name) for name in accounts
         }
-    return FieldnotesServer(cfg)
+    server = FieldnotesServer(cfg)
+    if brief_text is not None:
+        registry = MagicMock()
+        resolved = MagicMock()
+        resolved.complete.return_value = CompletionResponse(text=brief_text)
+        registry.for_role.return_value = resolved
+        server._registry = registry
+    return server
 
 
 def _build_itinerary() -> Itinerary:
@@ -114,8 +126,10 @@ async def test_itinerary_tool_returns_documented_schema(
 ) -> None:
     mock_get_itinerary.return_value = _build_itinerary()
 
+    # ``brief=True`` skips the LLM path so the schema test doesn't need a
+    # wired-up completion role.
     server = _make_server()
-    result = await server._call_tool("itinerary", {"day": "today"})
+    result = await server._call_tool("itinerary", {"day": "today", "brief": True})
 
     assert len(result) == 1
     payload = json.loads(result[0].text)
@@ -163,7 +177,7 @@ async def test_itinerary_tool_returns_documented_schema(
     assert linked["thread"]["kind"] == "email"
     assert linked["thread"]["source_id"] == "gmail:thread-9"
 
-    # next_brief always null pre-fn-wbc.4.
+    # ``--brief`` keeps next_brief null on every event.
     assert ev["next_brief"] is None
 
 
@@ -171,7 +185,9 @@ async def test_itinerary_tool_returns_documented_schema(
 async def test_itinerary_tool_invalid_day_returns_error() -> None:
     server = _make_server()
     # No mock — the real query layer raises ValueError on bad day.
-    result = await server._call_tool("itinerary", {"day": "garbage-day"})
+    # ``brief=True`` skips completion-role resolution so the test surfaces
+    # the day-validation error rather than a missing-role error.
+    result = await server._call_tool("itinerary", {"day": "garbage-day", "brief": True})
 
     payload = json.loads(result[0].text)
     assert payload.get("error") is True
@@ -215,22 +231,32 @@ async def test_itinerary_tool_brief_true_keeps_next_brief_null(
 
 
 @pytest.mark.asyncio
+@patch("worker.cli.itinerary.assemble_event_brief")
 @patch("worker.query.itinerary.get_itinerary")
-async def test_itinerary_tool_brief_false_without_summary_impl_keeps_null(
+async def test_itinerary_tool_brief_false_populates_next_brief(
     mock_get_itinerary: MagicMock,
+    mock_assemble: MagicMock,
 ) -> None:
-    # fn-wbc.4 has not landed yet. Until it does, brief=False also leaves
-    # next_brief as null. Replace this test with the real summary
-    # assertion once fn-wbc.4 wires up the LLM call.
+    """fn-wbc.4: brief=False (default) populates next_brief from the LLM."""
     mock_get_itinerary.return_value = _build_itinerary()
+    # Driver-free assembler stub — we don't want to touch Neo4j here.
+    from worker.query.itinerary_brief import EventBrief
 
-    server = _make_server()
-    result = await server._call_tool(
-        "itinerary",
-        {"day": "today", "brief": False},
+    mock_assemble.side_effect = lambda ew, *, driver: EventBrief(
+        title=ew.event.title,
+        start_ts=ew.event.start_ts,
+        end_ts=ew.event.end_ts,
     )
+
+    server = _make_server(brief_text="Discuss roadmap. [Calendar]")
+    with patch("worker.mcp_server.GraphDatabase.driver") as mock_drv:
+        mock_drv.return_value = MagicMock()
+        result = await server._call_tool(
+            "itinerary",
+            {"day": "today", "brief": False},
+        )
 
     payload = json.loads(result[0].text)
     assert payload.get("error") is not True
     for ev in payload["events"]:
-        assert ev["next_brief"] is None
+        assert ev["next_brief"] == "Discuss roadmap. [Calendar]"

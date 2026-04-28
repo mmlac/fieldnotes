@@ -56,6 +56,11 @@ from worker.query.digest import DigestQuerier
 from worker.query._time import parse_relative_time
 from worker.query.person import PersonProfile, get_profile
 from worker.cli.person import BriefError, generate_brief
+from worker.cli.itinerary import (
+    BriefError as ItineraryBriefError,
+    _resolve_completion as _resolve_itinerary_completion,
+    generate_event_briefs as _generate_itinerary_briefs,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1244,9 +1249,9 @@ class FieldnotesServer:
         """Aggregate daily agenda and return as JSON.
 
         Returns a documented dict shape mirroring the ``fieldnotes
-        itinerary --json`` payload (see fn-wbc.2 schema).  ``brief`` and
-        the absence of fn-wbc.4 both leave ``next_brief`` null on every
-        event in the current bead.
+        itinerary --json`` payload.  When ``brief`` is false (default),
+        a per-event LLM call populates ``next_brief``; when true, no LLM
+        is invoked and ``next_brief`` is null on every event.
         """
         day = arguments.get("day", "today")
         if not isinstance(day, str) or not day.strip():
@@ -1276,6 +1281,16 @@ class FieldnotesServer:
         except ValueError as exc:
             return [_itinerary_error(f"Invalid 'horizon': {exc}")]
 
+        # Resolve completion role early (fail-fast) when LLM briefs enabled.
+        completion_model: Any = None
+        if not brief:
+            try:
+                completion_model = _resolve_itinerary_completion(
+                    self._cfg, self._registry
+                )
+            except ItineraryBriefError as exc:
+                return [_itinerary_error(str(exc))]
+
         loop = asyncio.get_running_loop()
 
         def _run() -> dict | str:
@@ -1292,7 +1307,20 @@ class FieldnotesServer:
                 )
             except ValueError as exc:
                 return f"error:{exc}"
-            return _itinerary_to_dict(itin, brief=brief)
+
+            briefs: dict[int, str] = {}
+            if completion_model is not None and itin.events:
+                drv = GraphDatabase.driver(
+                    self._cfg.neo4j.uri,
+                    auth=(self._cfg.neo4j.user, self._cfg.neo4j.password),
+                )
+                try:
+                    briefs = _generate_itinerary_briefs(
+                        itin, driver=drv, completion_model=completion_model
+                    )
+                finally:
+                    drv.close()
+            return _itinerary_to_dict(itin, briefs=briefs)
 
         result = await loop.run_in_executor(self._executor, _run)
         if isinstance(result, str) and result.startswith("error:"):
@@ -1608,14 +1636,13 @@ def _parse_horizon(s: str):
     return delta
 
 
-def _itinerary_to_dict(itin: Any, *, brief: bool) -> dict:
-    """Serialize an Itinerary to the documented JSON schema (fn-wbc.2).
+def _itinerary_to_dict(itin: Any, *, briefs: dict[int, str] | None = None) -> dict:
+    """Serialize an Itinerary to the documented JSON schema.
 
-    ``next_brief`` is always ``None`` until fn-wbc.4 lands.  The ``brief``
-    flag is accepted today so callers don't have to change shape later;
-    today both true and false yield ``None``.
+    ``next_brief`` is populated from *briefs* (event_id → text); events
+    without an entry get ``None``.
     """
-    del brief  # next_brief is always None pre-fn-wbc.4
+    brief_map = briefs or {}
 
     def _person(p: Any) -> dict | None:
         if p is None:
@@ -1673,7 +1700,7 @@ def _itinerary_to_dict(itin: Any, *, brief: bool) -> dict:
                         }
                     ),
                 },
-                "next_brief": None,
+                "next_brief": brief_map.get(ev.id),
             }
         )
 
