@@ -325,6 +325,38 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Lookback window for brief inputs (default: 30d)",
     )
 
+    # ── itinerary ────────────────────────────────────────────────────
+    itinerary_p = sub.add_parser(
+        "itinerary",
+        help="Show today's calendar agenda with linked tasks/notes/threads",
+    )
+    itinerary_p.add_argument(
+        "--day",
+        default="today",
+        help="Day to render: 'today', 'tomorrow', or YYYY-MM-DD (default: today)",
+    )
+    itinerary_p.add_argument(
+        "--account",
+        default=None,
+        help="Filter to one [sources.google_calendar.<account>] label",
+    )
+    itinerary_p.add_argument(
+        "--brief",
+        action="store_true",
+        help="Skip the per-meeting summary section (no effect until fn-wbc.4 lands).",
+    )
+    itinerary_p.add_argument(
+        "--horizon",
+        default="30d",
+        help="Lookback window for linked content (default: 30d)",
+    )
+    itinerary_p.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="Emit a stable JSON object instead of Rich panels",
+    )
+
     # ── connections ──────────────────────────────────────────────────
     connections_p = sub.add_parser(
         "connections",
@@ -953,6 +985,22 @@ def main(argv: list[str] | None = None) -> int:
                 summary=args.summary,
                 meeting_id=args.meeting_id,
                 horizon=args.horizon,
+                config_path=args.config,
+            )
+        except Exception as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+
+    if args.command == "itinerary":
+        from worker.cli.itinerary import run_itinerary
+
+        try:
+            return run_itinerary(
+                day=args.day,
+                account=args.account,
+                brief=args.brief,
+                horizon=args.horizon,
+                json_output=args.json_output,
                 config_path=args.config,
             )
         except Exception as exc:
