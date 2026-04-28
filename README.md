@@ -792,6 +792,8 @@ Fieldnotes automatically merges tags across OmniFocus and Obsidian so that a sin
 
 When multiple people-aware sources are enabled, Fieldnotes automatically merges Person nodes across sources into a single graph identity based on email address. A user mentioned in Slack, an attendee at a meeting, the sender of an email, and a person mentioned in an Obsidian note all link to the same Person node — no manual linking required.
 
+> **View the consolidated identity:** run [`fieldnotes person <email>`](#person-profile--what-do-i-know-about-this-person) to see every source rolled up against a single Person, including the `SAME_AS` cluster the reconcile chain built.
+
 **How it works:** The Gmail parser, Google Calendar parser, Obsidian parser, and Slack parser all emit `GraphHint` records with `object_merge_key="email"` and an `object_id` of the form `person:{email}`. The pipeline Writer `MERGE`s Person nodes by email, so a Slack message author, an attendee in a calendar event, a correspondent in a Gmail thread, and a contact in an Obsidian note are guaranteed to resolve to the same graph node. Periodic `reconcile_persons()` runs create `SAME_AS` edges when the same email appears across sources, keeping the longest display name.
 
 **Slack-specific identity:** When a Slack user's profile email isn't visible (the workspace doesn't grant `users:read.email`, or the user has hidden it), the Slack parser falls back to keying the Person on `slack-user:{team_id}/{user_id}`. As soon as the email becomes available on a later message, a separate email-keyed Person is emitted that also carries `(slack_user_id, team_id)`. A dedicated `reconcile_persons_by_slack_user()` step links the two via `SAME_AS`. See [docs/similarity.md](docs/similarity.md) for the full reconcile chain.
@@ -947,6 +949,68 @@ fieldnotes connections --threshold 0.90 --limit 10
 
 The `--cross-source` flag is the high-value mode — it finds relationships *between* different tools in your workflow (e.g., an Obsidian note that covers the same topic as an OmniFocus task or a Gmail thread).
 
+### Person Profile — "What do I know about this person?"
+
+Pull a single person's full footprint from the graph: recent interactions across every source, the topics you discuss with them, the people you both share, their open tasks, files that mention them, and the SAME_AS identity cluster the resolver built for them.
+
+```bash
+# Fastest path — look up by email
+fieldnotes person alice@example.com
+
+# Slack-only identity (no email visible)
+fieldnotes person slack-user:T-TEAM/U-ALICE
+
+# Fuzzy name lookup (forces name match even for inputs that look like emails)
+fieldnotes person --search "Alice"
+
+# Yourself (requires the [me] block — the canonical Person {is_self: true})
+fieldnotes person --self
+
+# Widen the recency window (default: 30d)
+fieldnotes person alice@example.com --since 90d --limit 20
+
+# Machine-readable output (stable schema — see below)
+fieldnotes person alice@example.com --json
+```
+
+**Identifier resolution order:** The CLI accepts the same identifier shapes as the [persons curation surface](#cli-reference) — emails are matched exactly, `slack-user:<team>/<user>` matches the Slack-keyed Person fallback, and anything else falls through to fuzzy name matching. An ambiguous fuzzy name returns a non-zero exit and a candidate table on stderr (or a JSON `error: "ambiguous"` payload with `--json`) so you can re-run with a more specific identifier.
+
+**Meeting prep with `--summary`:** Add `--summary` to generate a short LLM-written brief that answers *"what do I need to discuss with this person next?"*. The brief is grounded in the same data the profile shows — open tasks, recent emails and meetings, last-touch files, and shared topics — so it cites only what's in your graph. A plain `fieldnotes person …` call makes no LLM request; the brief only runs when `--summary` is set.
+
+```bash
+# Brief grounded in the last 30 days (default horizon)
+fieldnotes person alice@example.com --summary
+
+# Pull a specific calendar event into the brief context (agenda, attendees, attachments)
+fieldnotes person alice@example.com --summary --meeting cal://q2-planning-2026-04-29
+
+# Stretch the lookback window for the brief
+fieldnotes person alice@example.com --summary --horizon 90d
+```
+
+**JSON shape (`--json`):** the payload is the same regardless of whether you arrive through the CLI or the [`person` MCP tool](#mcp-server) — that's the parity guarantee the integration test pins.
+
+```json
+{
+  "identifier": "alice@example.com",
+  "resolved": {"name": "Alice Example", "email": "alice@example.com", "is_self": false},
+  "sources_present": ["calendar", "file", "gmail", "omnifocus", "slack"],
+  "last_seen": "2026-04-26T12:00:00Z",
+  "total_interactions": 27,
+  "recent_interactions": [
+    {"timestamp": "...", "source_type": "gmail", "title": "...", "snippet": "...", "edge_kind": "SENT"}
+  ],
+  "top_topics":      [{"topic_name": "Q2 planning", "doc_count": 3}],
+  "related_people":  [{"name": "Bob", "email": "bob@example.com", "shared_count": 4}],
+  "open_tasks":      [{"title": "...", "project": "...", "tags": ["..."], "due": null, "defer": null, "flagged": true}],
+  "files_mentioning":[{"path": "/notes/alice.md", "mtime": "...", "source": "obsidian"}],
+  "identity_cluster":[{"member": "alice.alt@example.com", "match_type": "fuzzy_name", "confidence": 0.97, "cross_source": true}],
+  "next_brief": "…"
+}
+```
+
+`next_brief` is only present when `--summary` is set; every other key is always present (empty arrays for sections with no edges). The reference fixture lives at [`worker/tests/integration/person_profile_schema.json`](worker/tests/integration/person_profile_schema.json) and is asserted by the e2e integration test on every CI run.
+
 ### Daily Digest — "What changed recently?"
 
 Get an aggregate summary of activity across all sources:
@@ -1071,6 +1135,17 @@ fieldnotes [-c CONFIG] [-v] <command>
   - `persons confirm <a> <b>` — Lock a good merge as user-confirmed. Writes `SAME_AS` with `match_type='user_confirmed'`, `confidence=1.0`. Reconcile steps treat user-confirmed edges as ground truth and never overwrite them.
   - `persons merge <a> <b>` — Manual merge for cases the automated chain missed (different names, no shared email/slack id). Equivalent to `confirm` when no edge exists yet.
 
+**`person <identifier> [--since SINCE] [--limit N] [--self] [--search NAME] [--summary] [--meeting CAL_ID] [--horizon SINCE] [--json]`** — Profile a single person. Renders recent interactions, top topics, related people, open OmniFocus tasks, files mentioning them, and the `SAME_AS` identity cluster. See [Person Profile](#person-profile--what-do-i-know-about-this-person) for the full overview.
+  - `<identifier>` — Email (`alice@example.com`), `slack-user:<team>/<user>`, or a fuzzy name fragment. Resolution order: email → slack-user → fuzzy name. Ambiguous fuzzy matches return non-zero with a candidate table.
+  - `--self` — Resolve the canonical `Person {is_self: true}`. Requires a `[me]` block in config.
+  - `--search NAME` — Force fuzzy-name lookup even for inputs that look like email addresses.
+  - `--since` — Recency window for the recent-interactions section. Default: `30d`.
+  - `--limit N` — Cap rows in each list section (recent interactions, topics, related people, files). Default: 10.
+  - `--summary` — Add an LLM-generated `next_brief` answering "what do I need to discuss with this person next?". Uses the configured `completion` role.
+  - `--meeting CAL_ID` — Pull a specific calendar event's summary, attendees, and attachments into the brief context (only meaningful with `--summary`).
+  - `--horizon SINCE` — Lookback window for the `--summary` brief inputs. Default: `30d`.
+  - `--json` — Stable machine-readable schema (matches the `person` MCP tool payload).
+
 **`digest [--since SINCE] [--summarize] [--json]`** — Summarize recent activity across all indexed sources. Returns aggregate counts per source type with top highlights, cross-source connections discovered, and new topics.
   - `--since` — Time range start. Default: `24h`. Same relative format as `timeline`.
   - `--summarize` — Generate an LLM-powered summary paragraph of the activity.
@@ -1184,10 +1259,10 @@ Fieldnotes exposes tools over the [Model Context Protocol](https://modelcontextp
 | `timeline(since?, until?, source_type?, limit?)` | Chronological activity feed across all sources within a time range |
 | `suggest_connections(source_id?, source_type?, threshold?, limit?, cross_source?)` | Find semantically similar but unlinked documents across the knowledge graph |
 | `digest(since?, summarize?)` | Aggregate activity summary with per-source counts, highlights, and new connections |
-| `person(identifier, since?, limit?, summary?, meeting_id?)` | Profile a person: recent interactions, topics, related people, open tasks, files, identity cluster (resolution: email → slack-user → fuzzy name) |
 | `list_topics(source?)` | List topics (`all`, `cluster`, or `user`) with document counts |
 | `show_topic(name)` | Topic details: description, documents, related entities and topics |
 | `topic_gaps()` | Cluster-discovered topics missing from your manual taxonomy |
+| `person(identifier, since?, limit?, summary?, meeting_id?, horizon?)` | Profile a person: recent interactions, topics, related people, open tasks, files, identity cluster (resolution: email → slack-user → fuzzy name). Set `summary=true` for an LLM-written `next_brief` (optionally seeded with `meeting_id`). Returns the same payload shape as `fieldnotes person --json` — see [Person Profile](#person-profile--what-do-i-know-about-this-person). |
 | `ingest_status()` | Index health: source counts, last sync times, circuit breaker states |
 
 The `source_type` parameter on `search`, `ask`, `timeline`, and `digest` accepts any configured source key — including `slack`.

@@ -1,0 +1,80 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "fieldnotes person --json",
+  "description": "Stable schema produced by both the CLI (--json) and the MCP person tool. Asserted by tests/integration/test_person_profile_e2e.py — keep this fixture and worker/cli/person.py in sync.",
+  "type": "object",
+  "required": [
+    "identifier",
+    "resolved",
+    "sources_present",
+    "last_seen",
+    "total_interactions",
+    "recent_interactions",
+    "top_topics",
+    "related_people",
+    "open_tasks",
+    "files_mentioning",
+    "identity_cluster"
+  ],
+  "properties": {
+    "identifier": {"type": "string"},
+    "resolved": {
+      "type": "object",
+      "required": ["name", "email", "is_self"],
+      "properties": {
+        "name": {"type": "string"},
+        "email": {"type": "string"},
+        "is_self": {"type": "boolean"}
+      }
+    },
+    "sources_present": {"type": "array", "items": {"type": "string"}},
+    "last_seen": {"type": ["string", "null"]},
+    "total_interactions": {"type": "integer", "minimum": 0},
+    "recent_interactions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["timestamp", "source_type", "title", "snippet", "edge_kind"]
+      }
+    },
+    "top_topics": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["topic_name", "doc_count"]
+      }
+    },
+    "related_people": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "email", "shared_count"]
+      }
+    },
+    "open_tasks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["title", "project", "tags", "due", "defer", "flagged"]
+      }
+    },
+    "files_mentioning": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path", "mtime", "source"]
+      }
+    },
+    "identity_cluster": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["member", "match_type", "confidence", "cross_source"]
+      }
+    },
+    "next_brief": {
+      "description": "Only present when --summary is set.",
+      "type": "string"
+    }
+  }
+}
