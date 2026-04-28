@@ -273,8 +273,10 @@ def _note_json(n: NoteHit) -> dict[str, Any]:
     return {
         "source_id": n.source_id,
         "title": n.title,
+        "snippet": n.snippet,
         "mtime": n.mtime,
         "attendee_overlap": n.attendee_overlap,
+        "score": float(n.score),
     }
 
 

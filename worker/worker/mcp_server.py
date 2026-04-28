@@ -58,6 +58,8 @@ from worker.query.person import PersonProfile, get_profile
 from worker.cli.person import BriefError, generate_brief
 from worker.cli.itinerary import (
     BriefError as ItineraryBriefError,
+    _ThreadDetail as _ItineraryThreadDetail,
+    _fetch_thread_detail as _fetch_itinerary_thread_detail,
     _resolve_completion as _resolve_itinerary_completion,
     generate_event_briefs as _generate_itinerary_briefs,
 )
@@ -1309,18 +1311,30 @@ class FieldnotesServer:
                 return f"error:{exc}"
 
             briefs: dict[int, str] = {}
-            if completion_model is not None and itin.events:
+            thread_details: dict[int, _ItineraryThreadDetail] = {}
+            needs_driver = any(ewl.thread is not None for ewl in itin.events) or (
+                completion_model is not None and itin.events
+            )
+            if needs_driver:
                 drv = GraphDatabase.driver(
                     self._cfg.neo4j.uri,
                     auth=(self._cfg.neo4j.user, self._cfg.neo4j.password),
                 )
                 try:
-                    briefs = _generate_itinerary_briefs(
-                        itin, driver=drv, completion_model=completion_model
-                    )
+                    for ewl in itin.events:
+                        if ewl.thread is not None:
+                            thread_details[ewl.event.id] = (
+                                _fetch_itinerary_thread_detail(drv, ewl.thread)
+                            )
+                    if completion_model is not None:
+                        briefs = _generate_itinerary_briefs(
+                            itin, driver=drv, completion_model=completion_model
+                        )
                 finally:
                     drv.close()
-            return _itinerary_to_dict(itin, briefs=briefs)
+            return _itinerary_to_dict(
+                itin, briefs=briefs, thread_details=thread_details
+            )
 
         result = await loop.run_in_executor(self._executor, _run)
         if isinstance(result, str) and result.startswith("error:"):
@@ -1636,13 +1650,21 @@ def _parse_horizon(s: str):
     return delta
 
 
-def _itinerary_to_dict(itin: Any, *, briefs: dict[int, str] | None = None) -> dict:
+def _itinerary_to_dict(
+    itin: Any,
+    *,
+    briefs: dict[int, str] | None = None,
+    thread_details: dict[int, _ItineraryThreadDetail] | None = None,
+) -> dict:
     """Serialize an Itinerary to the documented JSON schema.
 
     ``next_brief`` is populated from *briefs* (event_id → text); events
-    without an entry get ``None``.
+    without an entry get ``None``.  ``thread_details`` carries the
+    enriched ``last_from`` per event (CLI/MCP parity); events without
+    detail fall back to ``None``.
     """
     brief_map = briefs or {}
+    detail_map = thread_details or {}
 
     def _person(p: Any) -> dict | None:
         if p is None:
@@ -1697,6 +1719,9 @@ def _itinerary_to_dict(itin: Any, *, briefs: dict[int, str] | None = None) -> di
                             "source_id": ewl.thread.source_id,
                             "title": ewl.thread.title,
                             "last_ts": ewl.thread.last_ts,
+                            "last_from": detail_map.get(
+                                ev.id, _ItineraryThreadDetail()
+                            ).last_from,
                         }
                     ),
                 },
