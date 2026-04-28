@@ -794,6 +794,8 @@ When multiple people-aware sources are enabled, Fieldnotes automatically merges 
 
 > **View the consolidated identity:** run [`fieldnotes person <email>`](#person-profile--what-do-i-know-about-this-person) to see every source rolled up against a single Person, including the `SAME_AS` cluster the reconcile chain built.
 
+> **See it for a single day:** run [`fieldnotes itinerary`](#itinerary--whats-on-my-plate-today) to view today's meetings with each attendee's open tasks, semantically related notes, and the most recent email or Slack thread covering the room — all resolved through the same `SAME_AS` clusters.
+
 **How it works:** The Gmail parser, Google Calendar parser, Obsidian parser, and Slack parser all emit `GraphHint` records with `object_merge_key="email"` and an `object_id` of the form `person:{email}`. The pipeline Writer `MERGE`s Person nodes by email, so a Slack message author, an attendee in a calendar event, a correspondent in a Gmail thread, and a contact in an Obsidian note are guaranteed to resolve to the same graph node. Periodic `reconcile_persons()` runs create `SAME_AS` edges when the same email appears across sources, keeping the longest display name.
 
 **Slack-specific identity:** When a Slack user's profile email isn't visible (the workspace doesn't grant `users:read.email`, or the user has hidden it), the Slack parser falls back to keying the Person on `slack-user:{team_id}/{user_id}`. As soon as the email becomes available on a later message, a separate email-keyed Person is emitted that also carries `(slack_user_id, team_id)`. A dedicated `reconcile_persons_by_slack_user()` step links the two via `SAME_AS`. See [docs/similarity.md](docs/similarity.md) for the full reconcile chain.
@@ -1011,6 +1013,66 @@ fieldnotes person alice@example.com --summary --horizon 90d
 
 `next_brief` is only present when `--summary` is set; every other key is always present (empty arrays for sections with no edges). The reference fixture lives at [`worker/tests/integration/person_profile_schema.json`](worker/tests/integration/person_profile_schema.json) and is asserted by the e2e integration test on every CI run.
 
+### Itinerary — "What's on my plate today?"
+
+Roll up the calendar for a single day, then enrich every event with the open OmniFocus tasks for its attendees, the most semantically similar Obsidian / file / Slack notes, and the most recent email or Slack thread that covers all attendees. Built for **morning prep before standup**: one terminal command (or one MCP call) to walk into your first meeting knowing what's already on the table.
+
+```bash
+# Today, Rich-rendered, with a per-meeting LLM brief
+fieldnotes itinerary
+
+# Tomorrow's agenda
+fieldnotes itinerary --day tomorrow
+
+# Specific date (ISO)
+fieldnotes itinerary --day 2026-04-29
+
+# Filter to one configured Google Calendar account
+fieldnotes itinerary --account work
+
+# Skip the per-event LLM brief (no `completion`-role calls)
+fieldnotes itinerary --brief
+
+# Machine-readable JSON (stable schema — see below)
+fieldnotes itinerary --json
+```
+
+**Day formats:** `--day` accepts `today` (default), `tomorrow`, or an explicit ISO date `YYYY-MM-DD`. Anything else exits non-zero with a parse error on stderr.
+
+**Per-meeting brief (`next_brief`):** by default — i.e. without `--brief` — Fieldnotes makes one [`completion`-role](#configuration) call per event, grounded in the same linked tasks/notes/threads the profile shows, so each brief cites only what's already in your graph. The brief lands in `next_brief` (and on the Rich row, prefixed `▸`). Pass `--brief` to skip the LLM entirely; `next_brief` is then `null` on every event and the [`completion`](#configuration) role is never resolved. This is the right flag for offline runs, throwaway commands, or shells where you don't want LLM cost per invocation.
+
+**JSON shape (`--json`):** the payload is the same regardless of whether you arrive through the CLI or the [`itinerary` MCP tool](#mcp-server) — that's the parity guarantee the integration test pins.
+
+```json
+{
+  "day": "2026-04-29",
+  "timezone": "America/Los_Angeles",
+  "events": [
+    {
+      "event_id": "12345",
+      "source_id": "google_calendar.work:abc",
+      "title": "Q2 sync",
+      "start": "2026-04-29T16:00:00Z",
+      "end":   "2026-04-29T17:00:00Z",
+      "account": "work",
+      "calendar_id": "alice@example.com",
+      "organizer": {"name": "Alice Example", "email": "alice@example.com"},
+      "attendees": [{"name": "Bob Builder", "email": "bob@example.com"}],
+      "location": "Zoom",
+      "html_link": "https://calendar.google.com/...",
+      "linked": {
+        "tasks": [{"title": "Email Bob about Q2", "project": "Work", "tags": [], "due": "2026-04-28", "defer": null, "flagged": true, "source_id": "of://open-1"}],
+        "notes": [{"source_id": "/notes/q2-plan.md", "title": "Q2 plan", "snippet": "...", "mtime": "2026-04-26T...", "attendee_overlap": true, "score": 0.81}],
+        "thread": {"kind": "email", "source_id": "gmail://thread/q2", "title": "Q2 planning", "last_ts": "2026-04-27T...", "last_from": "bob@example.com"}
+      },
+      "next_brief": "..."
+    }
+  ]
+}
+```
+
+`next_brief` is `null` whenever `--brief` is set (or when the LLM call is skipped); every other key is always present (`linked.thread` is `null` if no email/Slack window covered all attendees inside `--horizon`, and the linked arrays may be empty). The reference fixture lives at [`worker/tests/integration/itinerary_schema.json`](worker/tests/integration/itinerary_schema.json) and is asserted by the e2e integration test on every CI run.
+
 ### Daily Digest — "What changed recently?"
 
 Get an aggregate summary of activity across all sources:
@@ -1146,6 +1208,13 @@ fieldnotes [-c CONFIG] [-v] <command>
   - `--horizon SINCE` — Lookback window for the `--summary` brief inputs. Default: `30d`.
   - `--json` — Stable machine-readable schema (matches the `person` MCP tool payload).
 
+**`itinerary [--day DAY] [--account ACCOUNT] [--brief] [--horizon SINCE] [--json]`** — Render a single day's calendar agenda with each event's linked open OmniFocus tasks, vector-similar notes (File / Obsidian / Slack), and the most recent email or Slack thread covering all attendees. By default makes one [`completion`-role](#configuration) call per event to populate `next_brief`. See [Itinerary](#itinerary--whats-on-my-plate-today) for the full overview.
+  - `--day` — `today` (default), `tomorrow`, or an explicit `YYYY-MM-DD`. Other formats exit non-zero.
+  - `--account` — Restrict to one configured `[sources.google_calendar.<account>]`. Unknown account names exit non-zero with the configured set on stderr.
+  - `--brief` — Skip the per-event LLM brief; `next_brief` stays `null` on every event and the `completion` role is never resolved.
+  - `--horizon` — Lookback window for linked tasks/notes/threads. Relative form (`30d`, `24h`, `2w`, `3m`). Default: `30d`.
+  - `--json` — Stable machine-readable schema (matches the `itinerary` MCP tool payload).
+
 **`digest [--since SINCE] [--summarize] [--json]`** — Summarize recent activity across all indexed sources. Returns aggregate counts per source type with top highlights, cross-source connections discovered, and new topics.
   - `--since` — Time range start. Default: `24h`. Same relative format as `timeline`.
   - `--summarize` — Generate an LLM-powered summary paragraph of the activity.
@@ -1259,7 +1328,7 @@ Fieldnotes exposes tools over the [Model Context Protocol](https://modelcontextp
 | `timeline(since?, until?, source_type?, limit?)` | Chronological activity feed across all sources within a time range |
 | `suggest_connections(source_id?, source_type?, threshold?, limit?, cross_source?)` | Find semantically similar but unlinked documents across the knowledge graph |
 | `digest(since?, summarize?)` | Aggregate activity summary with per-source counts, highlights, and new connections |
-| `itinerary(day?, account?, brief?, horizon?)` | Aggregated daily agenda: calendar events with linked open OmniFocus tasks, vector-similar notes, and the most recent email/Slack thread covering all attendees. `day` accepts `today` (default), `tomorrow`, or `YYYY-MM-DD`. `brief=true` skips the LLM per-event summary (`next_brief` stays null). |
+| `itinerary(day?, account?, brief?, horizon?)` | Aggregated daily agenda: calendar events with linked open OmniFocus tasks, vector-similar notes, and the most recent email/Slack thread covering all attendees. `day` accepts `today` (default), `tomorrow`, or `YYYY-MM-DD`. `brief=true` skips the LLM per-event summary (`next_brief` stays null). Returns the same payload shape as `fieldnotes itinerary --json` — see [Itinerary](#itinerary--whats-on-my-plate-today). |
 | `list_topics(source?)` | List topics (`all`, `cluster`, or `user`) with document counts |
 | `show_topic(name)` | Topic details: description, documents, related entities and topics |
 | `topic_gaps()` | Cluster-discovered topics missing from your manual taxonomy |
