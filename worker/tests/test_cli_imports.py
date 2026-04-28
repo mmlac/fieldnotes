@@ -144,6 +144,18 @@ def _probe_person_brief_prompt(mod: Any) -> None:
     assert "Do not invent" in mod.SYSTEM_PROMPT
 
 
+def _probe_itinerary(mod: Any) -> None:
+    # _parse_horizon backs --horizon validation; exercise the real parser
+    # so a regression in the relative-time handling fails this canary
+    # instead of leaking to runtime.
+    from datetime import timedelta
+
+    assert mod._parse_horizon("30d") == timedelta(days=30)
+    assert mod._parse_horizon("24h") == timedelta(hours=24)
+    assert mod._parse_horizon("2w") == timedelta(weeks=2)
+    assert callable(mod.run_itinerary)
+
+
 _PROBES: dict[str, Callable[[Any], None]] = {
     "ask": _probe_ask,
     "cluster": _probe_cluster,
@@ -151,6 +163,7 @@ _PROBES: dict[str, Callable[[Any], None]] = {
     "digest": _probe_digest,
     "display": _probe_display,
     "history": _probe_history,
+    "itinerary": _probe_itinerary,
     "migrate": _probe_migrate,
     "persons": _probe_persons,
     "queue": _probe_queue,
