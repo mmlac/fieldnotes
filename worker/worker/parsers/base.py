@@ -294,6 +294,7 @@ class ParsedDocument:
 
 
 
+
 class BaseParser(ABC):
     """Base class for all adapter parsers."""
 

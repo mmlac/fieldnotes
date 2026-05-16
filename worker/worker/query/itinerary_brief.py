@@ -113,14 +113,14 @@ def _fetch_thread_tail(
 
 _ATTACHMENTS_CYPHER = """\
 MATCH (a:Attachment)-[:ATTACHED_TO]->(e:CalendarEvent)
-WHERE id(e) = $eid
+WHERE e.source_id = $eid
 RETURN coalesce(a.title, a.filename, a.file_id, a.source_id) AS name
 LIMIT $k
 """
 
 
 def _fetch_attachments(
-    driver: Driver, event_id: int, k: int = _MAX_ATTACHMENTS
+    driver: Driver, event_id: str, k: int = _MAX_ATTACHMENTS
 ) -> list[str]:
     try:
         with driver.session() as session:

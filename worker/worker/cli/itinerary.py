@@ -129,13 +129,13 @@ def generate_event_briefs(
     *,
     driver: Driver,
     completion_model: Any,
-) -> dict[int, str]:
+) -> dict[str, str]:
     """Generate one LLM brief per event, sequentially.
 
     Returns a mapping ``event_id → brief text``.  Per-meeting fidelity is
     a hard requirement (no batching).
     """
-    out: dict[int, str] = {}
+    out: dict[str, str] = {}
     for ew in itinerary.events:
         prebrief = assemble_event_brief(ew, driver=driver)
         request = build_event_brief_request(prebrief)
@@ -293,8 +293,8 @@ def _thread_json(hit: ThreadHit | None, last_from: str | None) -> dict[str, Any]
 
 def _emit_json(
     itinerary: Itinerary,
-    thread_details: dict[int, _ThreadDetail],
-    briefs: dict[int, str],
+    thread_details: dict[str, _ThreadDetail],
+    briefs: dict[str, str],
 ) -> str:
     payload = {
         "day": itinerary.day.strftime("%Y-%m-%d"),
@@ -337,8 +337,8 @@ def _emit_json(
 
 def _emit_rich(
     itinerary: Itinerary,
-    thread_details: dict[int, _ThreadDetail],
-    briefs: dict[int, str],
+    thread_details: dict[str, _ThreadDetail],
+    briefs: dict[str, str],
     tz: tzinfo,
 ) -> None:
     from rich.console import Console
@@ -485,8 +485,8 @@ def run_itinerary(
         neo4j_cfg=cfg.neo4j,
     )
 
-    thread_details: dict[int, _ThreadDetail] = {}
-    briefs: dict[int, str] = {}
+    thread_details: dict[str, _ThreadDetail] = {}
+    briefs: dict[str, str] = {}
     needs_driver = any(ew.thread is not None for ew in itinerary.events) or (
         completion_model is not None and itinerary.events
     )

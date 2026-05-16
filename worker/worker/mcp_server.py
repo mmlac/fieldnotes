@@ -1310,8 +1310,8 @@ class FieldnotesServer:
             except ValueError as exc:
                 return f"error:{exc}"
 
-            briefs: dict[int, str] = {}
-            thread_details: dict[int, _ItineraryThreadDetail] = {}
+            briefs: dict[str, str] = {}
+            thread_details: dict[str, _ItineraryThreadDetail] = {}
             needs_driver = any(ewl.thread is not None for ewl in itin.events) or (
                 completion_model is not None and itin.events
             )
@@ -1655,8 +1655,8 @@ def _parse_horizon(s: str):
 def _itinerary_to_dict(
     itin: Any,
     *,
-    briefs: dict[int, str] | None = None,
-    thread_details: dict[int, _ItineraryThreadDetail] | None = None,
+    briefs: dict[str, str] | None = None,
+    thread_details: dict[str, _ItineraryThreadDetail] | None = None,
 ) -> dict:
     """Serialize an Itinerary to the documented JSON schema.
 

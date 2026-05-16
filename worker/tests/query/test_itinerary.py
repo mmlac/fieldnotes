@@ -98,7 +98,7 @@ def _clean_neo4j() -> Generator[None, None, None]:
 
 
 @pytest.fixture
-def seeded(driver: Driver) -> dict[str, int]:
+def seeded(driver: Driver) -> dict[str, str]:
     """Seed a multi-source graph reflecting the bead's required dataset."""
     # Three events on the target day:
     #   - work_meet (work account, 09:00 local UTC, attendees: alice + bob)
@@ -117,16 +117,16 @@ def seeded(driver: Driver) -> dict[str, int]:
 
     cypher = """
     // ── People ──────────────────────────────────────────
-    MERGE (me:Person {email: 'me@example.com'})
+    MERGE (me:Person {source_id: 'person:me@example.com', email: 'me@example.com'})
       SET me.name = 'Me Self', me.is_self = true
-    MERGE (alice:Person {email: 'alice@example.com'})
+    MERGE (alice:Person {source_id: 'person:alice@example.com', email: 'alice@example.com'})
       SET alice.name = 'Alice Example'
-    MERGE (alice_alt:Person {email: 'alice.alt@example.com'})
+    MERGE (alice_alt:Person {source_id: 'person:alice.alt@example.com', email: 'alice.alt@example.com'})
       SET alice_alt.name = 'Alice Example'
     MERGE (alice)-[:SAME_AS {match_type: 'fuzzy_name', confidence: 0.97}]->(alice_alt)
-    MERGE (bob:Person {email: 'bob@example.com'})
+    MERGE (bob:Person {source_id: 'person:bob@example.com', email: 'bob@example.com'})
       SET bob.name = 'Bob Builder'
-    MERGE (carol:Person {email: 'carol@example.com'})
+    MERGE (carol:Person {source_id: 'person:carol@example.com', email: 'carol@example.com'})
       SET carol.name = 'Carol Stranger'
 
     // ── Calendar events ─────────────────────────────────
@@ -284,18 +284,18 @@ def seeded(driver: Driver) -> dict[str, int]:
     MERGE (sl)-[:SENT_BY]->(alice)
     MERGE (sl)-[:MENTIONS]->(bob)
 
-    RETURN id(work_meet) AS work_meet,
-           id(lunch) AS lunch,
-           id(solo) AS solo,
-           id(offday) AS offday,
-           id(alice) AS alice,
-           id(bob) AS bob,
-           id(carol) AS carol,
-           id(me) AS me,
-           id(f1) AS f1,
-           id(f2) AS f2,
-           id(f3) AS f3,
-           id(f4) AS f4
+    RETURN work_meet.source_id AS work_meet,
+           lunch.source_id AS lunch,
+           solo.source_id AS solo,
+           offday.source_id AS offday,
+           alice.source_id AS alice,
+           bob.source_id AS bob,
+           carol.source_id AS carol,
+           me.source_id AS me,
+           f1.source_id AS f1,
+           f2.source_id AS f2,
+           f3.source_id AS f3,
+           f4.source_id AS f4
     """
     em_recent = _NOW - timedelta(days=2)
     em_yesterday = _NOW - timedelta(days=10)
@@ -317,7 +317,7 @@ def seeded(driver: Driver) -> dict[str, int]:
     with driver.session() as s:
         rec = s.run(cypher, **params).single()
         assert rec is not None
-        return {k: int(v) for k, v in rec.data().items()}
+        return {k: str(v) for k, v in rec.data().items()}
 
 
 # ---------------------------------------------------------------------------
@@ -356,7 +356,7 @@ def test_resolve_day_invalid_raises_clean_error() -> None:
 
 @_NEEDS_NEO4J
 def test_events_for_day_filters_to_local_day(
-    driver: Driver, seeded: dict[str, int]
+    driver: Driver, seeded: dict[str, str]
 ) -> None:
     rows = events_for_day(_TARGET_DAY, timezone_=timezone.utc, driver=driver)
     titles = {r.title for r in rows}
@@ -369,7 +369,7 @@ def test_events_for_day_filters_to_local_day(
 
 
 @_NEEDS_NEO4J
-def test_events_for_day_account_filter(driver: Driver, seeded: dict[str, int]) -> None:
+def test_events_for_day_account_filter(driver: Driver, seeded: dict[str, str]) -> None:
     work_only = events_for_day(
         _TARGET_DAY, account="work", timezone_=timezone.utc, driver=driver
     )
@@ -384,7 +384,7 @@ def test_events_for_day_account_filter(driver: Driver, seeded: dict[str, int]) -
 
 @_NEEDS_NEO4J
 def test_events_for_day_empty_returns_empty_list(
-    driver: Driver, seeded: dict[str, int]
+    driver: Driver, seeded: dict[str, str]
 ) -> None:
     other_day = date(2026, 1, 1)
     rows = events_for_day(other_day, timezone_=timezone.utc, driver=driver)
@@ -394,7 +394,7 @@ def test_events_for_day_empty_returns_empty_list(
 
 @_NEEDS_NEO4J
 def test_events_for_day_all_day_events_included(
-    driver: Driver, seeded: dict[str, int]
+    driver: Driver, seeded: dict[str, str]
 ) -> None:
     rows = events_for_day(_TARGET_DAY, timezone_=timezone.utc, driver=driver)
     all_day = [r for r in rows if r.title == "Focus block"]
@@ -425,7 +425,7 @@ def test_events_for_day_all_day_events_included(
 
 @_NEEDS_NEO4J
 def test_linked_tasks_excludes_completed_and_dropped(
-    driver: Driver, seeded: dict[str, int]
+    driver: Driver, seeded: dict[str, str]
 ) -> None:
     work_meet_id = seeded["work_meet"]
     tasks = linked_tasks_for_event(
@@ -443,7 +443,7 @@ def test_linked_tasks_excludes_completed_and_dropped(
 
 @_NEEDS_NEO4J
 def test_linked_tasks_orders_by_flagged_then_due(
-    driver: Driver, seeded: dict[str, int]
+    driver: Driver, seeded: dict[str, str]
 ) -> None:
     work_meet_id = seeded["work_meet"]
     tasks = linked_tasks_for_event(
@@ -464,7 +464,7 @@ def test_linked_tasks_orders_by_flagged_then_due(
 
 
 @_NEEDS_NEO4J
-def test_linked_tasks_respects_k_limit(driver: Driver, seeded: dict[str, int]) -> None:
+def test_linked_tasks_respects_k_limit(driver: Driver, seeded: dict[str, str]) -> None:
     work_meet_id = seeded["work_meet"]
     tasks_all = linked_tasks_for_event(
         work_meet_id, k=10, horizon=timedelta(days=30), driver=driver
@@ -530,7 +530,7 @@ def _q_point(
 
 @_NEEDS_NEO4J
 def test_linked_notes_promotes_attendee_overlap(
-    driver: Driver, seeded: dict[str, int]
+    driver: Driver, seeded: dict[str, str]
 ) -> None:
     """A high-similarity hit *without* attendee overlap must still come
     after a slightly lower-similarity hit that has overlap, because the
@@ -580,7 +580,7 @@ def test_linked_notes_promotes_attendee_overlap(
 
 @_NEEDS_NEO4J
 def test_linked_notes_horizon_excludes_old_chunks(
-    driver: Driver, seeded: dict[str, int]
+    driver: Driver, seeded: dict[str, str]
 ) -> None:
     """Chunks older than ``horizon`` must be dropped before re-ranking."""
     old_iso = _iso(_NOW - timedelta(days=120))
@@ -622,7 +622,7 @@ def test_linked_notes_horizon_excludes_old_chunks(
 
 @_NEEDS_NEO4J
 def test_recent_thread_requires_all_attendees(
-    driver: Driver, seeded: dict[str, int]
+    driver: Driver, seeded: dict[str, str]
 ) -> None:
     """work_meet has both Alice and Bob — the q2 thread covers both;
     the lunch-only thread covers Alice only and must NOT be returned.
@@ -657,14 +657,14 @@ def test_recent_thread_requires_all_attendees(
 
 @_NEEDS_NEO4J
 def test_recent_thread_returns_none_when_no_overlap(
-    driver: Driver, seeded: dict[str, int]
+    driver: Driver, seeded: dict[str, str]
 ) -> None:
     """An event whose attendees never co-appear in any thread/slack window
     returns None.  We exercise this by attaching Carol (no thread/slack)
     as the lone attendee of a fresh event.
     """
     with driver.session() as s:
-        rec = s.run(
+        s.run(
             """
             MATCH (carol:Person {email: 'carol@example.com'})
             MATCH (me:Person {is_self: true})
@@ -678,16 +678,13 @@ def test_recent_thread_returns_none_when_no_overlap(
             CREATE (e)-[:ORGANIZED_BY]->(me)
             CREATE (e)-[:ATTENDED_BY]->(me)
             CREATE (e)-[:ATTENDED_BY]->(carol)
-            RETURN id(e) AS id
             """,
             start=_iso(datetime(2026, 4, 27, 16, 0, 0, tzinfo=timezone.utc)),
             end=_iso(datetime(2026, 4, 27, 17, 0, 0, tzinfo=timezone.utc)),
-        ).single()
-        assert rec is not None
-        lonely_id = int(rec["id"])
+        )
 
     hit = recent_thread_with_attendees(
-        lonely_id, horizon=timedelta(days=30), driver=driver
+        "cal://lonely", horizon=timedelta(days=30), driver=driver
     )
     assert hit is None
 
@@ -699,7 +696,7 @@ def test_recent_thread_returns_none_when_no_overlap(
 
 @_NEEDS_NEO4J
 def test_get_itinerary_aggregates_per_event_links(
-    driver: Driver, seeded: dict[str, int]
+    driver: Driver, seeded: dict[str, str]
 ) -> None:
     """``get_itinerary`` reuses one driver and stitches events + tasks +
     threads.  Notes are skipped silently when *registry* is ``None``.

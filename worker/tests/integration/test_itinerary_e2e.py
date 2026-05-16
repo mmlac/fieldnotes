@@ -77,11 +77,11 @@ def _required_keys(schema: dict[str, Any]) -> set[str]:
 
 
 _SEED_CYPHER = """
-MERGE (me:Person {email: 'me@example.com'})
+MERGE (me:Person {source_id: 'person:me@example.com', email: 'me@example.com'})
   SET me.name = 'Self', me.is_self = true
-MERGE (alice:Person {email: 'alice@example.com'})
+MERGE (alice:Person {source_id: 'person:alice@example.com', email: 'alice@example.com'})
   SET alice.name = 'Alice Example'
-MERGE (bob:Person {email: 'bob@example.com'})
+MERGE (bob:Person {source_id: 'person:bob@example.com', email: 'bob@example.com'})
   SET bob.name = 'Bob Builder'
 
 MERGE (cal:CalendarEvent {source_id: 'google_calendar.work:itin-q2'})
@@ -123,7 +123,7 @@ MERGE (alice)-[:SENT]->(em_older)
 MERGE (em_older)-[:TO]->(bob)
 MERGE (em_older)-[:TO]->(me)
 
-RETURN id(cal) AS cal_id
+RETURN cal.source_id AS cal_id
 """
 
 
@@ -149,11 +149,11 @@ def driver() -> Generator[Driver, None, None]:
 
 
 @pytest.fixture
-def seeded(driver: Driver) -> dict[str, int]:
+def seeded(driver: Driver) -> dict[str, str]:
     with driver.session() as s:
         rec = s.run(_SEED_CYPHER, **_seed_params()).single()
         assert rec is not None
-        return {k: int(v) for k, v in rec.data().items()}
+        return {k: str(v) for k, v in rec.data().items()}
 
 
 @pytest.fixture
@@ -246,7 +246,7 @@ def _run_cli(config: Path, *args: str) -> tuple[int, str, str]:
 
 @_NEEDS_NEO4J
 def test_e2e_itinerary_cli_json_matches_documented_schema(
-    seeded: dict[str, int],
+    seeded: dict[str, str],
     config_file: Path,
     schema: dict[str, Any],
 ) -> None:
@@ -328,7 +328,7 @@ async def _call_mcp_itinerary(config: Path) -> dict[str, Any]:
 
 @_NEEDS_NEO4J
 def test_e2e_itinerary_mcp_payload_matches_cli_json(
-    seeded: dict[str, int],
+    seeded: dict[str, str],
     config_file: Path,
     schema: dict[str, Any],
 ) -> None:
@@ -446,7 +446,7 @@ def _run_in_process(
 
 @_NEEDS_NEO4J
 def test_e2e_itinerary_summary_brief_is_grounded_in_seed_data(
-    seeded: dict[str, int],
+    seeded: dict[str, str],
 ) -> None:
     """Default mode: per-event ``next_brief`` is built from the seeded graph only."""
     canned_brief = (
@@ -485,7 +485,7 @@ def test_e2e_itinerary_summary_brief_is_grounded_in_seed_data(
 
 @_NEEDS_NEO4J
 def test_e2e_itinerary_brief_flag_makes_zero_llm_calls(
-    seeded: dict[str, int],
+    seeded: dict[str, str],
 ) -> None:
     """``--brief`` keeps ``next_brief`` null AND never resolves the completion role."""
     resolved = _RecordingResolved("should-not-be-emitted")

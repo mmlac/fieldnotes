@@ -78,7 +78,7 @@ def driver() -> Generator[Driver, None, None]:
 
 
 @pytest.fixture
-def seeded(driver: Driver) -> dict[str, int]:
+def seeded(driver: Driver) -> dict[str, str]:
     """Seed events + linked tasks/threads on the target day.
 
     Mirrors the structure used by ``tests/query/test_itinerary.py`` so the
@@ -94,19 +94,19 @@ def seeded(driver: Driver) -> dict[str, int]:
     next_day_end = datetime(2026, 4, 28, 10, 0, 0, tzinfo=timezone.utc)
 
     cypher = """
-    MERGE (me:Person {email: 'me@example.com'})
+    MERGE (me:Person {source_id: 'person:me@example.com', email: 'me@example.com'})
       SET me.name = 'Me Self', me.is_self = true
-    MERGE (alice:Person {email: 'alice@example.com'})
+    MERGE (alice:Person {source_id: 'person:alice@example.com', email: 'alice@example.com'})
       SET alice.name = 'Alice Example'
-    MERGE (bob:Person {email: 'bob@example.com'})
+    MERGE (bob:Person {source_id: 'person:bob@example.com', email: 'bob@example.com'})
       SET bob.name = 'Bob Builder'
-    MERGE (carol:Person {email: 'carol@example.com'})
+    MERGE (carol:Person {source_id: 'person:carol@example.com', email: 'carol@example.com'})
       SET carol.name = 'Carol Stranger'
-    MERGE (dan:Person {email: 'dan@example.com'})
+    MERGE (dan:Person {source_id: 'person:dan@example.com', email: 'dan@example.com'})
       SET dan.name = 'Dan Doer'
-    MERGE (eve:Person {email: 'eve@example.com'})
+    MERGE (eve:Person {source_id: 'person:eve@example.com', email: 'eve@example.com'})
       SET eve.name = 'Eve Engineer'
-    MERGE (frank:Person {email: 'frank@example.com'})
+    MERGE (frank:Person {source_id: 'person:frank@example.com', email: 'frank@example.com'})
       SET frank.name = 'Frank Founder'
 
     MERGE (work_meet:CalendarEvent {source_id: 'cal://work/work_meet'})
@@ -177,10 +177,10 @@ def seeded(driver: Driver) -> dict[str, int]:
     MERGE (me)-[:SENT]->(em1)
     MERGE (me)-[:SENT]->(em2)
 
-    RETURN id(work_meet) AS work_meet,
-           id(lunch) AS lunch,
-           id(crowded) AS crowded,
-           id(offday) AS offday
+    RETURN work_meet.source_id AS work_meet,
+           lunch.source_id AS lunch,
+           crowded.source_id AS crowded,
+           offday.source_id AS offday
     """
     em_recent = _NOW - timedelta(days=2)
     em_recent2 = _NOW - timedelta(days=1)
@@ -200,7 +200,7 @@ def seeded(driver: Driver) -> dict[str, int]:
     with driver.session() as s:
         rec = s.run(cypher, **params).single()
         assert rec is not None
-        return {k: int(v) for k, v in rec.data().items()}
+        return {k: str(v) for k, v in rec.data().items()}
 
 
 def _run(*, with_accounts: bool = True, **kwargs: Any) -> tuple[int, str, str]:
@@ -284,7 +284,7 @@ def test_itinerary_unknown_account_exits_nonzero_with_valid_list() -> None:
 
 
 @_NEEDS_NEO4J
-def test_itinerary_renders_all_sections(seeded: dict[str, int]) -> None:
+def test_itinerary_renders_all_sections(seeded: dict[str, str]) -> None:
     code, out, _err = _run(day="2026-04-27")
     assert code == 0
     # Day-level header
@@ -305,7 +305,7 @@ def test_itinerary_renders_all_sections(seeded: dict[str, int]) -> None:
 
 
 @_NEEDS_NEO4J
-def test_itinerary_specific_iso_date(seeded: dict[str, int]) -> None:
+def test_itinerary_specific_iso_date(seeded: dict[str, str]) -> None:
     code, out, _err = _run(day="2026-04-27")
     assert code == 0
     assert "Q2 sync" in out
@@ -314,14 +314,14 @@ def test_itinerary_specific_iso_date(seeded: dict[str, int]) -> None:
 
 
 @_NEEDS_NEO4J
-def test_itinerary_empty_day_prints_no_events(seeded: dict[str, int]) -> None:
+def test_itinerary_empty_day_prints_no_events(seeded: dict[str, str]) -> None:
     code, out, _err = _run(day="2030-01-01")
     assert code == 0
     assert "No events scheduled." in out
 
 
 @_NEEDS_NEO4J
-def test_itinerary_account_filter_applies(seeded: dict[str, int]) -> None:
+def test_itinerary_account_filter_applies(seeded: dict[str, str]) -> None:
     code, out, _err = _run(day="2026-04-27", account="work")
     assert code == 0
     assert "Q2 sync" in out
@@ -331,7 +331,7 @@ def test_itinerary_account_filter_applies(seeded: dict[str, int]) -> None:
 
 @_NEEDS_NEO4J
 def test_itinerary_attendee_overflow_renders_plus_n_others(
-    seeded: dict[str, int],
+    seeded: dict[str, str],
 ) -> None:
     code, out, _err = _run(day="2026-04-27")
     assert code == 0
@@ -363,7 +363,7 @@ _REQUIRED_EVENT_KEYS = {
 
 
 @_NEEDS_NEO4J
-def test_itinerary_json_schema_stable(seeded: dict[str, int]) -> None:
+def test_itinerary_json_schema_stable(seeded: dict[str, str]) -> None:
     code, out, _err = _run(day="2026-04-27", json_output=True)
     assert code == 0
     payload = json.loads(out)  # roundtrips
@@ -389,7 +389,7 @@ def test_itinerary_json_schema_stable(seeded: dict[str, int]) -> None:
 
 @_NEEDS_NEO4J
 def test_itinerary_json_brief_flag_emits_null_next_brief(
-    seeded: dict[str, int],
+    seeded: dict[str, str],
 ) -> None:
     """With ``--brief``, no LLM is invoked and ``next_brief`` is null."""
     code, out, _err = _run(day="2026-04-27", brief=True, json_output=True)
@@ -402,7 +402,7 @@ def test_itinerary_json_brief_flag_emits_null_next_brief(
 
 @_NEEDS_NEO4J
 def test_itinerary_json_empty_day_emits_empty_events(
-    seeded: dict[str, int],
+    seeded: dict[str, str],
 ) -> None:
     code, out, _err = _run(day="2030-01-01", json_output=True)
     assert code == 0
@@ -418,7 +418,7 @@ def test_itinerary_json_empty_day_emits_empty_events(
 
 @_NEEDS_NEO4J
 def test_itinerary_brief_flag_skips_llm_and_keeps_schema(
-    seeded: dict[str, int],
+    seeded: dict[str, str],
 ) -> None:
     """``--brief`` skips the LLM but produces the same schema shape."""
     code, out, _err = _run(day="2026-04-27", brief=True, json_output=True)
@@ -436,7 +436,7 @@ def test_itinerary_brief_flag_skips_llm_and_keeps_schema(
 
 
 @_NEEDS_NEO4J
-def test_itinerary_horizon_default_30d_runtime(seeded: dict[str, int]) -> None:
+def test_itinerary_horizon_default_30d_runtime(seeded: dict[str, str]) -> None:
     """The default horizon (30d) and an explicit '30d' must produce the same
     output — guards against regressions where the parser default drifts.
     """

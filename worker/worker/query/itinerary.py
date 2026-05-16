@@ -44,7 +44,7 @@ _NOTES_PREFETCH_MIN = 10
 class PersonRef:
     """Reference to a Person node — used for organizers and attendees."""
 
-    id: int
+    id: str
     email: str | None = None
     name: str | None = None
     is_self: bool = False
@@ -54,7 +54,7 @@ class PersonRef:
 class Event:
     """One row from :func:`events_for_day`."""
 
-    id: int
+    id: str
     source_id: str
     title: str
     description: str | None
@@ -223,12 +223,12 @@ OPTIONAL MATCH (e)-[:ATTENDED_BY]->(att:Person)
 WITH e,
      org,
      collect(DISTINCT {
-       id: id(att),
+       id: att.source_id,
        email: att.email,
        name: att.name,
        is_self: coalesce(att.is_self, false)
      }) AS attendees
-RETURN id(e) AS id,
+RETURN e.source_id AS id,
        e.source_id AS source_id,
        e.summary AS title,
        e.description AS description,
@@ -239,13 +239,13 @@ RETURN id(e) AS id,
        e.calendar_id AS calendar_id,
        e.html_link AS html_link,
        CASE WHEN org IS NULL THEN NULL ELSE {
-         id: id(org),
+         id: org.source_id,
          email: org.email,
          name: org.name,
          is_self: coalesce(org.is_self, false)
        } END AS organizer,
        attendees
-ORDER BY e.start_time ASC, id(e) ASC
+ORDER BY e.start_time ASC, e.source_id ASC
 LIMIT $limit
 """
 
@@ -254,7 +254,7 @@ def _person_ref(row: dict[str, Any] | None) -> PersonRef | None:
     if row is None or row.get("id") is None:
         return None
     return PersonRef(
-        id=int(row["id"]),
+        id=str(row["id"]),
         email=row.get("email"),
         name=row.get("name"),
         is_self=bool(row.get("is_self") or False),
@@ -365,7 +365,7 @@ def events_for_day(
         is_self_only = organizer_is_self and not attendees
         out.append(
             Event(
-                id=int(r["id"]),
+                id=str(r.get("id") or ""),
                 source_id=str(r.get("source_id") or ""),
                 title=str(r.get("title") or ""),
                 description=r.get("description"),
@@ -383,7 +383,7 @@ def events_for_day(
 
     # The Cypher ORDER BY is by raw string; re-sort in epoch space so
     # all-day events ("YYYY-MM-DD") and timed events compare correctly.
-    out.sort(key=lambda e: (_epoch(e.start_ts) or float("inf"), e.id))
+    out.sort(key=lambda e: (_epoch(e.start_ts) or float("inf"), e.source_id))
     # Keep the silently-narrow argument honest: the lo/hi pre-filter is
     # 'wide' lex, so the docstring's "default limit applies after the
     # local-day filter" matches behaviour.
@@ -395,36 +395,39 @@ def events_for_day(
 # ---------------------------------------------------------------------------
 
 
-def _cluster_ids(tx: Any, person_id: int) -> list[int]:
-    """All Neo4j ids in *person_id*'s SAME_AS cluster (including itself)."""
+def _cluster_ids(tx: Any, person_id: str) -> list[str]:
+    """All source_ids in *person_id*'s SAME_AS cluster (including itself)."""
     rows = tx.run(
         """
-        MATCH (seed:Person) WHERE id(seed) = $pid
+        MATCH (seed:Person) WHERE seed.source_id = $pid
         OPTIONAL MATCH (seed)-[:SAME_AS*0..]-(p:Person)
         WITH collect(DISTINCT p) + seed AS members
         UNWIND members AS m
         WITH DISTINCT m
-        RETURN id(m) AS id
+        RETURN m.source_id AS id
         """,
         pid=person_id,
     ).data()
-    return [int(r["id"]) for r in rows]
+    return [str(r["id"]) for r in rows if r.get("id") is not None]
 
 
-def _attendee_cluster_ids(tx: Any, event_id: int) -> list[list[int]]:
-    """Return one SAME_AS cluster (list of Person ids) per non-self attendee."""
+def _attendee_cluster_ids(tx: Any, event_id: str) -> list[list[str]]:
+    """Return one SAME_AS cluster (list of Person source_ids) per non-self attendee."""
     rows = tx.run(
         """
-        MATCH (e:CalendarEvent) WHERE id(e) = $eid
+        MATCH (e:CalendarEvent) WHERE e.source_id = $eid
         MATCH (e)-[:ATTENDED_BY]->(a:Person)
         WHERE NOT coalesce(a.is_self, false)
-        RETURN id(a) AS pid
+        RETURN a.source_id AS pid
         """,
         eid=event_id,
     ).data()
-    out: list[list[int]] = []
+    out: list[list[str]] = []
     for row in rows:
-        cluster = _cluster_ids(tx, int(row["pid"]))
+        pid = row.get("pid")
+        if not pid:
+            continue
+        cluster = _cluster_ids(tx, str(pid))
         if cluster:
             out.append(cluster)
     return out
@@ -437,7 +440,7 @@ def _attendee_cluster_ids(tx: Any, event_id: int) -> list[list[int]]:
 
 _LINKED_TASKS_CYPHER = """\
 MATCH (t:Task)-[:MENTIONS]->(p:Person)
-WHERE id(p) IN $cluster_union
+WHERE p.source_id IN $cluster_union
   AND coalesce(t.status, 'active') <> 'completed'
   AND coalesce(t.status, 'active') <> 'dropped'
   AND ($since IS NULL OR coalesce(t.modification_date, t.creation_date, '') >= $since)
@@ -451,17 +454,17 @@ RETURN t.name AS title,
        t.due_date AS due,
        t.defer_date AS defer,
        coalesce(t.flagged, false) AS flagged,
-       id(t) AS task_id
+       t.source_id AS task_id
 ORDER BY flagged DESC,
          CASE WHEN t.due_date IS NULL THEN 1 ELSE 0 END ASC,
          t.due_date ASC,
-         id(t) ASC
+         t.source_id ASC
 LIMIT $k
 """
 
 
 def linked_tasks_for_event(
-    event_id: int,
+    event_id: str,
     *,
     k: int = _DEFAULT_K_TASKS,
     horizon: timedelta = _DEFAULT_HORIZON,
@@ -480,7 +483,7 @@ def linked_tasks_for_event(
     try:
         with drv.session() as session:
             clusters = session.execute_read(_attendee_cluster_ids, event_id)
-            cluster_union: list[int] = sorted({pid for c in clusters for pid in c})
+            cluster_union: list[str] = sorted({pid for c in clusters for pid in c})
             if not cluster_union:
                 return []
             since_iso = _horizon_iso(horizon)
@@ -528,7 +531,7 @@ _NOTE_SOURCE_TYPES = ("files", "obsidian", "slack")
 
 
 def linked_notes_for_event(
-    event_id: int,
+    event_id: str,
     *,
     k: int = _DEFAULT_K_NOTES,
     horizon: timedelta = _DEFAULT_HORIZON,
@@ -562,7 +565,7 @@ def linked_notes_for_event(
         with drv.session() as session:
             event_row = session.execute_read(
                 lambda tx: tx.run(
-                    "MATCH (e:CalendarEvent) WHERE id(e) = $eid "
+                    "MATCH (e:CalendarEvent) WHERE e.source_id = $eid "
                     "RETURN e.summary AS title",
                     eid=event_id,
                 ).single()
@@ -574,7 +577,7 @@ def linked_notes_for_event(
                 return []
 
             attendee_clusters = session.execute_read(_attendee_cluster_ids, event_id)
-            attendee_pid_union: set[int] = {pid for c in attendee_clusters for pid in c}
+            attendee_pid_union: set[str] = {pid for c in attendee_clusters for pid in c}
 
         # Embed the title using the configured 'embed' role.  Lazy import
         # keeps this module load cleanly when callers don't use vector
@@ -696,7 +699,7 @@ def _fetch_parents(
           AND (n:File OR n:Document OR n:SlackMessage)
         OPTIONAL MATCH (n)-[:MENTIONS]->(p:Person)
         WITH n,
-             collect(DISTINCT id(p)) AS mentioned_ids
+             collect(DISTINCT p.source_id) AS mentioned_ids
         RETURN n.source_id AS source_id,
                coalesce(n.title, n.path, n.channel_name, n.source_id) AS title,
                coalesce(n.modified_at, n.updated, n.created, n.last_ts, n.first_ts) AS mtime,
@@ -706,7 +709,7 @@ def _fetch_parents(
     ).data()
     out: dict[str, dict[str, Any]] = {}
     for r in rows:
-        mentioned = set(int(x) for x in (r.get("mentioned_ids") or []) if x is not None)
+        mentioned = set(str(x) for x in (r.get("mentioned_ids") or []) if x is not None)
         out[str(r["source_id"])] = {
             "title": r.get("title"),
             "mtime": r.get("mtime"),
@@ -721,7 +724,7 @@ def _fetch_parents(
 
 
 def recent_thread_with_attendees(
-    event_id: int,
+    event_id: str,
     *,
     horizon: timedelta = _DEFAULT_HORIZON,
     neo4j_cfg: Neo4jConfig | None = None,
@@ -770,7 +773,7 @@ WHERE ($since IS NULL OR coalesce(em.date, '') >= $since)
 OPTIONAL MATCH (em)-[:TO]->(p_to:Person)
 OPTIONAL MATCH (p_sent:Person)-[:SENT]->(em)
 WITH thread, em,
-     [x IN collect(DISTINCT id(p_to)) + collect(DISTINCT id(p_sent)) WHERE x IS NOT NULL] AS em_persons
+     [x IN collect(DISTINCT p_to.source_id) + collect(DISTINCT p_sent.source_id) WHERE x IS NOT NULL] AS em_persons
 WITH thread,
      max(em.date) AS last_ts,
      reduce(acc = [], lst IN collect(em_persons) | acc + lst) AS person_ids
@@ -795,7 +798,7 @@ def _recent_email_thread_tx(
         last_ts = str(r.get("last_ts") or "")
         if not last_ts:
             continue
-        person_ids = set(int(x) for x in (r.get("person_ids") or []))
+        person_ids = set(str(x) for x in (r.get("person_ids") or []) if x is not None)
         if not all(person_ids & cluster for cluster in cluster_sets):
             continue
         return ThreadHit(
@@ -811,7 +814,7 @@ _SLACK_WINDOW_CANDIDATES_CYPHER = """\
 MATCH (s:SlackMessage)
 WHERE ($since IS NULL OR coalesce(s.last_ts, s.first_ts, '') >= $since)
 OPTIONAL MATCH (s)-[:SENT_BY|MENTIONS]->(p:Person)
-WITH s, [x IN collect(DISTINCT id(p)) WHERE x IS NOT NULL] AS person_ids
+WITH s, [x IN collect(DISTINCT p.source_id) WHERE x IS NOT NULL] AS person_ids
 RETURN s.source_id AS source_id,
        coalesce(s.channel_name, s.source_id) AS title,
        coalesce(s.last_ts, s.first_ts) AS last_ts,
@@ -833,7 +836,7 @@ def _recent_slack_window_tx(
         last_ts = r.get("last_ts")
         if last_ts is None:
             continue
-        person_ids = set(int(x) for x in (r.get("person_ids") or []))
+        person_ids = set(str(x) for x in (r.get("person_ids") or []) if x is not None)
         if not all(person_ids & cluster for cluster in cluster_sets):
             continue
         return ThreadHit(

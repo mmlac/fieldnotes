@@ -515,12 +515,12 @@ def driver() -> Generator[Driver, None, None]:
 
 
 @pytest.fixture
-def seeded_event(driver: Driver) -> dict[str, int]:
+def seeded_event(driver: Driver) -> dict[str, str]:
     """Seed one CalendarEvent with a thread tail and an attachment."""
     cypher = """
-    MERGE (me:Person {email: 'me@example.com'})
+    MERGE (me:Person {source_id: 'person:me@example.com', email: 'me@example.com'})
       SET me.name = 'Me Self', me.is_self = true
-    MERGE (alice:Person {email: 'alice@example.com'})
+    MERGE (alice:Person {source_id: 'person:alice@example.com', email: 'alice@example.com'})
       SET alice.name = 'Alice Example'
     MERGE (cal:CalendarEvent {source_id: 'cal://meet1'})
       SET cal.summary = 'Q2 sync',
@@ -539,7 +539,7 @@ def seeded_event(driver: Driver) -> dict[str, int]:
       SET em.subject = 'Q2 planning details', em.date = $em_date
     MERGE (em)-[:PART_OF]->(th)
     MERGE (alice)-[:SENT]->(em)
-    RETURN id(cal) AS cal_id
+    RETURN cal.source_id AS cal_id
     """
     params = {
         "start": _iso(_NOW - timedelta(hours=3)),
@@ -549,12 +549,12 @@ def seeded_event(driver: Driver) -> dict[str, int]:
     with driver.session() as s:
         rec = s.run(cypher, **params).single()
         assert rec is not None
-        return {"cal_id": int(rec["cal_id"])}
+        return {"cal_id": str(rec["cal_id"])}
 
 
 @_NEEDS_NEO4J
 def test_assemble_event_brief_pulls_thread_tail_and_attachments(
-    driver: Driver, seeded_event: dict[str, int]
+    driver: Driver, seeded_event: dict[str, str]
 ) -> None:
     """Live assembler: thread_messages and attachments come from Cypher."""
     ev = Event(
@@ -568,10 +568,10 @@ def test_assemble_event_brief_pulls_thread_tail_and_attachments(
         account="work",
         calendar_id=None,
         html_link=None,
-        organizer=PersonRef(id=0, email="me@example.com", name="Me Self", is_self=True),
+        organizer=PersonRef(id="person:me@example.com", email="me@example.com", name="Me Self", is_self=True),
         attendees=[
             PersonRef(
-                id=0, email="alice@example.com", name="Alice Example", is_self=False
+                id="person:alice@example.com", email="alice@example.com", name="Alice Example", is_self=False
             )
         ],
     )

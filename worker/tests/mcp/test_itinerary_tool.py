@@ -51,10 +51,10 @@ def _make_server(
 
 
 def _build_itinerary() -> Itinerary:
-    organizer = PersonRef(id=1, email="me@example.com", name="Me", is_self=True)
-    attendee = PersonRef(id=2, email="alice@example.com", name="Alice")
+    organizer = PersonRef(id="person:me@example.com", email="me@example.com", name="Me", is_self=True)
+    attendee = PersonRef(id="person:alice@example.com", email="alice@example.com", name="Alice")
     event = Event(
-        id=42,
+        id="google_calendar.work:abc",
         source_id="google_calendar.work:abc",
         title="Roadmap sync",
         description="Quarterly roadmap review",
@@ -157,7 +157,7 @@ async def test_itinerary_tool_returns_documented_schema(
     }
     assert expected_keys <= set(ev.keys())
 
-    assert ev["event_id"] == "42"
+    assert ev["event_id"] == "google_calendar.work:abc"
     assert ev["source_id"] == "google_calendar.work:abc"
     assert ev["start"] == "2026-04-28T15:00:00Z"
     assert ev["end"] == "2026-04-28T16:00:00Z"
