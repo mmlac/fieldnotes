@@ -35,6 +35,17 @@ _RESET = "\033[0m"
 # Citation pattern: [source_id] where source_id contains :// or looks like a hash/path
 _CITATION_RE = re.compile(r"\[([^\]]{4,80})\]")
 
+# Bare source-id URLs that the LLM emits inline in prose (e.g.
+# "see gmail://personal/message/abc for context"). Citation regex above
+# only catches URLs inside [brackets]; this regex catches the bare form.
+# Two negative lookbehinds prevent re-wrapping a URL that is already
+# inside an OSC 8 escape sequence produced by `_osc8_link`:
+#   - `(?<!;;)` skips the target-URL slot in `\033]8;;<url>\033\\...`
+#   - `(?<!\\)`  skips the display-text slot in `...\033\\<display_text>`
+_INLINE_URL_RE = re.compile(
+    r"(?<!;;)(?<!\\)(?:gmail|google-calendar|omnifocus|obsidian|file)://\S+?(?=[\s.,;:!?)\]]|$)"
+)
+
 
 def source_id_to_url(source_id: str) -> str | None:
     """Convert a source_id to a clickable URL, or *None* if not possible."""
@@ -173,6 +184,16 @@ def _apply_inline_formatting(line: str) -> str:
         return m.group(0)
 
     line = _CITATION_RE.sub(_cite_repl, line)
+
+    # Bare inline URLs (LLM-emitted citations not in brackets).
+    def _url_repl(m: re.Match[str]) -> str:
+        sid = m.group(0)
+        url = source_id_to_url(sid)
+        if url:
+            return f"{_DIM}{_osc8_link(url, sid)}{_RESET}"
+        return sid
+
+    line = _INLINE_URL_RE.sub(_url_repl, line)
     return line
 
 

@@ -141,6 +141,45 @@ class TestInlineFormatting:
         assert "\033[2m" in result
         assert "email://msg-abc123" in result
 
+    def test_inline_url_gmail_linked(self) -> None:
+        # LLM-emitted bare URL in prose (not inside [brackets]) should
+        # become a clickable OSC 8 hyperlink.
+        result = _apply_inline_formatting(
+            "Kris said 'on it' gmail://personal/message/19e281bd538e8538."
+        )
+        # OSC 8 opener present, and the visible source-id is preserved.
+        assert "\033]8;;" in result
+        assert "gmail://personal/message/19e281bd538e8538" in result
+        # Trailing period is NOT part of the URL (otherwise the link would
+        # carry the punctuation and most terminals would refuse to open it).
+        assert result.rstrip().endswith(".")
+        # Dimmed like a citation.
+        assert "\033[2m" in result
+
+    def test_inline_url_google_calendar_linked(self) -> None:
+        result = _apply_inline_formatting(
+            "see google-calendar://personal/event/abc for the invite"
+        )
+        assert "\033]8;;" in result
+        assert "google-calendar://personal/event/abc" in result
+
+    def test_inline_url_not_double_wrapped_inside_citation(self) -> None:
+        # When the URL appears inside [brackets] _format_citation already
+        # OSC-wraps it. The bare-URL regex must not re-wrap the URL inside
+        # the produced escape sequence (which would mangle the output).
+        result = _apply_inline_formatting("[gmail://personal/message/abc]")
+        # A well-formed OSC 8 link has exactly one opener and one closer,
+        # both of which start with `\033]8;;` — so count must be 2, not 4
+        # (which would indicate a nested re-wrap).
+        assert result.count("\033]8;;") == 2
+
+    def test_inline_url_omnifocus_linked(self) -> None:
+        result = _apply_inline_formatting(
+            "task omnifocus:///task/abc123 is overdue"
+        )
+        assert "\033]8;;" in result
+        assert "omnifocus:///task/abc123" in result
+
 
 class TestCitationDetection:
     """Test citation heuristics."""
