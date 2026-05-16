@@ -241,7 +241,7 @@ def restore(backup_path: Path) -> int:
 
     try:
         with tarfile.open(backup_path, "r:gz") as tar:
-            tar.extractall(path=str(_FN_DIR))  # noqa: S202
+            tar.extractall(path=str(_FN_DIR), filter="data")  # noqa: S202
         print(f"Restored from {backup_path.name}")
     finally:
         if was_running:
