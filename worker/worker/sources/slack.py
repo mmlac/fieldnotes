@@ -604,6 +604,9 @@ class SlackSource(PythonSource):
         self._client = client
         self._team_id = team_id
         self._team_domain = team_domain
+        if team_id and team_domain:
+            from worker.parsers._slack_permalink import save_workspace_team_map
+            save_workspace_team_map(team_domain, team_id)
 
         # Load cursor (queue-backed first, falling back to legacy file).
         raw = queue.load_cursor("slack")

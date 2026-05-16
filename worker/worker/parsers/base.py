@@ -3,6 +3,13 @@ from dataclasses import dataclass, field
 import re
 from typing import Any
 
+from worker.parsers._slack_permalink import (
+    DEFAULT_WORKSPACE_MAP_PATH,
+    _SLACK_PERMALINK_RE,
+    load_workspace_team_map,
+    slack_permalink_to_source_id,
+)
+
 # ---------------------------------------------------------------------------
 # Email canonicalization — shared across Gmail, Calendar, and Obsidian parsers
 # ---------------------------------------------------------------------------
@@ -131,6 +138,56 @@ class ParsedDocument:
 
     # Source metadata passed through to Qdrant payload
     source_metadata: dict[str, Any] = field(default_factory=dict)
+
+
+def extract_source_link_hints(
+    text: str,
+    source_id: str,
+    subject_label: str = "File",
+    *,
+    workspace_map: dict[str, str] | None = None,
+) -> list["GraphHint"]:
+    """Extract Slack permalink URLs from text and return REFERENCES GraphHints.
+
+    Scans *text* for Slack web permalink URLs
+    (``https://{workspace}.slack.com/archives/{channel_id}/p{ts}``) and
+    emits a ``subject -[REFERENCES]-> SlackMessage`` GraphHint for each
+    unique URL found.  De-dupes within a single call.
+
+    workspace_map: optional dict mapping workspace subdomain → team_id.
+    When None, loads from the default path written by the Slack source on
+    startup (see :mod:`worker.parsers._slack_permalink`).
+
+    fn-86y.1 extends this function with bare source-id URL schemes
+    (gmail://, google-calendar://, omnifocus://, slack://, obsidian://).
+    """
+    if workspace_map is None:
+        workspace_map = load_workspace_team_map(DEFAULT_WORKSPACE_MAP_PATH)
+
+    seen: set[str] = set()
+    hints: list[GraphHint] = []
+
+    for m in _SLACK_PERMALINK_RE.finditer(text):
+        target_id = slack_permalink_to_source_id(m.group(0), workspace_map)
+        if not target_id:
+            continue
+        if target_id in seen:
+            continue
+        seen.add(target_id)
+        hints.append(
+            GraphHint(
+                subject_id=source_id,
+                subject_label=subject_label,
+                predicate="REFERENCES",
+                object_id=target_id,
+                object_label="SlackMessage",
+                subject_merge_key="source_id",
+                object_merge_key="source_id",
+                confidence=1.0,
+            )
+        )
+
+    return hints
 
 
 class BaseParser(ABC):
