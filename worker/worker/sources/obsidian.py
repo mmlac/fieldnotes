@@ -28,6 +28,7 @@ from worker.metrics import (
     initial_sync_source_done,
 )
 
+from worker.parsers.base import configure_obsidian_vaults
 from ._handler import (
     DEFAULT_MAX_FILE_SIZE,
     BaseHandler,
@@ -336,6 +337,7 @@ class ObsidianSource(PythonSource):
         loop = asyncio.get_running_loop()
         vaults = discover_vaults(self._vault_paths)
         OBSIDIAN_VAULTS_DISCOVERED.set(len(vaults))
+        configure_obsidian_vaults({vault.name: str(vault) for vault in vaults})
         if not vaults:
             logger.warning("No Obsidian vaults found under configured vault_paths")
             # Still run the loop so we can be cleanly cancelled

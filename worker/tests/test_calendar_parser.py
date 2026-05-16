@@ -3,11 +3,13 @@
 from unittest.mock import patch
 
 import worker.parsers.calendar as calendar_parser_module
+import worker.parsers.base as _base_module
 from worker.parsers.attachments import (
     AttachmentDownloadError,
     AttachmentParseError,
     ParsedAttachment,
 )
+from worker.parsers.base import configure_obsidian_vaults
 from worker.parsers.calendar import GoogleCalendarParser, _strip_html
 
 
@@ -824,8 +826,15 @@ class TestCrossAccount:
 
 
 class TestCalendarParser_EmitsReferencesEdge:
+    _VAULT_ROOT = "/home/user/vaults/Personal"
+
     def setup_method(self):
         self.parser = GoogleCalendarParser()
+        self._old_vaults = _base_module._obsidian_vaults
+        configure_obsidian_vaults({"Personal": self._VAULT_ROOT})
+
+    def teardown_method(self):
+        _base_module._obsidian_vaults = self._old_vaults
 
     def test_obsidian_url_in_description_produces_references_hint(self):
         event = _make_event(
@@ -837,7 +846,7 @@ class TestCalendarParser_EmitsReferencesEdge:
         refs = [h for h in doc.graph_hints if h.predicate == "REFERENCES"]
         assert len(refs) == 1
         h = refs[0]
-        assert h.object_id == "obsidian://open?vault=Personal&file=Notes.md"
+        assert h.object_id == f"{self._VAULT_ROOT}/Notes.md"
         assert h.object_label == "File"
         assert h.subject_label == "CalendarEvent"
 
