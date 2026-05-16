@@ -59,6 +59,31 @@ from worker.parsers.registry import get as get_parser
 
 logger = logging.getLogger("worker")
 
+
+def _build_sighup_handler(pipeline: Pipeline, config_path: Path | None):
+    """Return an asyncio-safe SIGHUP handler that reloads [me] config into the pipeline."""
+    from worker.config import DEFAULT_CONFIG_PATH
+
+    _reload_path = config_path or DEFAULT_CONFIG_PATH
+
+    def _handler() -> None:
+        try:
+            new_cfg = load_config(_reload_path)
+            pipeline.set_me_config(new_cfg.me)
+            if new_cfg.me is not None:
+                logger.info(
+                    "self-identity config reloaded; emails=%s, name=%s",
+                    new_cfg.me.emails,
+                    new_cfg.me.name,
+                )
+            else:
+                logger.info("self-identity config reloaded; [me] now unset")
+        except Exception:
+            logger.exception("reload of [me] failed; keeping previous config")
+
+    return _handler
+
+
 # All available source classes, keyed by their .name() value
 SOURCE_CLASSES: dict[str, type[PythonSource]] = {
     "files": FileSource,
@@ -205,7 +230,7 @@ async def _index_status_loop(
         await asyncio.sleep(interval)
 
 
-async def _run(cfg: Config) -> None:
+async def _run(cfg: Config, *, config_path: Path | None = None) -> None:
     """Main async loop: start sources, consume events, run pipeline."""
     # Initialize model registry
     registry = ModelRegistry(cfg)
@@ -318,6 +343,11 @@ async def _run(cfg: Config) -> None:
 
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, _signal_handler)
+
+    if hasattr(signal, "SIGHUP"):
+        loop.add_signal_handler(
+            signal.SIGHUP, _build_sighup_handler(pipeline, config_path)
+        )
 
     # Main event loop: claim/complete/fail against PersistentQueue
     try:
@@ -473,7 +503,7 @@ def main() -> None:
             time.sleep(delay)
 
     # Run the async event loop
-    asyncio.run(_run(cfg))
+    asyncio.run(_run(cfg, config_path=args.config))
 
 
 if __name__ == "__main__":
