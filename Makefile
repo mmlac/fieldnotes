@@ -1,9 +1,11 @@
-.PHONY: help venv install install-dev lint fmt test test-ci build clean publish publish-test docker-up docker-down
+.PHONY: help venv install install-dev lint fmt test test-ci build clean publish publish-test docker-up docker-down version
 
-VENV     := worker/.venv
-PYTHON   := $(VENV)/bin/python
-PIP      := $(VENV)/bin/pip
-VERSION   = $(shell $(PYTHON) -c "import tomllib; print(tomllib.load(open('worker/pyproject.toml','rb'))['project']['version'])")
+# `uv sync` reads worker/.python-version, downloads CPython 3.14 if absent,
+# materializes worker/.venv, and installs the locked dependency set.
+
+VENV    := worker/.venv
+PYTHON  := $(VENV)/bin/python
+VERSION  = $(shell uv version --short --project worker)
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
@@ -11,49 +13,43 @@ help: ## Show this help
 
 # ── Environment ──────────────────────────────────────────────────────
 
-$(VENV)/bin/activate:
-	python3 -m venv $(VENV)
-	$(PIP) install --upgrade pip
-
-venv: $(VENV)/bin/activate ## Create virtual environment
+venv: ## Create virtual environment (idempotent)
+	uv sync --project worker
 
 # ── Worker (Python) ──────────────────────────────────────────────────
 
-install: venv ## Install fieldnotes worker into venv
-	$(PIP) install ./worker
+install: ## Install fieldnotes worker (locked versions from uv.lock)
+	uv sync --project worker
 
-install-dev: venv ## Install worker with dev dependencies (pytest, ruff)
-	$(PIP) install -e "./worker[dev]"
+install-dev: ## Install worker with dev dependencies (pytest, ruff)
+	uv sync --project worker --all-extras
 
 lint: ## Run ruff linter on worker
-	cd worker && ../$(PYTHON) -m ruff check worker/ tests/
+	uv run --directory worker ruff check worker/ tests/
 
 fmt: ## Auto-format worker code with ruff
-	cd worker && ../$(PYTHON) -m ruff check --fix worker/ tests/
-	cd worker && ../$(PYTHON) -m ruff format worker/ tests/
+	uv run --directory worker ruff check --fix worker/ tests/
+	uv run --directory worker ruff format worker/ tests/
 
 test: ## Run worker tests
-	cd worker && ../$(PYTHON) -m pytest tests/ -v
+	uv run --directory worker pytest tests/ -v
 
 test-ci: lint ## Run linter + tests (CI mode)
-	cd worker && ../$(PYTHON) -m pytest tests/ -v --tb=short
+	uv run --directory worker pytest tests/ -v --tb=short
 
 # ── Build & Release ──────────────────────────────────────────────────
 
-build: venv clean ## Build worker sdist and wheel
-	$(PIP) install --upgrade build
-	cd worker && ../$(PYTHON) -m build
+build: clean ## Build worker sdist and wheel
+	uv build --project worker
 
 clean: ## Remove build artifacts
 	rm -rf worker/dist/ worker/build/ worker/*.egg-info worker/worker/*.egg-info
 
 publish-test: build ## Upload worker to TestPyPI
-	$(PIP) install --upgrade twine
-	$(PYTHON) -m twine upload --repository testpypi worker/dist/*
+	uv publish --directory worker --publish-url https://test.pypi.org/legacy/
 
 publish: build ## Upload worker to PyPI (production)
-	$(PIP) install --upgrade twine
-	$(PYTHON) -m twine upload worker/dist/*
+	uv publish --directory worker
 
 # ── Infrastructure ───────────────────────────────────────────────────
 
