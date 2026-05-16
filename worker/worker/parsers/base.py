@@ -136,26 +136,57 @@ def _resolve_obsidian_url(url: str, obsidian_vaults: dict[str, str] | None) -> s
         return url
 
 
+# Module-level vault map used as fallback by extract_source_link_hints.
+# Set once at startup via configure_obsidian_vaults() after vault discovery.
+_obsidian_vaults: dict[str, str] | None = None
+
+
+def configure_obsidian_vaults(vaults: dict[str, str]) -> None:
+    """Set the vault-name → absolute-path map for obsidian:// URL resolution.
+
+    Call once at startup after vault discovery.  Parsers calling
+    extract_source_link_hints without an explicit obsidian_vaults= will use
+    this map.
+    """
+    global _obsidian_vaults
+    _obsidian_vaults = vaults
+
+
 def extract_source_link_hints(
     text: str,
     source_id: str,
     subject_label: str = "File",
     obsidian_vaults: dict[str, str] | None = None,
+    *,
+    workspace_map: dict[str, str] | None = None,
 ) -> list["GraphHint"]:
-    """Extract embedded source-id URLs and return REFERENCES GraphHints.
+    """Extract embedded source-id URLs and Slack permalink URLs, returning REFERENCES GraphHints.
 
-    Scans *text* for URL forms that map to known fieldnotes source_ids:
+    Scans *text* for:
       - gmail://{account}/message/{message_id}        → Email
       - google-calendar://{account}/event/{event_id}  → CalendarEvent
       - omnifocus://task/{task_id}                    → Task (normalized to omnifocus://{task_id})
       - slack://{team_id}/{channel_id}/{ts}           → SlackMessage
       - obsidian://open?vault={vault}&file={rel_path} → File
+      - https://{workspace}.slack.com/archives/{channel}/p{ts} → SlackMessage
 
-    De-dupes within a single call so the same URL in text twice produces
-    one edge, not two.
+    De-dupes within a single call so the same URL appearing twice produces one edge.
+
+    obsidian_vaults: vault-name → absolute-path map; falls back to the module-level
+    global set by configure_obsidian_vaults().  None means obsidian:// URLs pass
+    through as-is (will dangle in the graph until a vault map is configured).
+
+    workspace_map: Slack workspace-subdomain → team_id map; loads from the default
+    path written by the Slack source on startup when omitted.
     """
+    if obsidian_vaults is None:
+        obsidian_vaults = _obsidian_vaults
+    if workspace_map is None:
+        workspace_map = load_workspace_team_map(DEFAULT_WORKSPACE_MAP_PATH)
+
     seen: set[str] = set()
     hints: list[GraphHint] = []
+
     for match in _SOURCE_URL_RE.finditer(text):
         url = match.group(0).rstrip(_URL_TRAIL_STRIP)
         scheme = url.split("://", 1)[0]
@@ -181,6 +212,25 @@ def extract_source_link_hints(
                 confidence=1.0,
             )
         )
+
+    for m in _SLACK_PERMALINK_RE.finditer(text):
+        target_id = slack_permalink_to_source_id(m.group(0), workspace_map)
+        if not target_id or target_id in seen:
+            continue
+        seen.add(target_id)
+        hints.append(
+            GraphHint(
+                subject_id=source_id,
+                subject_label=subject_label,
+                predicate="REFERENCES",
+                object_id=target_id,
+                object_label="SlackMessage",
+                subject_merge_key="source_id",
+                object_merge_key="source_id",
+                confidence=1.0,
+            )
+        )
+
     return hints
 
 
@@ -242,55 +292,6 @@ class ParsedDocument:
     # Source metadata passed through to Qdrant payload
     source_metadata: dict[str, Any] = field(default_factory=dict)
 
-
-def extract_source_link_hints(
-    text: str,
-    source_id: str,
-    subject_label: str = "File",
-    *,
-    workspace_map: dict[str, str] | None = None,
-) -> list["GraphHint"]:
-    """Extract Slack permalink URLs from text and return REFERENCES GraphHints.
-
-    Scans *text* for Slack web permalink URLs
-    (``https://{workspace}.slack.com/archives/{channel_id}/p{ts}``) and
-    emits a ``subject -[REFERENCES]-> SlackMessage`` GraphHint for each
-    unique URL found.  De-dupes within a single call.
-
-    workspace_map: optional dict mapping workspace subdomain → team_id.
-    When None, loads from the default path written by the Slack source on
-    startup (see :mod:`worker.parsers._slack_permalink`).
-
-    fn-86y.1 extends this function with bare source-id URL schemes
-    (gmail://, google-calendar://, omnifocus://, slack://, obsidian://).
-    """
-    if workspace_map is None:
-        workspace_map = load_workspace_team_map(DEFAULT_WORKSPACE_MAP_PATH)
-
-    seen: set[str] = set()
-    hints: list[GraphHint] = []
-
-    for m in _SLACK_PERMALINK_RE.finditer(text):
-        target_id = slack_permalink_to_source_id(m.group(0), workspace_map)
-        if not target_id:
-            continue
-        if target_id in seen:
-            continue
-        seen.add(target_id)
-        hints.append(
-            GraphHint(
-                subject_id=source_id,
-                subject_label=subject_label,
-                predicate="REFERENCES",
-                object_id=target_id,
-                object_label="SlackMessage",
-                subject_merge_key="source_id",
-                object_merge_key="source_id",
-                confidence=1.0,
-            )
-        )
-
-    return hints
 
 
 class BaseParser(ABC):

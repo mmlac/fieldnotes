@@ -13,7 +13,7 @@ from typing import Any
 
 import frontmatter
 
-from .base import BaseParser, GraphHint, ParsedDocument, canonicalize_email
+from .base import BaseParser, GraphHint, ParsedDocument, canonicalize_email, extract_source_link_hints
 from .registry import register
 
 logger = logging.getLogger(__name__)
@@ -245,6 +245,10 @@ class ObsidianParser(BaseParser):
                         confidence=1.0,
                     )
                 )
+
+        link_hints = extract_source_link_hints(body, source_id, "File")
+        if link_hints:
+            graph_hints.extend(link_hints)
 
         # --- Build the main text ParsedDocument -------------------------------
         docs: list[ParsedDocument] = [

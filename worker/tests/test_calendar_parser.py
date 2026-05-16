@@ -821,3 +821,40 @@ class TestCrossAccount:
         # Account stamped on the Person node so reconcile can walk it.
         assert att_personal.object_props["account"] == "personal"
         assert att_work.object_props["account"] == "work"
+
+
+class TestCalendarParser_EmitsReferencesEdge:
+    def setup_method(self):
+        self.parser = GoogleCalendarParser()
+
+    def test_obsidian_url_in_description_produces_references_hint(self):
+        event = _make_event(
+            meta={
+                "description": "See obsidian://open?vault=Personal&file=Notes.md for context.",
+            },
+        )
+        doc = self.parser.parse(event)[0]
+        refs = [h for h in doc.graph_hints if h.predicate == "REFERENCES"]
+        assert len(refs) == 1
+        h = refs[0]
+        assert h.object_id == "obsidian://open?vault=Personal&file=Notes.md"
+        assert h.object_label == "File"
+        assert h.subject_label == "CalendarEvent"
+
+    def test_google_calendar_url_in_description_produces_references_hint(self):
+        event = _make_event(
+            meta={
+                "description": "Linked event: google-calendar://acct/event/abc.",
+            },
+        )
+        doc = self.parser.parse(event)[0]
+        refs = [h for h in doc.graph_hints if h.predicate == "REFERENCES"]
+        assert len(refs) == 1
+        assert refs[0].object_id == "google-calendar://acct/event/abc"
+        assert refs[0].object_label == "CalendarEvent"
+
+    def test_no_source_url_in_description_produces_no_references_hints(self):
+        event = _make_event(meta={"description": "Plain description, no links."})
+        doc = self.parser.parse(event)[0]
+        refs = [h for h in doc.graph_hints if h.predicate == "REFERENCES"]
+        assert refs == []

@@ -47,6 +47,7 @@ from .base import (
     GraphHint,
     ParsedDocument,
     canonicalize_email,
+    extract_source_link_hints,
 )
 from .registry import register
 
@@ -264,6 +265,10 @@ class SlackParser(BaseParser):
             messages=messages,
             users_info=users_info,
         )
+
+        link_hints = extract_source_link_hints(text, source_id, NODE_LABEL)
+        if link_hints:
+            graph_hints.extend(link_hints)
 
         # Configurable attachment policy: source forwards its config so
         # the parser doesn't need to reach back into Config / settings.

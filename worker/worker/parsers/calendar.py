@@ -21,7 +21,7 @@ from .attachments import (
     stream_and_parse,
 )
 from ._safe_filename import sanitize_for_inline
-from .base import BaseParser, GraphHint, ParsedDocument, canonicalize_email
+from .base import BaseParser, GraphHint, ParsedDocument, canonicalize_email, extract_source_link_hints
 from .registry import register
 
 logger = logging.getLogger(__name__)
@@ -347,6 +347,10 @@ class GoogleCalendarParser(BaseParser):
             # Deprecated alias of attachments_count_intended; retained for one
             # release so existing Cypher queries keep working.
             node_props["has_attachments"] = attachment_counters["intended"]
+
+        link_hints = extract_source_link_hints(description, source_id, "CalendarEvent")
+        if link_hints:
+            graph_hints.extend(link_hints)
 
         event_doc = ParsedDocument(
             source_type=self.source_type,

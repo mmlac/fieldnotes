@@ -457,3 +457,42 @@ class TestObsidianParser:
         docs = self.parser.parse(_make_event(note))
         person_hints = [h for h in docs[0].graph_hints if h.predicate == "MENTIONS"]
         assert len(person_hints) == 0
+
+
+class TestObsidianParser_EmitsCrossSystemReferencesEdge:
+    def setup_method(self):
+        self.parser = ObsidianParser()
+
+    def test_slack_url_in_body_produces_references_hint(self):
+        note = "---\ntitle: Meeting Notes\n---\nSee slack://T01/C02/1234567890.123456 for context."
+        doc = self.parser.parse(_make_event(note))[0]
+        refs = [h for h in doc.graph_hints if h.predicate == "REFERENCES"]
+        assert len(refs) == 1
+        h = refs[0]
+        assert h.object_id == "slack://T01/C02/1234567890.123456"
+        assert h.object_label == "SlackMessage"
+        assert h.subject_label == "File"
+
+    def test_gmail_url_in_body_produces_references_hint(self):
+        note = "---\ntitle: Email Log\n---\nRelated: gmail://acct/message/msg-1."
+        doc = self.parser.parse(_make_event(note))[0]
+        refs = [h for h in doc.graph_hints if h.predicate == "REFERENCES"]
+        assert len(refs) == 1
+        assert refs[0].object_id == "gmail://acct/message/msg-1"
+        assert refs[0].object_label == "Email"
+
+    def test_wikilinks_still_extracted_alongside_references(self):
+        note = "---\ntitle: Mixed\n---\n[[Other Note]] and gmail://acct/message/msg-2."
+        doc = self.parser.parse(_make_event(note))[0]
+        links_to = [h for h in doc.graph_hints if h.predicate == "LINKS_TO"]
+        refs = [h for h in doc.graph_hints if h.predicate == "REFERENCES"]
+        assert len(links_to) == 1
+        assert links_to[0].object_id == "Other Note"
+        assert len(refs) == 1
+        assert refs[0].object_id == "gmail://acct/message/msg-2"
+
+    def test_no_source_url_produces_no_references_hints(self):
+        note = "---\ntitle: Plain\n---\nJust regular text."
+        doc = self.parser.parse(_make_event(note))[0]
+        refs = [h for h in doc.graph_hints if h.predicate == "REFERENCES"]
+        assert refs == []

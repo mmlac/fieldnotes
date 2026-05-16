@@ -750,3 +750,37 @@ class TestCrossAccount:
         # account lives on the edge, not the Person identity.
         assert "account" not in sent.subject_props
         assert sent.edge_props == {"account": "work"}
+
+
+class TestGmailParser_EmitsReferencesEdge:
+    def setup_method(self):
+        self.parser = GmailParser()
+
+    def test_calendar_url_in_body_produces_references_hint(self):
+        event = _make_event(
+            text="See google-calendar://acct/event/abc for the meeting.",
+        )
+        doc = self.parser.parse(event)[0]
+        refs = [h for h in doc.graph_hints if h.predicate == "REFERENCES"]
+        assert len(refs) == 1
+        h = refs[0]
+        assert h.object_id == "google-calendar://acct/event/abc"
+        assert h.object_label == "CalendarEvent"
+        assert h.subject_label == "Email"
+
+    def test_multiple_source_urls_in_body(self):
+        event = _make_event(
+            text="gmail://work/message/001 and omnifocus://task/task-42",
+        )
+        doc = self.parser.parse(event)[0]
+        refs = [h for h in doc.graph_hints if h.predicate == "REFERENCES"]
+        assert len(refs) == 2
+        ids = {h.object_id for h in refs}
+        assert "gmail://work/message/001" in ids
+        assert "omnifocus://task-42" in ids
+
+    def test_no_source_url_in_body_produces_no_references_hints(self):
+        event = _make_event(text="Plain email body, no source links.")
+        doc = self.parser.parse(event)[0]
+        refs = [h for h in doc.graph_hints if h.predicate == "REFERENCES"]
+        assert refs == []

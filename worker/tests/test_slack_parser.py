@@ -983,3 +983,44 @@ class TestConfigureSlackParser:
             # Cleanup so other tests aren't affected.
             configure_slack_parser(fetcher=None)
         assert SlackParser()._fetcher is None
+
+
+class TestSlackParser_EmitsReferencesEdge:
+    def test_gmail_url_in_message_body_produces_references_hint(self):
+        parser = SlackParser()
+        event = _thread_event(
+            parent=_msg(1.0, "U1", text="See gmail://acct/message/xyz here."),
+            replies=[],
+            users_info=_users_info(),
+        )
+        doc = parser.parse(event)[0]
+        refs = [h for h in doc.graph_hints if h.predicate == "REFERENCES"]
+        assert len(refs) == 1
+        h = refs[0]
+        assert h.object_id == "gmail://acct/message/xyz"
+        assert h.object_label == "Email"
+        assert h.subject_label == NODE_LABEL
+
+    def test_omnifocus_url_in_reply_produces_references_hint(self):
+        parser = SlackParser()
+        event = _thread_event(
+            parent=_msg(1.0, "U1", text="Parent"),
+            replies=[_msg(2.0, "U2", text="Task: omnifocus://task/task-99 done.")],
+            users_info=_users_info(),
+        )
+        doc = parser.parse(event)[0]
+        refs = [h for h in doc.graph_hints if h.predicate == "REFERENCES"]
+        assert len(refs) == 1
+        assert refs[0].object_id == "omnifocus://task-99"
+        assert refs[0].object_label == "Task"
+
+    def test_no_source_url_produces_no_references_hints(self):
+        parser = SlackParser()
+        event = _thread_event(
+            parent=_msg(1.0, "U1", text="Normal message, no links."),
+            replies=[],
+            users_info=_users_info(),
+        )
+        doc = parser.parse(event)[0]
+        refs = [h for h in doc.graph_hints if h.predicate == "REFERENCES"]
+        assert refs == []

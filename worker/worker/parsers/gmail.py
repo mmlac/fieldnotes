@@ -31,7 +31,7 @@ from .attachments import (
     stream_and_parse,
 )
 from ._safe_filename import sanitize_for_inline
-from .base import BaseParser, GraphHint, ParsedDocument, canonicalize_email
+from .base import BaseParser, GraphHint, ParsedDocument, canonicalize_email, extract_source_link_hints
 from .registry import register
 
 logger = logging.getLogger(__name__)
@@ -356,6 +356,10 @@ class GmailParser(BaseParser):
             # release so existing Cypher queries keep working.  Remove after
             # downstream consumers migrate to the explicit counter.
             node_props["has_attachments"] = counters["intended"]
+
+        link_hints = extract_source_link_hints(body, source_id, "Email")
+        if link_hints:
+            graph_hints.extend(link_hints)
 
         parent_doc = ParsedDocument(
             source_type=self.source_type,

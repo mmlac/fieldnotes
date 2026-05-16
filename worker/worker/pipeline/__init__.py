@@ -476,7 +476,7 @@ class Pipeline:
         if email_hints:
             doc.graph_hints.extend(email_hints)
 
-        # 0a. Extract Slack permalink URLs from text → SlackMessage REFERENCES hints
+        # 0a. Extract embedded source-id URLs and Slack permalinks → REFERENCES hints
         slack_hints = extract_source_link_hints(
             doc.text, doc.source_id, doc.node_label
         )
