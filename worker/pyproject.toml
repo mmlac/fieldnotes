@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "fieldnotes"
 version = "0.40.0"
 description = "Personal knowledge graph — ingest, search, and serve your notes"
-requires-python = ">=3.11"
+requires-python = ">=3.14"
 license = "MIT"
 dependencies = [
     "anthropic>=0.86,<1.0",
