@@ -84,7 +84,6 @@ class TestPromptPath:
 
         with patch("builtins.input", return_value=str(tmp_path)):
             _prompt_path("Dir")
-            completer = readline.get_completer()
 
         # Completer was restored already — re-install to test it
         # Instead, we test the completer directly by importing the function

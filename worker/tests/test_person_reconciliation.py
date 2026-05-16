@@ -96,7 +96,7 @@ class TestReconcilePersonsByName:
 
         mock_session.run.side_effect = [mock_name_result, mock_create]
 
-        result = writer._reconcile_persons_by_name_neo4j()
+        writer._reconcile_persons_by_name_neo4j()
         # Should have attempted to create SAME_AS edges
         assert mock_session.run.call_count == 2
         # Verify the UNWIND query was called with pairs
@@ -120,7 +120,7 @@ class TestReconcilePersonsByName:
 
         mock_session.run.side_effect = [mock_name_result]
 
-        result = writer._reconcile_persons_by_name_neo4j()
+        writer._reconcile_persons_by_name_neo4j()
         # Only one query (name fetch) — no pairs to create
         assert mock_session.run.call_count == 1
 

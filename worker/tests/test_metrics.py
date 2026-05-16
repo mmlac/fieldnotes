@@ -135,7 +135,7 @@ class TestCollectQdrant:
         assert QDRANT_POINTS_TOTAL._value.get() == 12345
         qdrant.get_collection.assert_called_once_with("test_collection")
 
-    def test_qdrant_failure_does_not_raise(self) -> None:
+    def test_neo4j_failure_does_not_raise(self) -> None:
         driver = MagicMock()
         driver.session.side_effect = RuntimeError("skip neo4j")
 
