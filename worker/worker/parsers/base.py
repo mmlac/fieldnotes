@@ -98,15 +98,23 @@ _SOURCE_URL_RE = re.compile(
 )
 
 _SCHEME_TO_LABEL: dict[str, str] = {
-    "gmail": "EmailMessage",
+    "gmail": "Email",
     "google-calendar": "CalendarEvent",
-    "omnifocus": "OmniFocusTask",
+    "omnifocus": "Task",
     "slack": "SlackMessage",
-    "obsidian": "ObsidianNote",
+    "obsidian": "File",
 }
 
 # Sentence-ending punctuation stripped from the right of a matched URL.
 _URL_TRAIL_STRIP = ".,;:!?)>]"
+
+
+def _normalize_omnifocus_url(url: str) -> str:
+    """Normalize omnifocus://task/{task_id} to canonical omnifocus://{task_id}."""
+    prefix = "omnifocus://task/"
+    if url.startswith(prefix):
+        return "omnifocus://" + url[len(prefix):]
+    return url
 
 
 def _resolve_obsidian_url(url: str, obsidian_vaults: dict[str, str] | None) -> str:
@@ -137,11 +145,11 @@ def extract_source_link_hints(
     """Extract embedded source-id URLs and return REFERENCES GraphHints.
 
     Scans *text* for URL forms that map to known fieldnotes source_ids:
-      - gmail://{account}/message/{message_id}        → EmailMessage
+      - gmail://{account}/message/{message_id}        → Email
       - google-calendar://{account}/event/{event_id}  → CalendarEvent
-      - omnifocus://task/{task_id}                    → OmniFocusTask
+      - omnifocus://task/{task_id}                    → Task (normalized to omnifocus://{task_id})
       - slack://{team_id}/{channel_id}/{ts}           → SlackMessage
-      - obsidian://open?vault={vault}&file={rel_path} → ObsidianNote
+      - obsidian://open?vault={vault}&file={rel_path} → File
 
     De-dupes within a single call so the same URL in text twice produces
     one edge, not two.
@@ -152,7 +160,9 @@ def extract_source_link_hints(
         url = match.group(0).rstrip(_URL_TRAIL_STRIP)
         scheme = url.split("://", 1)[0]
         object_label = _SCHEME_TO_LABEL.get(scheme, "File")
-        if scheme == "obsidian":
+        if scheme == "omnifocus":
+            object_id = _normalize_omnifocus_url(url)
+        elif scheme == "obsidian":
             object_id = _resolve_obsidian_url(url, obsidian_vaults)
         else:
             object_id = url

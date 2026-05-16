@@ -21,7 +21,7 @@ class TestExtractSourceLinks_Gmail:
         assert len(hints) == 1
         h = hints[0]
         assert h.object_id == "gmail://account@gmail.com/message/abc123"
-        assert h.object_label == "EmailMessage"
+        assert h.object_label == "Email"
         assert h.predicate == "REFERENCES"
         assert h.confidence == 1.0
         assert h.subject_id == "doc:3"
@@ -48,8 +48,8 @@ class TestExtractSourceLinks_Omnifocus:
         )
         assert len(hints) == 1
         h = hints[0]
-        assert h.object_id == "omnifocus://task/task-id-42"
-        assert h.object_label == "OmniFocusTask"
+        assert h.object_id == "omnifocus://task-id-42"
+        assert h.object_label == "Task"
         assert h.predicate == "REFERENCES"
         assert h.confidence == 1.0
 
@@ -79,7 +79,7 @@ class TestExtractSourceLinks_ObsidianWithVaultMap:
         assert len(hints) == 1
         h = hints[0]
         assert h.object_id == "/Users/mmlac/Obsidian Vaults/Personal/Meetings/Kris.md"
-        assert h.object_label == "ObsidianNote"
+        assert h.object_label == "File"
         assert h.predicate == "REFERENCES"
         assert h.confidence == 1.0
 
@@ -93,7 +93,7 @@ class TestExtractSourceLinks_ObsidianWithoutVaultMap:
         assert len(hints) == 1
         h = hints[0]
         assert h.object_id == "obsidian://open?vault=Personal&file=Meetings%2FKris.md"
-        assert h.object_label == "ObsidianNote"
+        assert h.object_label == "File"
         assert h.predicate == "REFERENCES"
 
     def test_obsidian_unknown_vault_in_map(self):
@@ -120,11 +120,11 @@ class TestExtractSourceLinks_Mixed:
         assert len(hints) == 5
         labels = {h.object_label for h in hints}
         assert labels == {
-            "EmailMessage",
+            "Email",
             "CalendarEvent",
-            "OmniFocusTask",
+            "Task",
             "SlackMessage",
-            "ObsidianNote",
+            "File",
         }
 
 
@@ -163,6 +163,52 @@ class TestExtractSourceLinks_TrailingPunctuation:
         )
         assert len(hints) == 1
         assert hints[0].object_id == "gmail://acct/message/abc"
+
+
+class TestExtractSourceLinks_CanonicalSchemaAlignment:
+    """Regression: hint labels and source_ids must match what existing parsers emit.
+
+    Each assertion here mirrors the node_label / source_id format written by the
+    corresponding source parser so graph MERGE hits existing nodes instead of
+    creating parallel ones.
+
+    - Gmail parser (parsers/gmail.py:365):      node_label="Email"
+    - OmniFocus parser (parsers/omnifocus.py:173): node_label="Task", source_id=omnifocus://{task_id}
+    - Obsidian parser (parsers/obsidian.py:256): node_label="File"
+    - Calendar parser (parsers/calendar.py:357): node_label="CalendarEvent"
+    - Slack parser (parsers/slack.py:55):        NODE_LABEL="SlackMessage"
+    """
+
+    def test_gmail_label_matches_parser(self):
+        hints = extract_source_link_hints("gmail://acct/message/msg1", "doc:r1")
+        assert hints[0].object_label == "Email"
+
+    def test_omnifocus_label_matches_parser(self):
+        hints = extract_source_link_hints("omnifocus://task/task-abc", "doc:r2")
+        assert hints[0].object_label == "Task"
+
+    def test_omnifocus_source_id_matches_parser(self):
+        # OmniFocus source emits omnifocus://{task_id} (sources/omnifocus.py:197).
+        # The URL form omnifocus://task/{task_id} must be normalized to match.
+        hints = extract_source_link_hints("omnifocus://task/task-abc", "doc:r3")
+        assert hints[0].object_id == "omnifocus://task-abc"
+
+    def test_obsidian_label_matches_parser(self):
+        vault_map = {"V": "/vaults/V"}
+        hints = extract_source_link_hints(
+            "obsidian://open?vault=V&file=note.md", "doc:r4", obsidian_vaults=vault_map
+        )
+        assert hints[0].object_label == "File"
+
+    def test_calendar_label_matches_parser(self):
+        hints = extract_source_link_hints(
+            "google-calendar://acct/event/evt1", "doc:r5"
+        )
+        assert hints[0].object_label == "CalendarEvent"
+
+    def test_slack_label_matches_parser(self):
+        hints = extract_source_link_hints("slack://T1/C1/1234567890.001", "doc:r6")
+        assert hints[0].object_label == "SlackMessage"
 
 
 class TestExtractSourceLinks_NotMatchedInsideAnotherURL:
