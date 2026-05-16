@@ -1,6 +1,9 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+import logging
+import os
 import re
+import urllib.parse
 from typing import Any
 
 from worker.parsers._slack_permalink import (
@@ -75,6 +78,96 @@ def extract_email_person_hints(
                 object_props={"email": email},
                 subject_merge_key="source_id",
                 object_merge_key="email",
+                confidence=1.0,
+            )
+        )
+    return hints
+
+
+# ---------------------------------------------------------------------------
+# Source-link extraction — matches bare source-id URLs embedded in text
+# ---------------------------------------------------------------------------
+
+logger = logging.getLogger(__name__)
+
+# Greedy non-whitespace match; trailing sentence punctuation is stripped after.
+# Lookbehind (?<![=&]) skips URLs that appear as query-string values inside
+# https:// links (e.g. "?ref=gmail://...").
+_SOURCE_URL_RE = re.compile(
+    r"(?<![=&])(?:gmail|google-calendar|omnifocus|slack|obsidian)://\S+"
+)
+
+_SCHEME_TO_LABEL: dict[str, str] = {
+    "gmail": "EmailMessage",
+    "google-calendar": "CalendarEvent",
+    "omnifocus": "OmniFocusTask",
+    "slack": "SlackMessage",
+    "obsidian": "ObsidianNote",
+}
+
+# Sentence-ending punctuation stripped from the right of a matched URL.
+_URL_TRAIL_STRIP = ".,;:!?)>]"
+
+
+def _resolve_obsidian_url(url: str, obsidian_vaults: dict[str, str] | None) -> str:
+    """Resolve obsidian:// URL to canonical absolute-path source_id."""
+    try:
+        params = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+        vault_name = params.get("vault", [""])[0]
+        rel_path = urllib.parse.unquote(params.get("file", [""])[0])
+        if not vault_name or not rel_path:
+            return url
+        if obsidian_vaults and vault_name in obsidian_vaults:
+            return os.path.join(obsidian_vaults[vault_name], rel_path)
+        logger.debug(
+            "Obsidian vault %r not in vault map; emitting URL as source_id (will dangle)",
+            vault_name,
+        )
+        return url
+    except Exception:
+        return url
+
+
+def extract_source_link_hints(
+    text: str,
+    source_id: str,
+    subject_label: str = "File",
+    obsidian_vaults: dict[str, str] | None = None,
+) -> list["GraphHint"]:
+    """Extract embedded source-id URLs and return REFERENCES GraphHints.
+
+    Scans *text* for URL forms that map to known fieldnotes source_ids:
+      - gmail://{account}/message/{message_id}        → EmailMessage
+      - google-calendar://{account}/event/{event_id}  → CalendarEvent
+      - omnifocus://task/{task_id}                    → OmniFocusTask
+      - slack://{team_id}/{channel_id}/{ts}           → SlackMessage
+      - obsidian://open?vault={vault}&file={rel_path} → ObsidianNote
+
+    De-dupes within a single call so the same URL in text twice produces
+    one edge, not two.
+    """
+    seen: set[str] = set()
+    hints: list[GraphHint] = []
+    for match in _SOURCE_URL_RE.finditer(text):
+        url = match.group(0).rstrip(_URL_TRAIL_STRIP)
+        scheme = url.split("://", 1)[0]
+        object_label = _SCHEME_TO_LABEL.get(scheme, "File")
+        if scheme == "obsidian":
+            object_id = _resolve_obsidian_url(url, obsidian_vaults)
+        else:
+            object_id = url
+        if object_id in seen:
+            continue
+        seen.add(object_id)
+        hints.append(
+            GraphHint(
+                subject_id=source_id,
+                subject_label=subject_label,
+                predicate="REFERENCES",
+                object_id=object_id,
+                object_label=object_label,
+                subject_merge_key="source_id",
+                object_merge_key="source_id",
                 confidence=1.0,
             )
         )
