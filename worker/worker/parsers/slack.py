@@ -604,6 +604,28 @@ def _build_graph_hints(
             )
         )
 
+    # ---- Individual message nodes: CONTAINS_MESSAGE -----------------------
+    # Emit one hint per message so each message gets a stable individual
+    # source_id: slack://{team_id}/{channel_id}/{ts}.  Slack permalink URLs
+    # resolve to this form, so REFERENCES edges from other documents land on
+    # these nodes rather than disconnected placeholders.
+    for m in messages:
+        ts = m.get("ts", "")
+        if not ts or not team_id or not channel_id:
+            continue
+        msg_id = f"slack://{team_id}/{channel_id}/{ts}"
+        hints.append(
+            GraphHint(
+                subject_id=source_id,
+                subject_label=NODE_LABEL,
+                predicate="CONTAINS_MESSAGE",
+                object_id=msg_id,
+                object_label="SlackMessage",
+                object_props={"team_id": team_id, "channel_id": channel_id, "ts": ts},
+                confidence=1.0,
+            )
+        )
+
     return hints
 
 

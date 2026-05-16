@@ -32,7 +32,11 @@ from worker.metrics import (
     observe_duration,
 )
 from worker.models.resolver import ModelRegistry
-from worker.parsers.base import ParsedDocument, extract_email_person_hints
+from worker.parsers.base import (
+    ParsedDocument,
+    extract_email_person_hints,
+    extract_source_link_hints,
+)
 from worker.pipeline.chunker import Chunk, chunk_text
 from worker.pipeline.embedder import embed_chunks
 from worker.pipeline.extractor import (
@@ -471,6 +475,13 @@ class Pipeline:
         )
         if email_hints:
             doc.graph_hints.extend(email_hints)
+
+        # 0a. Extract Slack permalink URLs from text → SlackMessage REFERENCES hints
+        slack_hints = extract_source_link_hints(
+            doc.text, doc.source_id, doc.node_label
+        )
+        if slack_hints:
+            doc.graph_hints.extend(slack_hints)
 
         # 0.5. Content-hash skip: if the canonical text matches what we
         # previously indexed for this source_id, the chunks/embeddings/

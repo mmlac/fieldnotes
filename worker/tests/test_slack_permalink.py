@@ -1,12 +1,15 @@
 """Tests for the Slack permalink resolver (fn-86y.3).
 
 Covers URL parsing, ts formatting, workspace map I/O, fallback behaviour,
-and the extract_source_link_hints integration.
+the extract_source_link_hints integration, and node identity alignment with
+Slack ingestion (CONTAINS_MESSAGE hints from the Slack parser must use the
+same source_id form as REFERENCES hints from the permalink resolver).
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from worker.parsers._slack_permalink import (
     load_workspace_team_map,
@@ -15,6 +18,7 @@ from worker.parsers._slack_permalink import (
     ts_packed_to_ts,
 )
 from worker.parsers.base import extract_source_link_hints
+from worker.parsers.slack import SlackParser
 
 
 _WORKSPACE_MAP = {"terra2": "T012XYZ"}
@@ -146,6 +150,138 @@ class TestExtractSourceLinks_SlackPermalinkIntegration:
         )
         assert len(hints) == 1
         assert hints[0].object_id == "slack:///C09ABCDEF/1715800000.123456"
+
+
+def _thread_event(
+    team_id: str,
+    channel_id: str,
+    parent_ts: str,
+    *,
+    reply_ts: str | None = None,
+) -> dict[str, Any]:
+    """Minimal thread IngestEvent for parser tests."""
+    msgs: list[dict[str, Any]] = [{"ts": parent_ts, "user": "U1", "text": "parent"}]
+    if reply_ts:
+        msgs.append({"ts": reply_ts, "user": "U2", "text": "reply"})
+    return {
+        "id": "ev-test",
+        "source_type": "slack",
+        "source_id": f"slack://{team_id}/{channel_id}/thread/{parent_ts}",
+        "operation": "created",
+        "text": "",
+        "mime_type": "text/plain",
+        "meta": {
+            "team_id": team_id,
+            "channel_id": channel_id,
+            "channel_name": "general",
+            "is_im": False,
+            "is_mpim": False,
+            "is_private": False,
+            "is_archived": False,
+            "kind": "thread",
+            "parent_ts": parent_ts,
+            "last_ts": (reply_ts or parent_ts),
+            "message_ts": [m["ts"] for m in msgs],
+            "messages": msgs,
+            "users_info": {},
+        },
+    }
+
+
+class TestPermalinkNodeIdentityAlignment:
+    """Prove permalink REFERENCES and Slack parser CONTAINS_MESSAGE share the same source_id.
+
+    The reviewer required that a permalink REFERENCES edge lands on the same
+    SlackMessage node produced by Slack ingestion, not a disconnected placeholder.
+    We verify this by comparing the object_id from each hint type.
+    """
+
+    def test_contains_message_object_id_matches_permalink_source_id(self) -> None:
+        """CONTAINS_MESSAGE from parser == REFERENCES target from permalink resolver."""
+        team_id = "T012XYZ"
+        channel_id = "C09ABCDEF"
+        ts_packed = "1715800000123456"
+        ts = "1715800000.123456"
+
+        # What the permalink resolver produces
+        url = f"https://terra2.slack.com/archives/{channel_id}/p{ts_packed}"
+        permalink_target = slack_permalink_to_source_id(url, {"terra2": team_id})
+        assert permalink_target == f"slack://{team_id}/{channel_id}/{ts}"
+
+        # What the Slack parser emits during thread ingestion
+        event = _thread_event(team_id, channel_id, ts)
+        parser = SlackParser()
+        docs = parser.parse(event)
+        parent_doc = docs[0]
+        contains_hints = [
+            h for h in parent_doc.graph_hints if h.predicate == "CONTAINS_MESSAGE"
+        ]
+        contains_ids = {h.object_id for h in contains_hints}
+        assert permalink_target in contains_ids, (
+            f"permalink target {permalink_target!r} not in CONTAINS_MESSAGE ids "
+            f"{contains_ids!r}"
+        )
+
+    def test_thread_reply_ts_also_emits_contains_message(self) -> None:
+        """Each message in a thread (parent and replies) gets its own CONTAINS_MESSAGE."""
+        team_id = "T1"
+        channel_id = "C99"
+        parent_ts = "1715800000.000001"
+        reply_ts = "1715800001.000002"
+        event = _thread_event(team_id, channel_id, parent_ts, reply_ts=reply_ts)
+        parser = SlackParser()
+        docs = parser.parse(event)
+        parent_doc = docs[0]
+        contains_ids = {
+            h.object_id
+            for h in parent_doc.graph_hints
+            if h.predicate == "CONTAINS_MESSAGE"
+        }
+        assert f"slack://{team_id}/{channel_id}/{parent_ts}" in contains_ids
+        assert f"slack://{team_id}/{channel_id}/{reply_ts}" in contains_ids
+
+    def test_e2e_calendar_event_with_slack_permalink(self) -> None:
+        """A calendar/email/obsidian document with a Slack permalink produces
+        a REFERENCES GraphHint whose object_id matches what Slack ingestion
+        would emit as a CONTAINS_MESSAGE target for the same message.
+        """
+        team_id = "T012XYZ"
+        channel_id = "C09ABCDEF"
+        ts_packed = "1715800000123456"
+        ts = "1715800000.123456"
+        workspace_map = {"terra2": team_id}
+
+        # Simulate a CalendarEvent document that references a Slack message
+        cal_text = (
+            f"Meeting notes: see discussion at "
+            f"https://terra2.slack.com/archives/{channel_id}/p{ts_packed}"
+        )
+        hints = extract_source_link_hints(
+            cal_text,
+            source_id="google-calendar://acct/event/xyz",
+            subject_label="CalendarEvent",
+            workspace_map=workspace_map,
+        )
+        assert len(hints) == 1
+        ref_hint = hints[0]
+        assert ref_hint.predicate == "REFERENCES"
+        assert ref_hint.object_label == "SlackMessage"
+        expected_id = f"slack://{team_id}/{channel_id}/{ts}"
+        assert ref_hint.object_id == expected_id
+
+        # Confirm Slack ingestion of that message produces CONTAINS_MESSAGE to the same id
+        event = _thread_event(team_id, channel_id, ts)
+        parser = SlackParser()
+        docs = parser.parse(event)
+        contains_ids = {
+            h.object_id
+            for h in docs[0].graph_hints
+            if h.predicate == "CONTAINS_MESSAGE"
+        }
+        assert expected_id in contains_ids, (
+            "REFERENCES target from calendar doc does not match any "
+            "CONTAINS_MESSAGE from Slack ingestion"
+        )
 
 
 class TestWorkspaceMapIO:

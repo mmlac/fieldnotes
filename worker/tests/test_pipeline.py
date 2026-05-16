@@ -313,6 +313,54 @@ class TestTextPipeline:
 # ------------------------------------------------------------------
 # Batch processing
 # ------------------------------------------------------------------
+# Slack permalink extraction in text pipeline
+# ------------------------------------------------------------------
+
+
+class TestSlackPermalinkExtractionInPipeline:
+    """Verify that Slack permalinks in document text produce REFERENCES graph hints."""
+
+    @patch("worker.pipeline.resolve_entities_from_registry")
+    @patch("worker.pipeline.extract_chunks")
+    @patch("worker.pipeline.embed_chunks")
+    @patch("worker.pipeline.chunk_text")
+    def test_slack_permalink_in_text_produces_references_hint(
+        self, mock_chunk, mock_embed, mock_extract, mock_resolve
+    ):
+        """A document whose text contains a Slack permalink gets a REFERENCES hint."""
+        pipeline, _, writer = _make_pipeline()
+
+        mock_chunk.return_value = []
+        mock_embed.return_value = []
+        mock_extract.return_value = []
+        mock_resolve.return_value = MagicMock(entities=[])
+
+        slack_url = (
+            "https://terra2.slack.com/archives/C09ABCDEF/p1715800000123456"
+        )
+        doc = _doc(
+            source_type="google-calendar",
+            source_id="google-calendar://acct/event/abc",
+            node_label="CalendarEvent",
+            text=f"Meeting notes. See {slack_url} for context.",
+        )
+        pipeline.process(doc)
+
+        references_hints = [
+            h for h in doc.graph_hints
+            if h.predicate == "REFERENCES" and h.object_label == "SlackMessage"
+        ]
+        assert len(references_hints) == 1
+        h = references_hints[0]
+        assert h.subject_id == "google-calendar://acct/event/abc"
+        assert h.subject_label == "CalendarEvent"
+        # Team-id unknown (no workspace map on disk in test env) → fallback form
+        assert h.object_id.startswith("slack://")
+        assert "C09ABCDEF" in h.object_id
+        assert "1715800000.123456" in h.object_id
+
+
+# ------------------------------------------------------------------
 
 
 class TestBatchProcess:
