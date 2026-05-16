@@ -55,6 +55,7 @@ from ._slack_rate_limit import RateLimitedError, call_with_rate_limit_retry
 from .base import IndexedCheck, PythonSource
 from .cursor import save_json_atomic
 from .slack_auth import DEFAULT_TOKEN_PATH, SlackToken, get_slack_client
+from worker.parsers._slack_permalink import persist_workspace_map
 
 logger = logging.getLogger(__name__)
 
@@ -604,6 +605,8 @@ class SlackSource(PythonSource):
         self._client = client
         self._team_id = team_id
         self._team_domain = team_domain
+        if team_domain and team_id:
+            persist_workspace_map(team_domain, team_id)
 
         # Load cursor (queue-backed first, falling back to legacy file).
         raw = queue.load_cursor("slack")

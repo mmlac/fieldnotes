@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from pathlib import Path
 import re
 from typing import Any
 
@@ -68,6 +69,55 @@ def extract_email_person_hints(
                 object_props={"email": email},
                 subject_merge_key="source_id",
                 object_merge_key="email",
+                confidence=1.0,
+            )
+        )
+    return hints
+
+
+def extract_source_link_hints(
+    text: str,
+    source_id: str,
+    subject_label: str = "File",
+    *,
+    slack_workspace_map: dict[str, str] | None = None,
+    slack_workspace_map_path: Path | None = None,
+) -> list["GraphHint"]:
+    """Extract Slack permalink URLs from text and return REFERENCES GraphHints.
+
+    Scans *text* for Slack permalink URLs of the form
+    ``https://<workspace>.slack.com/archives/<channel>/p<ts>`` and
+    resolves them to ``slack://{team_id}/{channel_id}/{ts}`` source_ids.
+
+    The workspace→team_id mapping is loaded from the JSON cache written
+    by :func:`worker.parsers._slack_permalink.persist_workspace_map` at
+    Slack source startup.  Pass *slack_workspace_map* to override (useful
+    in tests).
+
+    Deduplicates: the same resolved source_id appearing multiple times
+    produces only one hint.
+    """
+    from worker.parsers._slack_permalink import (
+        DEFAULT_WORKSPACE_MAP_PATH,
+        find_slack_permalink_source_ids,
+        load_workspace_map,
+    )
+
+    if slack_workspace_map is None:
+        path = slack_workspace_map_path or DEFAULT_WORKSPACE_MAP_PATH
+        slack_workspace_map = load_workspace_map(path)
+
+    hints: list[GraphHint] = []
+    for object_id in find_slack_permalink_source_ids(text, slack_workspace_map):
+        hints.append(
+            GraphHint(
+                subject_id=source_id,
+                subject_label=subject_label,
+                predicate="REFERENCES",
+                object_id=object_id,
+                object_label="SlackMessage",
+                subject_merge_key="source_id",
+                object_merge_key="source_id",
                 confidence=1.0,
             )
         )
