@@ -319,7 +319,7 @@ def _schedule_launchd(*, remove: bool, keep: int | None = None) -> int:
     subprocess.run(
         ["launchctl", "load", "-w", str(plist_path)], check=True
     )
-    print(f"Scheduled daily backup (02:00 local time)")
+    print("Scheduled daily backup (02:00 local time)")
     print(f"  Plist: {plist_path}")
     print(f"  Logs:  {log_dir / 'backup.log'}")
     return 0
@@ -366,5 +366,5 @@ def _schedule_systemd(*, remove: bool, keep: int | None = None) -> int:
         check=True,
     )
     print("Scheduled daily backup (02:00 local time)")
-    print(f"  Check status: systemctl --user status fieldnotes-backup.timer")
+    print("  Check status: systemctl --user status fieldnotes-backup.timer")
     return 0

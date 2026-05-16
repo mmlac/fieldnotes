@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import json
 import threading
-import time
 from pathlib import Path
 
 import pytest
 
-from worker.queue import CursorUpdate, PersistentQueue
+from worker.queue import PersistentQueue
 
 
 @pytest.fixture

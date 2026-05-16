@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import hashlib
 import json
 import logging
 import os
@@ -51,7 +50,6 @@ from worker.log_sanitizer import redact_home_path
 
 from ._handler import guess_mime, streaming_sha256
 from .base import IndexedCheck, PythonSource
-from .cursor import save_json_atomic
 
 logger = logging.getLogger(__name__)
 

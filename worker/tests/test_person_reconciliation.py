@@ -5,9 +5,8 @@ These test the matching logic in isolation by mocking the Neo4j driver.
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock
 
-import pytest
 
 from worker.pipeline.resolver import _fuzzy_threshold_for_length
 

@@ -37,7 +37,6 @@ from ._handler import (
 )
 from .base import PythonSource
 from .cursor import (
-    CursorDiff,
     FileEntry,
     deserialize_file_cursor,
     diff_cursor,

@@ -10,8 +10,6 @@ import pytest
 
 from worker.backup import (
     _BACKUP_ITEMS,
-    _BACKUPS_DIR,
-    _FN_DIR,
     _prune_backups,
     backup,
     list_backups,
