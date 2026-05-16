@@ -26,6 +26,7 @@ from pathlib import Path
 from worker.config import Config, load_config
 from worker.main import (
     _build_sources,
+    _build_sighup_handler,
     _check_neo4j,
     _check_qdrant,
     _index_status_loop,
@@ -35,7 +36,7 @@ from worker.main import (
 logger = logging.getLogger(__name__)
 
 
-async def _run_daemon(cfg: Config, *, progress_enabled: bool = False) -> None:
+async def _run_daemon(cfg: Config, *, config_path: Path | None = None, progress_enabled: bool = False) -> None:
     """Run the ingest pipeline as a background service."""
     from worker.clustering.scheduler import clustering_loop
     from worker.metrics import (
@@ -207,6 +208,11 @@ async def _run_daemon(cfg: Config, *, progress_enabled: bool = False) -> None:
 
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, _signal_handler)
+
+    if hasattr(signal, "SIGHUP"):
+        loop.add_signal_handler(
+            signal.SIGHUP, _build_sighup_handler(pipeline, config_path)
+        )
 
     # Main ingest loop — claim/complete/fail against PersistentQueue
     try:
@@ -443,6 +449,6 @@ def run_daemon(
                 time.sleep(2**attempt)
 
     try:
-        asyncio.run(_run_daemon(cfg, progress_enabled=progress_enabled))
+        asyncio.run(_run_daemon(cfg, config_path=config_path, progress_enabled=progress_enabled))
     except KeyboardInterrupt:
         logger.info("Interrupted")

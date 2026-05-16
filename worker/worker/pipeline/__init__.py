@@ -102,6 +102,10 @@ class Pipeline:
         self._progress: ProgressReporter = progress or NullProgressReporter()
         self._me_config = me_config
 
+    def set_me_config(self, new_me: MeConfig | None) -> None:
+        """Hot-update the [me] config for end-of-batch self-identity reconciliation."""
+        self._me_config = new_me
+
     def process(
         self,
         parsed_doc: ParsedDocument,
