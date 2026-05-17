@@ -73,7 +73,7 @@ class TestConnectionsFindsUnlinkedSimilarDocs:
     """Mock Qdrant + Neo4j to verify basic unlinked-pair detection."""
 
     @patch("worker.query.connections.QdrantClient")
-    @patch("worker.query.connections.GraphDatabase")
+    @patch("worker.query.connections.build_driver")
     def test_connections_finds_unlinked_similar_docs(
         self, mock_gdb: MagicMock, mock_qdrant_cls: MagicMock
     ) -> None:
@@ -125,7 +125,7 @@ class TestConnectionsFindsUnlinkedSimilarDocs:
                 },
             ]
         )
-        mock_gdb.driver.return_value.session.side_effect = [session, node_info_session]
+        mock_gdb.return_value.session.side_effect = [session, node_info_session]
 
         result = querier.suggest()
 
@@ -141,7 +141,7 @@ class TestConnectionsThresholdFiltering:
     """Scores below threshold must be excluded."""
 
     @patch("worker.query.connections.QdrantClient")
-    @patch("worker.query.connections.GraphDatabase")
+    @patch("worker.query.connections.build_driver")
     def test_connections_threshold_filtering(
         self, mock_gdb: MagicMock, mock_qdrant_cls: MagicMock
     ) -> None:
@@ -186,7 +186,7 @@ class TestConnectionsThresholdFiltering:
                 },
             ]
         )
-        mock_gdb.driver.return_value.session.side_effect = [edge_session, node_session]
+        mock_gdb.return_value.session.side_effect = [edge_session, node_session]
 
         result = querier.suggest(threshold=0.80)
 
@@ -204,7 +204,7 @@ class TestConnectionsCrossSourceFilter:
     """cross_source=True keeps only inter-source-type pairs."""
 
     @patch("worker.query.connections.QdrantClient")
-    @patch("worker.query.connections.GraphDatabase")
+    @patch("worker.query.connections.build_driver")
     def test_connections_cross_source_filter(
         self, mock_gdb: MagicMock, mock_qdrant_cls: MagicMock
     ) -> None:
@@ -255,7 +255,7 @@ class TestConnectionsCrossSourceFilter:
                 },
             ]
         )
-        mock_gdb.driver.return_value.session.side_effect = [edge_session, node_session]
+        mock_gdb.return_value.session.side_effect = [edge_session, node_session]
 
         result = querier.suggest(cross_source=True)
 
@@ -281,7 +281,7 @@ class TestConnectionsSourceIdSeed:
     """When source_id is given, only that document is used as seed."""
 
     @patch("worker.query.connections.QdrantClient")
-    @patch("worker.query.connections.GraphDatabase")
+    @patch("worker.query.connections.build_driver")
     def test_connections_source_id_seed(
         self, mock_gdb: MagicMock, mock_qdrant_cls: MagicMock
     ) -> None:
@@ -316,7 +316,7 @@ class TestConnectionsSourceIdSeed:
                 },
             ]
         )
-        mock_gdb.driver.return_value.session.side_effect = [edge_session, node_session]
+        mock_gdb.return_value.session.side_effect = [edge_session, node_session]
 
         result = querier.suggest(source_id="obsidian://note1")
 
@@ -339,7 +339,7 @@ class TestConnectionsSourceTypeFilter:
     """source_type filter restricts which seeds are used."""
 
     @patch("worker.query.connections.QdrantClient")
-    @patch("worker.query.connections.GraphDatabase")
+    @patch("worker.query.connections.build_driver")
     def test_connections_source_type_filter(
         self, mock_gdb: MagicMock, mock_qdrant_cls: MagicMock
     ) -> None:
@@ -350,7 +350,7 @@ class TestConnectionsSourceTypeFilter:
         mock_qdrant.scroll.return_value = ([task_point], None)
         mock_qdrant.search.return_value = []
 
-        mock_gdb.driver.return_value.session.side_effect = []
+        mock_gdb.return_value.session.side_effect = []
 
         querier.suggest(source_type="omnifocus")
 
@@ -365,7 +365,7 @@ class TestConnectionsLimit:
     """limit parameter caps the returned suggestions, sorted DESC by similarity."""
 
     @patch("worker.query.connections.QdrantClient")
-    @patch("worker.query.connections.GraphDatabase")
+    @patch("worker.query.connections.build_driver")
     def test_connections_limit(
         self, mock_gdb: MagicMock, mock_qdrant_cls: MagicMock
     ) -> None:
@@ -401,7 +401,7 @@ class TestConnectionsLimit:
         ]
         edge_session = _neo4j_session_returning(edge_records)
         node_session = _neo4j_session_returning(node_records)
-        mock_gdb.driver.return_value.session.side_effect = [edge_session, node_session]
+        mock_gdb.return_value.session.side_effect = [edge_session, node_session]
 
         result = querier.suggest(limit=5)
 
@@ -414,7 +414,7 @@ class TestConnectionsEmptyGraph:
     """When Qdrant returns no similar docs, result is empty, no error."""
 
     @patch("worker.query.connections.QdrantClient")
-    @patch("worker.query.connections.GraphDatabase")
+    @patch("worker.query.connections.build_driver")
     def test_connections_empty_graph(
         self, mock_gdb: MagicMock, mock_qdrant_cls: MagicMock
     ) -> None:
@@ -426,7 +426,7 @@ class TestConnectionsEmptyGraph:
         mock_qdrant.search.return_value = []
 
         # No Neo4j calls expected
-        mock_gdb.driver.return_value.session.side_effect = []
+        mock_gdb.return_value.session.side_effect = []
 
         result = querier.suggest()
 
@@ -438,7 +438,7 @@ class TestConnectionsDeduplicatesSameDocChunks:
     """Multiple chunks from the same source_id must not be suggested as connections."""
 
     @patch("worker.query.connections.QdrantClient")
-    @patch("worker.query.connections.GraphDatabase")
+    @patch("worker.query.connections.build_driver")
     def test_connections_deduplicates_same_doc_chunks(
         self, mock_gdb: MagicMock, mock_qdrant_cls: MagicMock
     ) -> None:
@@ -475,7 +475,7 @@ class TestConnectionsDeduplicatesSameDocChunks:
                 },
             ]
         )
-        mock_gdb.driver.return_value.session.side_effect = [edge_session, node_session]
+        mock_gdb.return_value.session.side_effect = [edge_session, node_session]
 
         result = querier.suggest()
 
@@ -487,7 +487,7 @@ class TestConnectionsBatchEdgeCheck:
     """Neo4j must be called exactly once (UNWIND), not per pair."""
 
     @patch("worker.query.connections.QdrantClient")
-    @patch("worker.query.connections.GraphDatabase")
+    @patch("worker.query.connections.build_driver")
     def test_connections_batch_edge_check(
         self, mock_gdb: MagicMock, mock_qdrant_cls: MagicMock
     ) -> None:
@@ -524,7 +524,7 @@ class TestConnectionsBatchEdgeCheck:
         edge_session = _neo4j_session_returning(edge_records)
         node_session = _neo4j_session_returning(node_records)
 
-        driver = mock_gdb.driver.return_value
+        driver = mock_gdb.return_value
         driver.session.side_effect = [edge_session, node_session]
 
         querier.suggest()
@@ -540,7 +540,7 @@ class TestConnectionsEnrichment:
     """Node metadata (label, title, source_type) must be set on SuggestedConnection."""
 
     @patch("worker.query.connections.QdrantClient")
-    @patch("worker.query.connections.GraphDatabase")
+    @patch("worker.query.connections.build_driver")
     def test_connections_enrichment(
         self, mock_gdb: MagicMock, mock_qdrant_cls: MagicMock
     ) -> None:
@@ -572,7 +572,7 @@ class TestConnectionsEnrichment:
                 },
             ]
         )
-        mock_gdb.driver.return_value.session.side_effect = [edge_session, node_session]
+        mock_gdb.return_value.session.side_effect = [edge_session, node_session]
 
         result = querier.suggest()
 

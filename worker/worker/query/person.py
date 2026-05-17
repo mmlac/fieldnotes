@@ -27,10 +27,11 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
-from neo4j import Driver, GraphDatabase
+from neo4j import Driver
 from rapidfuzz import fuzz
 
 from worker.config import Neo4jConfig
+from worker.neo4j_driver import build_driver
 from worker.parsers.base import canonicalize_email
 
 logger = logging.getLogger(__name__)
@@ -141,7 +142,7 @@ class PersonProfile:
 
 def _open_driver(neo4j_cfg: Neo4jConfig | None) -> Driver:
     cfg = neo4j_cfg or Neo4jConfig()
-    return GraphDatabase.driver(cfg.uri, auth=(cfg.user, cfg.password))
+    return build_driver(cfg.uri, cfg.user, cfg.password)
 
 
 def _person_from_row(row: dict[str, Any]) -> Person:

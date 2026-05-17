@@ -20,11 +20,11 @@ import signal
 import sys
 import time
 from pathlib import Path
-from neo4j import GraphDatabase
 from qdrant_client import QdrantClient
 
 from worker.clustering.scheduler import clustering_loop
 from worker.config import Config, load_config
+from worker.neo4j_driver import build_driver
 from worker.log_sanitizer import SanitizingFormatter, redact_uri
 from worker.metrics import (
     DEFAULT_COLLECT_INTERVAL,
@@ -111,10 +111,7 @@ def _setup_logging(level: str, *, log_file: Path | None = None) -> None:
 
 def _check_neo4j(cfg: Config) -> None:
     """Verify Neo4j is reachable."""
-    driver = GraphDatabase.driver(
-        cfg.neo4j.uri,
-        auth=(cfg.neo4j.user, cfg.neo4j.password),
-    )
+    driver = build_driver(cfg.neo4j.uri, cfg.neo4j.user, cfg.neo4j.password)
     try:
         driver.verify_connectivity()
         logger.info("Neo4j connection OK (%s)", redact_uri(cfg.neo4j.uri))

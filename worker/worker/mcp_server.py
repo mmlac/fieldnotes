@@ -25,12 +25,12 @@ from typing import Any
 import anyio
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
-from neo4j import GraphDatabase
 from mcp.shared.session import SessionMessage
 from mcp.types import JSONRPCMessage, TextContent, Tool
 
 from worker.circuit_breaker import all_breakers
 from worker.config import Config, load_config
+from worker.neo4j_driver import build_driver
 from worker.models.base import CompletionRequest
 from worker.models.resolver import ModelRegistry
 
@@ -1316,9 +1316,10 @@ class FieldnotesServer:
                 completion_model is not None and itin.events
             )
             if needs_driver:
-                drv = GraphDatabase.driver(
+                drv = build_driver(
                     self._cfg.neo4j.uri,
-                    auth=(self._cfg.neo4j.user, self._cfg.neo4j.password),
+                    self._cfg.neo4j.user,
+                    self._cfg.neo4j.password,
                 )
                 try:
                     for ewl in itin.events:
@@ -1389,9 +1390,10 @@ class FieldnotesServer:
             except ValueError as exc:
                 return [_person_error(f"Invalid 'horizon': {exc}")]
 
-            drv = GraphDatabase.driver(
+            drv = build_driver(
                 self._cfg.neo4j.uri,
-                auth=(self._cfg.neo4j.user, self._cfg.neo4j.password),
+                self._cfg.neo4j.user,
+                self._cfg.neo4j.password,
             )
             try:
                 brief, _ = generate_brief(

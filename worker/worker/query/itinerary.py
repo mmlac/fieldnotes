@@ -19,9 +19,10 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone, tzinfo
 from typing import Any
 
-from neo4j import Driver, GraphDatabase
+from neo4j import Driver
 
 from worker.config import Neo4jConfig, QdrantConfig
+from worker.neo4j_driver import build_driver
 
 logger = logging.getLogger(__name__)
 
@@ -134,7 +135,7 @@ class Itinerary:
 
 def _open_driver(neo4j_cfg: Neo4jConfig | None) -> Driver:
     cfg = neo4j_cfg or Neo4jConfig()
-    return GraphDatabase.driver(cfg.uri, auth=(cfg.user, cfg.password))
+    return build_driver(cfg.uri, cfg.user, cfg.password)
 
 
 def _local_tz(tz: tzinfo | None) -> tzinfo:

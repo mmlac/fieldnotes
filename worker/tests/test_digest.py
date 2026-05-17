@@ -36,9 +36,9 @@ def _make_querier(
     source_rows_by_call: list of row lists, one per source-type execute_read call.
     connections_rows / topics_rows: rows for those specific queries.
     """
-    with patch("worker.query.digest.GraphDatabase") as mock_gdb_cls:
+    with patch("worker.query.digest.build_driver") as mock_gdb_cls:
         mock_driver = MagicMock()
-        mock_gdb_cls.driver.return_value = mock_driver
+        mock_gdb_cls.return_value = mock_driver
 
         # Build the per-call return queue.
         # _query_sources makes one execute_read per source type (5 total by default).
@@ -144,7 +144,7 @@ def _source_row(
 class TestDigestDefault24h:
     """Default query returns sources for all active source types."""
 
-    @patch("worker.query.digest.GraphDatabase")
+    @patch("worker.query.digest.build_driver")
     def test_three_source_types_returned(self, mock_gdb_cls: MagicMock) -> None:
         # obsidian=2 modified, omnifocus=1 completed, gmail=3 new, repos=0, apps=0
         source_rows = [
@@ -164,7 +164,7 @@ class TestDigestDefault24h:
         assert "gmail" in source_types
         assert len(result.sources) == 3
 
-    @patch("worker.query.digest.GraphDatabase")
+    @patch("worker.query.digest.build_driver")
     def test_since_defaults_to_approx_24h_ago(self, mock_gdb_cls: MagicMock) -> None:
         querier, _ = _make_querier()
         before = datetime.now(timezone.utc)
@@ -178,7 +178,7 @@ class TestDigestDefault24h:
 
 
 class TestDigestCustomRange:
-    @patch("worker.query.digest.GraphDatabase")
+    @patch("worker.query.digest.build_driver")
     def test_7d_since_timestamp_is_7_days_ago(self, mock_gdb_cls: MagicMock) -> None:
         querier, _ = _make_querier()
         before = datetime.now(timezone.utc)
@@ -192,7 +192,7 @@ class TestDigestCustomRange:
 
 
 class TestDigestActivityCounts:
-    @patch("worker.query.digest.GraphDatabase")
+    @patch("worker.query.digest.build_driver")
     def test_counts_are_correct_per_source_type(self, mock_gdb_cls: MagicMock) -> None:
         source_rows = [
             [_source_row(modified=5, highlights=["a", "b"])],  # obsidian: 5 modified
@@ -217,7 +217,7 @@ class TestDigestActivityCounts:
 
 
 class TestDigestHighlightsLimitedTo5:
-    @patch("worker.query.digest.GraphDatabase")
+    @patch("worker.query.digest.build_driver")
     def test_highlights_at_most_5_entries(self, mock_gdb_cls: MagicMock) -> None:
         # Neo4j returns 20 titles, but the Cypher query uses $limit=5.
         # The querier passes _HIGHLIGHTS_LIMIT=5 to the query. We simulate
@@ -238,7 +238,7 @@ class TestDigestHighlightsLimitedTo5:
 
 
 class TestDigestNewConnectionsCount:
-    @patch("worker.query.digest.GraphDatabase")
+    @patch("worker.query.digest.build_driver")
     def test_new_connections_is_7(self, mock_gdb_cls: MagicMock) -> None:
         source_rows = [[_source_row(modified=1)]] + [[] for _ in range(4)]
         querier, _ = _make_querier(
@@ -251,7 +251,7 @@ class TestDigestNewConnectionsCount:
 
 
 class TestDigestNewTopicsCount:
-    @patch("worker.query.digest.GraphDatabase")
+    @patch("worker.query.digest.build_driver")
     def test_new_topics_is_2(self, mock_gdb_cls: MagicMock) -> None:
         source_rows = [[_source_row(modified=1)]] + [[] for _ in range(4)]
         querier, _ = _make_querier(
@@ -264,7 +264,7 @@ class TestDigestNewTopicsCount:
 
 
 class TestDigestNoActivity:
-    @patch("worker.query.digest.GraphDatabase")
+    @patch("worker.query.digest.build_driver")
     def test_no_activity_empty_sources_no_error(self, mock_gdb_cls: MagicMock) -> None:
         querier, _ = _make_querier(
             source_rows_by_call=[[] for _ in range(5)],
@@ -280,7 +280,7 @@ class TestDigestNoActivity:
 
 
 class TestDigestWithSummarize:
-    @patch("worker.query.digest.GraphDatabase")
+    @patch("worker.query.digest.build_driver")
     def test_summarize_true_populates_summary(self, mock_gdb_cls: MagicMock) -> None:
         from worker.cli.digest import run_digest
 
@@ -312,7 +312,7 @@ class TestDigestWithSummarize:
             assert rc == 0
             mock_gen_summary.assert_called_once()
 
-    @patch("worker.query.digest.GraphDatabase")
+    @patch("worker.query.digest.build_driver")
     def test_summary_field_is_populated(self, mock_gdb_cls: MagicMock) -> None:
         from worker.cli.digest import run_digest
 
@@ -345,7 +345,7 @@ class TestDigestWithSummarize:
 
 
 class TestDigestWithoutSummarize:
-    @patch("worker.query.digest.GraphDatabase")
+    @patch("worker.query.digest.build_driver")
     def test_summarize_false_no_llm_call(self, mock_gdb_cls: MagicMock) -> None:
         from worker.cli.digest import run_digest
 
@@ -368,7 +368,7 @@ class TestDigestWithoutSummarize:
             assert rc == 0
             mock_gen_summary.assert_not_called()
 
-    @patch("worker.query.digest.GraphDatabase")
+    @patch("worker.query.digest.build_driver")
     def test_default_no_llm_call(self, mock_gdb_cls: MagicMock) -> None:
         from worker.cli.digest import run_digest
 
@@ -392,7 +392,7 @@ class TestDigestWithoutSummarize:
 
 
 class TestDigestSourceTypeMissing:
-    @patch("worker.query.digest.GraphDatabase")
+    @patch("worker.query.digest.build_driver")
     def test_missing_source_types_excluded(self, mock_gdb_cls: MagicMock) -> None:
         # Only obsidian and gmail have activity; omnifocus/repos/apps return nothing.
         source_rows = [

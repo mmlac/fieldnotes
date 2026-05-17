@@ -158,7 +158,7 @@ class TestWriteMcpConfig:
 
 class TestValidateConnectivity:
     @patch("worker.gastown.QdrantClient")
-    @patch("worker.gastown.GraphDatabase")
+    @patch("worker.gastown.build_driver")
     def test_both_healthy(
         self,
         mock_gdb: MagicMock,
@@ -167,7 +167,7 @@ class TestValidateConnectivity:
         from worker.config import Config, Neo4jConfig, QdrantConfig
 
         driver = MagicMock()
-        mock_gdb.driver.return_value = driver
+        mock_gdb.return_value = driver
 
         client = MagicMock()
         mock_qdrant_cls.return_value = client
@@ -185,7 +185,7 @@ class TestValidateConnectivity:
         client.close.assert_called_once()
 
     @patch("worker.gastown.QdrantClient")
-    @patch("worker.gastown.GraphDatabase")
+    @patch("worker.gastown.build_driver")
     def test_neo4j_down(
         self,
         mock_gdb: MagicMock,
@@ -193,7 +193,7 @@ class TestValidateConnectivity:
     ) -> None:
         from worker.config import Config, Neo4jConfig, QdrantConfig
 
-        mock_gdb.driver.side_effect = ConnectionError("refused")
+        mock_gdb.side_effect = ConnectionError("refused")
         client = MagicMock()
         mock_qdrant_cls.return_value = client
 
@@ -207,7 +207,7 @@ class TestValidateConnectivity:
         assert health["qdrant"] == "ok"
 
     @patch("worker.gastown.QdrantClient")
-    @patch("worker.gastown.GraphDatabase")
+    @patch("worker.gastown.build_driver")
     def test_qdrant_down(
         self,
         mock_gdb: MagicMock,
@@ -216,7 +216,7 @@ class TestValidateConnectivity:
         from worker.config import Config, Neo4jConfig, QdrantConfig
 
         driver = MagicMock()
-        mock_gdb.driver.return_value = driver
+        mock_gdb.return_value = driver
         mock_qdrant_cls.return_value = MagicMock(
             get_collection=MagicMock(side_effect=ConnectionError("down"))
         )
@@ -231,7 +231,7 @@ class TestValidateConnectivity:
         assert "error" in health["qdrant"]
 
     @patch("worker.gastown.QdrantClient")
-    @patch("worker.gastown.GraphDatabase")
+    @patch("worker.gastown.build_driver")
     def test_neo4j_driver_closed_on_verify_failure(
         self,
         mock_gdb: MagicMock,
@@ -241,7 +241,7 @@ class TestValidateConnectivity:
 
         driver = MagicMock()
         driver.verify_connectivity.side_effect = RuntimeError("timeout")
-        mock_gdb.driver.return_value = driver
+        mock_gdb.return_value = driver
         mock_qdrant_cls.return_value = MagicMock()
 
         cfg = Config(
@@ -254,7 +254,7 @@ class TestValidateConnectivity:
         driver.close.assert_called_once()
 
     @patch("worker.gastown.QdrantClient")
-    @patch("worker.gastown.GraphDatabase")
+    @patch("worker.gastown.build_driver")
     def test_qdrant_client_closed_on_collection_failure(
         self,
         mock_gdb: MagicMock,
@@ -263,7 +263,7 @@ class TestValidateConnectivity:
         from worker.config import Config, Neo4jConfig, QdrantConfig
 
         driver = MagicMock()
-        mock_gdb.driver.return_value = driver
+        mock_gdb.return_value = driver
 
         client = MagicMock()
         client.get_collection.side_effect = RuntimeError("fail")
@@ -279,7 +279,7 @@ class TestValidateConnectivity:
         client.close.assert_called_once()
 
     @patch("worker.gastown.QdrantClient")
-    @patch("worker.gastown.GraphDatabase")
+    @patch("worker.gastown.build_driver")
     def test_error_does_not_leak_exception_message(
         self,
         mock_gdb: MagicMock,
@@ -288,7 +288,7 @@ class TestValidateConnectivity:
         """Raw exception messages must not appear in health output."""
         from worker.config import Config, Neo4jConfig, QdrantConfig
 
-        mock_gdb.driver.side_effect = ConnectionError(
+        mock_gdb.side_effect = ConnectionError(
             "bolt://admin:secret-pw@internal-neo4j:7687"
         )
         mock_qdrant_cls.return_value = MagicMock(

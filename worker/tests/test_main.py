@@ -147,25 +147,25 @@ class TestSetupLogging:
 
 
 class TestCheckNeo4j:
-    @patch("worker.main.GraphDatabase")
+    @patch("worker.main.build_driver")
     def test_success(self, mock_gdb):
         driver = MagicMock()
-        mock_gdb.driver.return_value = driver
+        mock_gdb.return_value = driver
 
         cfg = _cfg()
         _check_neo4j(cfg)
 
-        mock_gdb.driver.assert_called_once_with(
-            cfg.neo4j.uri, auth=(cfg.neo4j.user, cfg.neo4j.password)
+        mock_gdb.assert_called_once_with(
+            cfg.neo4j.uri, cfg.neo4j.user, cfg.neo4j.password
         )
         driver.verify_connectivity.assert_called_once()
         driver.close.assert_called_once()
 
-    @patch("worker.main.GraphDatabase")
+    @patch("worker.main.build_driver")
     def test_close_called_on_failure(self, mock_gdb):
         driver = MagicMock()
         driver.verify_connectivity.side_effect = ConnectionError("refused")
-        mock_gdb.driver.return_value = driver
+        mock_gdb.return_value = driver
 
         with pytest.raises(ConnectionError):
             _check_neo4j(_cfg())

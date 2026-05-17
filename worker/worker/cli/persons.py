@@ -9,9 +9,10 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Iterator
 
-from neo4j import GraphDatabase, Driver
+from neo4j import Driver
 
 from worker.config import load_config
+from worker.neo4j_driver import build_driver
 from worker.curation import (
     AuditLog,
     CurationError,
@@ -25,10 +26,7 @@ def _open_driver(config_path: Path | None) -> Iterator[tuple[Driver, str]]:
     """Open a Neo4j driver from ``config.toml`` and yield ``(driver, data_dir)``."""
     cfg = load_config(config_path)
     cfg.neo4j.validate()
-    driver = GraphDatabase.driver(
-        cfg.neo4j.uri,
-        auth=(cfg.neo4j.user, cfg.neo4j.password),
-    )
+    driver = build_driver(cfg.neo4j.uri, cfg.neo4j.user, cfg.neo4j.password)
     try:
         yield driver, cfg.core.data_dir
     finally:

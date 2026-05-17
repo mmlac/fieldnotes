@@ -176,7 +176,7 @@ async def test_person_tool_ambiguous_name_returns_disambiguation_error(
 
 @pytest.mark.asyncio
 @patch("worker.mcp_server.generate_brief")
-@patch("worker.mcp_server.GraphDatabase")
+@patch("worker.mcp_server.build_driver")
 @patch("worker.mcp_server.get_profile")
 async def test_person_tool_summary_true_returns_next_brief(
     mock_get_profile: MagicMock,
@@ -184,7 +184,7 @@ async def test_person_tool_summary_true_returns_next_brief(
     mock_generate_brief: MagicMock,
 ) -> None:
     mock_get_profile.return_value = _build_profile()
-    mock_graph_db.driver.return_value = MagicMock()
+    mock_graph_db.return_value = MagicMock()
     mock_generate_brief.return_value = (
         "- [Open OmniFocus tasks] follow up with Alice",
         MagicMock(),

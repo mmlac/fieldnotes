@@ -237,7 +237,7 @@ def _make_querier(
         MagicMock(**{"run.return_value": mock_tx_result})
     )
     mock_driver.session.return_value = mock_session
-    mock_gdb_cls.driver.return_value = mock_driver
+    mock_gdb_cls.return_value = mock_driver
 
     mock_chain = MagicMock()
     gen_chain = MagicMock()
@@ -260,7 +260,7 @@ def _make_querier(
 class TestGraphQuerier:
     """Tests for the GraphQuerier end-to-end flow with mocked deps."""
 
-    @patch("worker.query.graph.GraphDatabase")
+    @patch("worker.query.graph.build_driver")
     @patch("worker.query.graph.GraphCypherQAChain")
     @patch("worker.query.graph.Neo4jGraph")
     def test_query_returns_structured_result(
@@ -278,7 +278,7 @@ class TestGraphQuerier:
         assert result.answer == "Alice and Bob"
         assert result.error is None
 
-    @patch("worker.query.graph.GraphDatabase")
+    @patch("worker.query.graph.build_driver")
     @patch("worker.query.graph.GraphCypherQAChain")
     @patch("worker.query.graph.Neo4jGraph")
     def test_query_blocks_write_cypher_before_execution(
@@ -297,9 +297,9 @@ class TestGraphQuerier:
             querier.query("Do something bad")
 
         # Crucially, the write query must NOT have been executed.
-        mock_gdb_cls.driver.return_value.session.assert_not_called()
+        mock_gdb_cls.return_value.session.assert_not_called()
 
-    @patch("worker.query.graph.GraphDatabase")
+    @patch("worker.query.graph.build_driver")
     @patch("worker.query.graph.GraphCypherQAChain")
     @patch("worker.query.graph.Neo4jGraph")
     def test_query_handles_chain_exception(
@@ -319,7 +319,7 @@ class TestGraphQuerier:
         assert result.error == "neo4j down"
         assert result.cypher == ""
 
-    @patch("worker.query.graph.GraphDatabase")
+    @patch("worker.query.graph.build_driver")
     @patch("worker.query.graph.GraphCypherQAChain")
     @patch("worker.query.graph.Neo4jGraph")
     def test_query_uses_readonly_transaction(
@@ -332,12 +332,12 @@ class TestGraphQuerier:
         querier.query("Who is mentioned?")
 
         # Verify execute_read was called on the own driver (not _graph._driver).
-        mock_driver = mock_gdb_cls.driver.return_value
+        mock_driver = mock_gdb_cls.return_value
         mock_driver.session.assert_called_once()
         mock_session = mock_driver.session.return_value
         mock_session.execute_read.assert_called_once()
 
-    @patch("worker.query.graph.GraphDatabase")
+    @patch("worker.query.graph.build_driver")
     @patch("worker.query.graph.GraphCypherQAChain")
     @patch("worker.query.graph.Neo4jGraph")
     def test_query_passes_timeout_to_tx_run(
@@ -350,7 +350,7 @@ class TestGraphQuerier:
         querier.query("Who is mentioned?")
 
         # The work function passed to execute_read should call tx.run with timeout.
-        mock_driver = mock_gdb_cls.driver.return_value
+        mock_driver = mock_gdb_cls.return_value
         mock_session = mock_driver.session.return_value
         # execute_read was called with a function; that function calls tx.run
         # Our mock setup in _make_querier makes execute_read call fn(mock_tx).
@@ -365,7 +365,7 @@ class TestGraphQuerier:
         _, kwargs = mock_tx.run.call_args
         assert kwargs["timeout"] == 30
 
-    @patch("worker.query.graph.GraphDatabase")
+    @patch("worker.query.graph.build_driver")
     @patch("worker.query.graph.GraphCypherQAChain")
     @patch("worker.query.graph.Neo4jGraph")
     def test_refresh_schema(
@@ -393,7 +393,7 @@ class TestGraphQuerier:
         assert any("db.labels()" in c for c in cyphers)
         assert any("db.relationshipTypes()" in c for c in cyphers)
 
-    @patch("worker.query.graph.GraphDatabase")
+    @patch("worker.query.graph.build_driver")
     @patch("worker.query.graph.GraphCypherQAChain")
     @patch("worker.query.graph.Neo4jGraph")
     def test_close_calls_driver_close(
@@ -409,7 +409,7 @@ class TestGraphQuerier:
         assert querier._graph is None
         assert querier._driver is None
 
-    @patch("worker.query.graph.GraphDatabase")
+    @patch("worker.query.graph.build_driver")
     @patch("worker.query.graph.GraphCypherQAChain")
     @patch("worker.query.graph.Neo4jGraph")
     def test_close_idempotent(

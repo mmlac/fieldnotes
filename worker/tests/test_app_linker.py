@@ -271,11 +271,11 @@ class TestLinkAppsToTopics:
 
     @patch("worker.clustering.app_linker._write_edges")
     @patch("worker.clustering.app_linker._fetch_app_nodes")
-    @patch("worker.clustering.app_linker.GraphDatabase")
+    @patch("worker.clustering.app_linker.build_driver")
     def test_no_app_nodes(self, mock_gdb, mock_fetch, mock_write):
         mock_fetch.return_value = []
         mock_driver = MagicMock()
-        mock_gdb.driver.return_value = mock_driver
+        mock_gdb.return_value = mock_driver
 
         result = link_apps_to_topics(
             [_labeled()],
@@ -287,10 +287,10 @@ class TestLinkAppsToTopics:
 
     @patch("worker.clustering.app_linker._write_edges")
     @patch("worker.clustering.app_linker._fetch_app_nodes")
-    @patch("worker.clustering.app_linker.GraphDatabase")
+    @patch("worker.clustering.app_linker.build_driver")
     def test_full_pipeline(self, mock_gdb, mock_fetch, mock_write):
         mock_driver = MagicMock()
-        mock_gdb.driver.return_value = mock_driver
+        mock_gdb.return_value = mock_driver
         mock_fetch.return_value = [
             _app_node(description="Container management"),
         ]
@@ -321,11 +321,11 @@ class TestLinkAppsToTopics:
 
     @patch("worker.clustering.app_linker._write_edges")
     @patch("worker.clustering.app_linker._fetch_app_nodes")
-    @patch("worker.clustering.app_linker.GraphDatabase")
+    @patch("worker.clustering.app_linker.build_driver")
     def test_zero_apps_no_crash(self, mock_gdb, mock_fetch, mock_write):
         """Works with zero apps installed (no crash, no edges)."""
         mock_driver = MagicMock()
-        mock_gdb.driver.return_value = mock_driver
+        mock_gdb.return_value = mock_driver
         mock_fetch.return_value = []
 
         result = link_apps_to_topics(

@@ -27,9 +27,8 @@ from langchain_core.callbacks import CallbackManagerForLLMRun
 from langchain_core.messages import BaseMessage, AIMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 
-from neo4j import GraphDatabase
-
 from worker.config import Neo4jConfig
+from worker.neo4j_driver import build_driver
 from worker.models.resolver import ModelRegistry
 
 logger = logging.getLogger(__name__)
@@ -221,9 +220,10 @@ class GraphQuerier:
             # Maintain our own driver instance instead of reaching into
             # LangChain internals (_graph._driver) which are not part of the
             # public API and may break across versions.
-            self._driver = GraphDatabase.driver(
+            self._driver = build_driver(
                 neo4j_cfg.uri,
-                auth=(neo4j_cfg.user, neo4j_cfg.password),
+                neo4j_cfg.user,
+                neo4j_cfg.password,
                 connection_timeout=_CONNECTION_TIMEOUT_S,
                 max_transaction_retry_time=_MAX_TRANSACTION_RETRY_TIME_S,
             )

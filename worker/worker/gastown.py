@@ -13,10 +13,10 @@ import os
 import shutil
 from pathlib import Path
 
-from neo4j import GraphDatabase
 from qdrant_client import QdrantClient
 
 from worker.config import Config, load_config
+from worker.neo4j_driver import build_driver
 
 logger = logging.getLogger(__name__)
 
@@ -103,10 +103,7 @@ def validate_connectivity(
 
     # Neo4j
     try:
-        driver = GraphDatabase.driver(
-            cfg.neo4j.uri,
-            auth=(cfg.neo4j.user, cfg.neo4j.password),
-        )
+        driver = build_driver(cfg.neo4j.uri, cfg.neo4j.user, cfg.neo4j.password)
         try:
             driver.verify_connectivity()
             health["neo4j"] = "ok"

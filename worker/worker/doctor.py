@@ -504,12 +504,9 @@ def doctor(config_path: Path | None = None) -> int:
     # ── 4. Neo4j ────────────────────────────────────────────────────
     print("\nInfrastructure")
     try:
-        from neo4j import GraphDatabase
+        from worker.neo4j_driver import build_driver
 
-        driver = GraphDatabase.driver(
-            cfg.neo4j.uri,
-            auth=(cfg.neo4j.user, cfg.neo4j.password),
-        )
+        driver = build_driver(cfg.neo4j.uri, cfg.neo4j.user, cfg.neo4j.password)
         try:
             driver.verify_connectivity()
             _ok(f"Neo4j reachable ({cfg.neo4j.uri})")

@@ -21,9 +21,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from neo4j import Driver, GraphDatabase
+from neo4j import Driver
 
 from worker.config import Config, Neo4jConfig, load_config
+from worker.neo4j_driver import build_driver
 from worker.models.resolver import ModelRegistry
 from worker.query._time import parse_relative_time
 from worker.cli.person_brief_prompt import build_brief_request
@@ -133,9 +134,7 @@ def generate_brief(
 
 
 def _open_driver(neo4j_cfg: Neo4jConfig) -> Driver:
-    return GraphDatabase.driver(
-        neo4j_cfg.uri, auth=(neo4j_cfg.user, neo4j_cfg.password)
-    )
+    return build_driver(neo4j_cfg.uri, neo4j_cfg.user, neo4j_cfg.password)
 
 
 def _resolve_self(driver: Driver) -> Person | None:

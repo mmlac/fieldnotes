@@ -49,12 +49,9 @@ async def _check_neo4j_health(cfg: Config, driver: Any = None) -> dict[str, Any]
                 return {"status": "ok"}
             except Exception as exc:
                 return {"status": "unhealthy", "error": type(exc).__name__}
-        from neo4j import GraphDatabase
+        from worker.neo4j_driver import build_driver
 
-        d = GraphDatabase.driver(
-            cfg.neo4j.uri,
-            auth=(cfg.neo4j.user, cfg.neo4j.password),
-        )
+        d = build_driver(cfg.neo4j.uri, cfg.neo4j.user, cfg.neo4j.password)
         try:
             d.verify_connectivity()
             return {"status": "ok"}

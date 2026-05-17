@@ -60,9 +60,9 @@ def _unit(doc=None, **kwargs) -> WriteUnit:
 
 @pytest.fixture
 def mock_neo4j():
-    with patch("worker.pipeline.writer.GraphDatabase") as mock_gdb:
+    with patch("worker.pipeline.writer.build_driver") as mock_build:
         driver = MagicMock()
-        mock_gdb.driver.return_value = driver
+        mock_build.return_value = driver
         yield driver
 
 

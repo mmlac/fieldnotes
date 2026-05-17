@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from neo4j import GraphDatabase, Driver
+from neo4j import Driver
 from neo4j.exceptions import ServiceUnavailable, TransientError
 from qdrant_client import QdrantClient
 from tenacity import (
@@ -28,6 +28,7 @@ from tenacity import (
 from worker.clustering.cluster import ClusterResult
 from worker.clustering.labeler import LabeledCluster
 from worker.config import Neo4jConfig, QdrantConfig
+from worker.neo4j_driver import build_driver
 
 logger = logging.getLogger(__name__)
 
@@ -78,10 +79,7 @@ def write_clusters(
     # Resolve chunk IDs to source IDs via Qdrant
     source_map = _resolve_chunk_sources(chunk_ids_by_cluster, qdrant_cfg)
 
-    driver = GraphDatabase.driver(
-        neo4j_cfg.uri,
-        auth=(neo4j_cfg.user, neo4j_cfg.password),
-    )
+    driver = build_driver(neo4j_cfg.uri, neo4j_cfg.user, neo4j_cfg.password)
     try:
         _write_to_neo4j(driver, labeled, source_map)
     finally:

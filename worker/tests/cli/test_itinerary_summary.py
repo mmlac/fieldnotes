@@ -460,7 +460,7 @@ class TestMcpItinerary:
                     "worker.cli.itinerary.assemble_event_brief",
                     side_effect=_stub_assemble,
                 ),
-                patch("worker.mcp_server.GraphDatabase.driver") as mock_drv,
+                patch("worker.mcp_server.build_driver") as mock_drv,
             ):
                 mock_drv.return_value = MagicMock()
                 result = await server._handle_itinerary({"day": "2026-04-27"})

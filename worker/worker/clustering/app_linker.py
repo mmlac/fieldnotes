@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
-from neo4j import GraphDatabase, Driver
+from neo4j import Driver
 from neo4j.exceptions import ServiceUnavailable, TransientError
 from tenacity import (
     retry,
@@ -30,6 +30,7 @@ from worker.clustering.cluster import ClusterResult
 from worker.clustering.labeler import LabeledCluster
 from worker.config import Neo4jConfig
 from worker.models.base import EmbedRequest
+from worker.neo4j_driver import build_driver
 from worker.models.resolver import ModelRegistry
 
 logger = logging.getLogger(__name__)
@@ -94,10 +95,7 @@ def link_apps_to_topics(
 
     neo4j_cfg = neo4j_cfg or Neo4jConfig()
 
-    driver = GraphDatabase.driver(
-        neo4j_cfg.uri,
-        auth=(neo4j_cfg.user, neo4j_cfg.password),
-    )
+    driver = build_driver(neo4j_cfg.uri, neo4j_cfg.user, neo4j_cfg.password)
     try:
         apps = _fetch_app_nodes(driver)
         if not apps:

@@ -56,7 +56,7 @@ class TestNeo4jHealthCheck:
 
         mock_loop.return_value.run_in_executor = fake_executor
 
-        with patch("neo4j.GraphDatabase.driver", return_value=mock_driver):
+        with patch("worker.neo4j_driver.build_driver", return_value=mock_driver):
             result = await _check_neo4j_health(_cfg())
 
         assert result["status"] == "ok"
@@ -73,7 +73,7 @@ class TestNeo4jHealthCheck:
 
         mock_loop.return_value.run_in_executor = fake_executor
 
-        with patch("neo4j.GraphDatabase.driver", return_value=mock_driver):
+        with patch("worker.neo4j_driver.build_driver", return_value=mock_driver):
             result = await _check_neo4j_health(_cfg())
 
         assert result["status"] == "unhealthy"
@@ -82,7 +82,7 @@ class TestNeo4jHealthCheck:
     @pytest.mark.asyncio
     @patch("worker.health.asyncio.get_running_loop")
     async def test_reuses_provided_driver(self, mock_loop) -> None:
-        """Provided driver is used directly — no new GraphDatabase.driver() call."""
+        """Provided driver is used directly — no new build_driver() call."""
         mock_driver = MagicMock()
         mock_driver.verify_connectivity.return_value = None
 
@@ -91,7 +91,7 @@ class TestNeo4jHealthCheck:
 
         mock_loop.return_value.run_in_executor = fake_executor
 
-        with patch("neo4j.GraphDatabase.driver") as mock_factory:
+        with patch("worker.neo4j_driver.build_driver") as mock_factory:
             result = await _check_neo4j_health(_cfg(), driver=mock_driver)
 
         assert result["status"] == "ok"
@@ -110,7 +110,7 @@ class TestNeo4jHealthCheck:
 
         mock_loop.return_value.run_in_executor = fake_executor
 
-        with patch("neo4j.GraphDatabase.driver") as mock_factory:
+        with patch("worker.neo4j_driver.build_driver") as mock_factory:
             result = await _check_neo4j_health(_cfg(), driver=mock_driver)
 
         assert result["status"] == "unhealthy"

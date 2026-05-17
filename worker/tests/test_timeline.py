@@ -38,11 +38,11 @@ def _make_querier(
     Returns (querier, mock_driver, mock_qdrant).
     """
     with (
-        patch("worker.query.timeline.GraphDatabase") as mock_gdb_cls,
+        patch("worker.query.timeline.build_driver") as mock_gdb_cls,
         patch("worker.query.timeline.QdrantClient") as mock_qdrant_cls,
     ):
         mock_driver = MagicMock()
-        mock_gdb_cls.driver.return_value = mock_driver
+        mock_gdb_cls.return_value = mock_driver
 
         mock_session = MagicMock()
         mock_session.__enter__ = lambda s: s
@@ -161,7 +161,7 @@ class TestParseRelativeTime:
 class TestTimelineDefault24h:
     """Default query returns entries sorted by timestamp DESC."""
 
-    @patch("worker.query.timeline.GraphDatabase")
+    @patch("worker.query.timeline.build_driver")
     @patch("worker.query.timeline.QdrantClient")
     def test_three_entries_returned(
         self, mock_qdrant_cls: MagicMock, mock_gdb_cls: MagicMock
@@ -189,7 +189,7 @@ class TestTimelineDefault24h:
         ]
 
         mock_driver = MagicMock()
-        mock_gdb_cls.driver.return_value = mock_driver
+        mock_gdb_cls.return_value = mock_driver
         mock_session = MagicMock()
         mock_session.__enter__ = lambda s: s
         mock_session.__exit__ = MagicMock(return_value=False)
@@ -219,7 +219,7 @@ class TestTimelineDefault24h:
         assert result.since != ""
         assert result.until != ""
 
-    @patch("worker.query.timeline.GraphDatabase")
+    @patch("worker.query.timeline.build_driver")
     @patch("worker.query.timeline.QdrantClient")
     def test_source_types_mapped_correctly(
         self, mock_qdrant_cls: MagicMock, mock_gdb_cls: MagicMock
@@ -247,7 +247,7 @@ class TestTimelineDefault24h:
         ]
 
         mock_driver = MagicMock()
-        mock_gdb_cls.driver.return_value = mock_driver
+        mock_gdb_cls.return_value = mock_driver
         mock_session = MagicMock()
         mock_session.__enter__ = lambda s: s
         mock_session.__exit__ = MagicMock(return_value=False)
@@ -275,7 +275,7 @@ class TestTimelineDefault24h:
 class TestTimelineSourceFilter:
     """source_type filter routes to a narrower Cypher query."""
 
-    @patch("worker.query.timeline.GraphDatabase")
+    @patch("worker.query.timeline.build_driver")
     @patch("worker.query.timeline.QdrantClient")
     def test_omnifocus_filter_all_entries_have_correct_source_type(
         self, mock_qdrant_cls: MagicMock, mock_gdb_cls: MagicMock
@@ -297,7 +297,7 @@ class TestTimelineSourceFilter:
         ]
 
         mock_driver = MagicMock()
-        mock_gdb_cls.driver.return_value = mock_driver
+        mock_gdb_cls.return_value = mock_driver
         mock_session = MagicMock()
         mock_session.__enter__ = lambda s: s
         mock_session.__exit__ = MagicMock(return_value=False)
@@ -322,12 +322,12 @@ class TestTimelineSourceFilter:
         for entry in result.entries:
             assert entry.source_type == "omnifocus"
 
-    @patch("worker.query.timeline.GraphDatabase")
+    @patch("worker.query.timeline.build_driver")
     @patch("worker.query.timeline.QdrantClient")
     def test_invalid_source_type_returns_error(
         self, mock_qdrant_cls: MagicMock, mock_gdb_cls: MagicMock
     ) -> None:
-        mock_gdb_cls.driver.return_value = MagicMock()
+        mock_gdb_cls.return_value = MagicMock()
         mock_qdrant_cls.return_value = MagicMock()
 
         from worker.config import Neo4jConfig, QdrantConfig
@@ -345,13 +345,13 @@ class TestTimelineSourceFilter:
 class TestTimelineEmptyRange:
     """Empty Neo4j results produce an empty entry list, not an error."""
 
-    @patch("worker.query.timeline.GraphDatabase")
+    @patch("worker.query.timeline.build_driver")
     @patch("worker.query.timeline.QdrantClient")
     def test_empty_entries_no_error(
         self, mock_qdrant_cls: MagicMock, mock_gdb_cls: MagicMock
     ) -> None:
         mock_driver = MagicMock()
-        mock_gdb_cls.driver.return_value = mock_driver
+        mock_gdb_cls.return_value = mock_driver
         mock_session = MagicMock()
         mock_session.__enter__ = lambda s: s
         mock_session.__exit__ = MagicMock(return_value=False)
@@ -378,7 +378,7 @@ class TestTimelineEmptyRange:
 class TestTimelineLimit:
     """Limit parameter caps returned entries."""
 
-    @patch("worker.query.timeline.GraphDatabase")
+    @patch("worker.query.timeline.build_driver")
     @patch("worker.query.timeline.QdrantClient")
     def test_limit_passed_to_neo4j_query(
         self, mock_qdrant_cls: MagicMock, mock_gdb_cls: MagicMock
@@ -410,7 +410,7 @@ class TestTimelineLimit:
             return fn(mock_tx)
 
         mock_driver = MagicMock()
-        mock_gdb_cls.driver.return_value = mock_driver
+        mock_gdb_cls.return_value = mock_driver
         mock_session = MagicMock()
         mock_session.__enter__ = lambda s: s
         mock_session.__exit__ = MagicMock(return_value=False)
@@ -437,7 +437,7 @@ class TestTimelineLimit:
 class TestTimelineSnippetFromQdrant:
     """Snippets from Qdrant are attached to entries and truncated."""
 
-    @patch("worker.query.timeline.GraphDatabase")
+    @patch("worker.query.timeline.build_driver")
     @patch("worker.query.timeline.QdrantClient")
     def test_snippet_populated_and_truncated(
         self, mock_qdrant_cls: MagicMock, mock_gdb_cls: MagicMock
@@ -465,7 +465,7 @@ class TestTimelineSnippetFromQdrant:
         ]
 
         mock_driver = MagicMock()
-        mock_gdb_cls.driver.return_value = mock_driver
+        mock_gdb_cls.return_value = mock_driver
         mock_session = MagicMock()
         mock_session.__enter__ = lambda s: s
         mock_session.__exit__ = MagicMock(return_value=False)
@@ -496,7 +496,7 @@ class TestTimelineSnippetFromQdrant:
 class TestTimelineCompletedTaskEventType:
     """Tasks with status='completed' produce event_type='completed'."""
 
-    @patch("worker.query.timeline.GraphDatabase")
+    @patch("worker.query.timeline.build_driver")
     @patch("worker.query.timeline.QdrantClient")
     def test_completed_task_event_type(
         self, mock_qdrant_cls: MagicMock, mock_gdb_cls: MagicMock
@@ -513,7 +513,7 @@ class TestTimelineCompletedTaskEventType:
         ]
 
         mock_driver = MagicMock()
-        mock_gdb_cls.driver.return_value = mock_driver
+        mock_gdb_cls.return_value = mock_driver
         mock_session = MagicMock()
         mock_session.__enter__ = lambda s: s
         mock_session.__exit__ = MagicMock(return_value=False)
@@ -540,13 +540,13 @@ class TestTimelineCompletedTaskEventType:
 class TestTimelineNeo4jError:
     """Neo4j failures produce an error in the result, not an exception."""
 
-    @patch("worker.query.timeline.GraphDatabase")
+    @patch("worker.query.timeline.build_driver")
     @patch("worker.query.timeline.QdrantClient")
     def test_neo4j_exception_returns_error_result(
         self, mock_qdrant_cls: MagicMock, mock_gdb_cls: MagicMock
     ) -> None:
         mock_driver = MagicMock()
-        mock_gdb_cls.driver.return_value = mock_driver
+        mock_gdb_cls.return_value = mock_driver
         mock_session = MagicMock()
         mock_session.__enter__ = lambda s: s
         mock_session.__exit__ = MagicMock(return_value=False)
@@ -571,7 +571,7 @@ class TestTimelineNeo4jError:
 class TestTimelineQdrantFailureNonFatal:
     """Qdrant snippet failures don't fail the whole query."""
 
-    @patch("worker.query.timeline.GraphDatabase")
+    @patch("worker.query.timeline.build_driver")
     @patch("worker.query.timeline.QdrantClient")
     def test_qdrant_failure_returns_entries_without_snippets(
         self, mock_qdrant_cls: MagicMock, mock_gdb_cls: MagicMock
@@ -587,7 +587,7 @@ class TestTimelineQdrantFailureNonFatal:
         ]
 
         mock_driver = MagicMock()
-        mock_gdb_cls.driver.return_value = mock_driver
+        mock_gdb_cls.return_value = mock_driver
         mock_session = MagicMock()
         mock_session.__enter__ = lambda s: s
         mock_session.__exit__ = MagicMock(return_value=False)

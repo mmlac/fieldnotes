@@ -18,9 +18,10 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
-from neo4j import GraphDatabase, Driver
+from neo4j import Driver
 
 from worker.config import Neo4jConfig
+from worker.neo4j_driver import build_driver
 from worker.query._time import parse_relative_time
 
 logger = logging.getLogger(__name__)
@@ -170,10 +171,7 @@ class DigestQuerier:
 
     def __init__(self, neo4j_cfg: Neo4jConfig | None = None) -> None:
         neo4j_cfg = neo4j_cfg or Neo4jConfig()
-        self._driver: Driver = GraphDatabase.driver(
-            neo4j_cfg.uri,
-            auth=(neo4j_cfg.user, neo4j_cfg.password),
-        )
+        self._driver: Driver = build_driver(neo4j_cfg.uri, neo4j_cfg.user, neo4j_cfg.password)
 
     def query(
         self,

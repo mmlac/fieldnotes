@@ -249,7 +249,7 @@ async def test_itinerary_tool_brief_false_populates_next_brief(
     )
 
     server = _make_server(brief_text="Discuss roadmap. [Calendar]")
-    with patch("worker.mcp_server.GraphDatabase.driver") as mock_drv:
+    with patch("worker.mcp_server.build_driver") as mock_drv:
         mock_drv.return_value = MagicMock()
         result = await server._call_tool(
             "itinerary",

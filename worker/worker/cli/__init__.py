@@ -1111,15 +1111,14 @@ def main(argv: list[str] | None = None) -> int:
             neo4j_cfg = raw_cfg.get("neo4j", {})
             qdrant_cfg = raw_cfg.get("qdrant", {})
 
-            from neo4j import GraphDatabase
             from qdrant_client import QdrantClient
 
-            driver = GraphDatabase.driver(
+            from worker.neo4j_driver import build_driver
+
+            driver = build_driver(
                 neo4j_cfg.get("uri", "bolt://localhost:7687"),
-                auth=(
-                    neo4j_cfg.get("user", "neo4j"),
-                    neo4j_cfg.get("password", ""),
-                ),
+                neo4j_cfg.get("user", "neo4j"),
+                neo4j_cfg.get("password", ""),
             )
             qdrant = QdrantClient(
                 host=qdrant_cfg.get("host", "localhost"),

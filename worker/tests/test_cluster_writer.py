@@ -337,7 +337,7 @@ class TestWriteClusters:
 
         with (
             patch("worker.clustering.writer.QdrantClient") as MockQdrant,
-            patch("worker.clustering.writer.GraphDatabase") as MockGDB,
+            patch("worker.clustering.writer.build_driver") as MockGDB,
         ):
             qdrant = MockQdrant.return_value
             qdrant.retrieve.return_value = [
@@ -345,7 +345,7 @@ class TestWriteClusters:
             ]
 
             driver = MagicMock()
-            MockGDB.driver.return_value = driver
+            MockGDB.return_value = driver
             session = MagicMock()
             driver.session.return_value.__enter__ = MagicMock(return_value=session)
             driver.session.return_value.__exit__ = MagicMock(return_value=False)
@@ -357,12 +357,12 @@ class TestWriteClusters:
     def test_empty_clusters_skips_all(self) -> None:
         with (
             patch("worker.clustering.writer.QdrantClient") as MockQdrant,
-            patch("worker.clustering.writer.GraphDatabase") as MockGDB,
+            patch("worker.clustering.writer.build_driver") as MockGDB,
         ):
             write_clusters([], [])
 
             MockQdrant.assert_not_called()
-            MockGDB.driver.assert_not_called()
+            MockGDB.assert_not_called()
 
     def test_closes_neo4j_driver(self) -> None:
         labeled = [_labeled(cluster_id=0)]
@@ -370,7 +370,7 @@ class TestWriteClusters:
 
         with (
             patch("worker.clustering.writer.QdrantClient") as MockQdrant,
-            patch("worker.clustering.writer.GraphDatabase") as MockGDB,
+            patch("worker.clustering.writer.build_driver") as MockGDB,
         ):
             qdrant = MockQdrant.return_value
             qdrant.retrieve.return_value = [
@@ -378,7 +378,7 @@ class TestWriteClusters:
             ]
 
             driver = MagicMock()
-            MockGDB.driver.return_value = driver
+            MockGDB.return_value = driver
             session = MagicMock()
             driver.session.return_value.__enter__ = MagicMock(return_value=session)
             driver.session.return_value.__exit__ = MagicMock(return_value=False)
@@ -393,7 +393,7 @@ class TestWriteClusters:
 
         with (
             patch("worker.clustering.writer.QdrantClient") as MockQdrant,
-            patch("worker.clustering.writer.GraphDatabase") as MockGDB,
+            patch("worker.clustering.writer.build_driver") as MockGDB,
         ):
             qdrant = MockQdrant.return_value
             qdrant.retrieve.return_value = [
@@ -401,7 +401,7 @@ class TestWriteClusters:
             ]
 
             driver = MagicMock()
-            MockGDB.driver.return_value = driver
+            MockGDB.return_value = driver
             driver.session.side_effect = RuntimeError("connection failed")
 
             with pytest.raises(RuntimeError):
@@ -421,7 +421,7 @@ class TestWriteClusters:
 
         with (
             patch("worker.clustering.writer.QdrantClient") as MockQdrant,
-            patch("worker.clustering.writer.GraphDatabase") as MockGDB,
+            patch("worker.clustering.writer.build_driver") as MockGDB,
         ):
             qdrant = MockQdrant.return_value
             qdrant.retrieve.return_value = [
@@ -431,7 +431,7 @@ class TestWriteClusters:
             ]
 
             driver = MagicMock()
-            MockGDB.driver.return_value = driver
+            MockGDB.return_value = driver
             session = MagicMock()
             driver.session.return_value.__enter__ = MagicMock(return_value=session)
             driver.session.return_value.__exit__ = MagicMock(return_value=False)

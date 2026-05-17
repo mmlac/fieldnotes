@@ -11,11 +11,12 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
-from neo4j import GraphDatabase, Driver
+from neo4j import Driver
 from qdrant_client import QdrantClient
 from qdrant_client.models import FieldCondition, Filter, MatchValue
 
 from worker.config import Neo4jConfig, QdrantConfig
+from worker.neo4j_driver import build_driver
 
 logger = logging.getLogger(__name__)
 
@@ -70,10 +71,7 @@ class ConnectionQuerier:
     ) -> None:
         neo4j_cfg = neo4j_cfg or Neo4jConfig()
         qdrant_cfg = qdrant_cfg or QdrantConfig()
-        self._driver: Driver = GraphDatabase.driver(
-            neo4j_cfg.uri,
-            auth=(neo4j_cfg.user, neo4j_cfg.password),
-        )
+        self._driver: Driver = build_driver(neo4j_cfg.uri, neo4j_cfg.user, neo4j_cfg.password)
         self._qdrant = QdrantClient(host=qdrant_cfg.host, port=qdrant_cfg.port)
         self._collection = qdrant_cfg.collection
 

@@ -17,10 +17,11 @@ from datetime import datetime, timedelta, timezone, tzinfo
 from pathlib import Path
 from typing import Any
 
-from neo4j import Driver, GraphDatabase
+from neo4j import Driver
 
 from worker.cli.itinerary_brief_prompt import build_event_brief_request
 from worker.config import Config, Neo4jConfig, load_config
+from worker.neo4j_driver import build_driver
 from worker.query.itinerary import (
     EventWithLinks,
     Itinerary,
@@ -52,9 +53,7 @@ class BriefError(RuntimeError):
 
 
 def _open_driver(neo4j_cfg: Neo4jConfig) -> Driver:
-    return GraphDatabase.driver(
-        neo4j_cfg.uri, auth=(neo4j_cfg.user, neo4j_cfg.password)
-    )
+    return build_driver(neo4j_cfg.uri, neo4j_cfg.user, neo4j_cfg.password)
 
 
 def _parse_horizon(s: str) -> timedelta:

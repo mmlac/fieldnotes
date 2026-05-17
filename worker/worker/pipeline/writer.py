@@ -31,7 +31,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-from neo4j import GraphDatabase, Driver
+from neo4j import Driver
 from neo4j.exceptions import ServiceUnavailable, TransientError
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
@@ -52,6 +52,7 @@ from tenacity import (
 
 from worker.circuit_breaker import CircuitBreaker, CircuitOpenError
 from worker.config import MeConfig, Neo4jConfig, QdrantConfig
+from worker.neo4j_driver import build_driver
 from worker.log_sanitizer import sanitize_exception
 from worker.metrics import (
     CIRCUIT_BREAKER_REJECTIONS,
@@ -252,10 +253,7 @@ class Writer:
         neo4j_cfg = neo4j_cfg or Neo4jConfig()
         qdrant_cfg = qdrant_cfg or QdrantConfig()
 
-        self._neo4j_driver: Driver = GraphDatabase.driver(
-            neo4j_cfg.uri,
-            auth=(neo4j_cfg.user, neo4j_cfg.password),
-        )
+        self._neo4j_driver: Driver = build_driver(neo4j_cfg.uri, neo4j_cfg.user, neo4j_cfg.password)
         try:
             self._qdrant = QdrantClient(
                 host=qdrant_cfg.host,
