@@ -106,6 +106,23 @@ class Pipeline:
         """Hot-update the [me] config for end-of-batch self-identity reconciliation."""
         self._me_config = new_me
 
+    def reconcile_self_if_configured(self) -> None:
+        """Run self-identity reconciliation if [me] is configured.
+
+        Called by the per-event ingest loops in main.py and serve_daemon.py
+        after each queue event's documents are processed, mirroring the
+        end-of-batch reconciliation performed by process_batch().
+        """
+        if self._me_config is None:
+            return
+        try:
+            self._writer.reconcile_self_person(self._me_config)
+        except Exception:
+            logger.warning(
+                "Self-identity reconciliation failed — will retry on next event",
+                exc_info=True,
+            )
+
     def process(
         self,
         parsed_doc: ParsedDocument,

@@ -184,6 +184,58 @@ class TestSighupHandlerRemovedMeSection:
         assert pipeline._me_config is None
 
 
+class TestReconcileSelfIfConfigured:
+    """reconcile_self_if_configured() wires reload into the per-event ingest loop."""
+
+    def test_calls_reconcile_self_person_after_sighup(self, tmp_path):
+        """SIGHUP sets _me_config; reconcile_self_if_configured then calls
+        writer.reconcile_self_person with the reloaded config."""
+        config_file = tmp_path / "config.toml"
+        _write_config(config_file, emails=["me@example.com"], name="Test User")
+
+        pipeline = _make_pipeline(me_config=None)
+        handler = _build_sighup_handler(pipeline, config_file)
+        handler()  # simulate SIGHUP
+
+        assert pipeline._me_config is not None
+
+        # Simulate what the ingest event loop does after processing a queue event
+        pipeline.reconcile_self_if_configured()
+
+        pipeline._writer.reconcile_self_person.assert_called_once()
+        called_me = pipeline._writer.reconcile_self_person.call_args[0][0]
+        assert "me@example.com" in called_me.emails
+
+    def test_no_call_when_me_unset(self):
+        """reconcile_self_if_configured does nothing when _me_config is None."""
+        pipeline = _make_pipeline(me_config=None)
+        pipeline.reconcile_self_if_configured()
+        pipeline._writer.reconcile_self_person.assert_not_called()
+
+    def test_no_call_before_sighup(self, tmp_path):
+        """Without a SIGHUP reload, reconcile is not called even if a config exists."""
+        config_file = tmp_path / "config.toml"
+        _write_config(config_file, emails=["me@example.com"])
+
+        pipeline = _make_pipeline(me_config=None)
+        # Process an event WITHOUT triggering SIGHUP first
+        pipeline.reconcile_self_if_configured()
+        pipeline._writer.reconcile_self_person.assert_not_called()
+
+    def test_exception_in_reconcile_is_swallowed(self, tmp_path):
+        """A reconcile failure must not propagate to the caller (event loop)."""
+        config_file = tmp_path / "config.toml"
+        _write_config(config_file, emails=["me@example.com"])
+
+        pipeline = _make_pipeline(me_config=None)
+        handler = _build_sighup_handler(pipeline, config_file)
+        handler()
+
+        pipeline._writer.reconcile_self_person.side_effect = RuntimeError("db down")
+        # Must not raise
+        pipeline.reconcile_self_if_configured()
+
+
 class TestSighupHandlerLogging:
     def test_logs_reload_with_emails(self, tmp_path, caplog):
         config_file = tmp_path / "config.toml"

@@ -260,6 +260,7 @@ async def _run_daemon(cfg: Config, *, config_path: Path | None = None, progress_
                     process_task.result()  # re-raise if failed
                     QUEUE_DEPTH.set(queue.depth())
                 else:
+                    await loop.run_in_executor(None, pipeline.reconcile_self_if_configured)
                     queue.complete(queue_id)
                 if stop_event.is_set():
                     # Interrupted mid-document — item stays 'processing',

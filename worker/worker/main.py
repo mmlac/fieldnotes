@@ -378,6 +378,7 @@ async def _run(cfg: Config, *, config_path: Path | None = None) -> None:
                 parsed_docs = parser.parse(event)
                 for doc in parsed_docs:
                     await loop.run_in_executor(None, pipeline.process, doc)
+                await loop.run_in_executor(None, pipeline.reconcile_self_if_configured)
                 queue.complete(queue_id)
             except Exception:
                 logger.exception(
