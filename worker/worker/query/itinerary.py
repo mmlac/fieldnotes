@@ -688,7 +688,7 @@ def _qdrant_search(
 
 
 def _fetch_parents(
-    tx: Any, source_ids: list[str], attendee_pid_union: set[int]
+    tx: Any, source_ids: list[str], attendee_pid_union: set[str]
 ) -> dict[str, dict[str, Any]]:
     """Look up parent doc metadata + attendee overlap by source_id."""
     if not source_ids:
@@ -787,7 +787,7 @@ LIMIT 50
 
 
 def _recent_email_thread_tx(
-    tx: Any, attendee_clusters: list[list[int]], since_iso: str | None
+    tx: Any, attendee_clusters: list[list[str]], since_iso: str | None
 ) -> ThreadHit | None:
     rows = tx.run(
         _EMAIL_THREAD_CANDIDATES_CYPHER,
@@ -825,7 +825,7 @@ LIMIT 50
 
 
 def _recent_slack_window_tx(
-    tx: Any, attendee_clusters: list[list[int]], since_iso: str | None
+    tx: Any, attendee_clusters: list[list[str]], since_iso: str | None
 ) -> ThreadHit | None:
     rows = tx.run(
         _SLACK_WINDOW_CANDIDATES_CYPHER,
