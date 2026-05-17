@@ -877,6 +877,37 @@ Each step is fault-tolerant — a failure in one step logs a warning and proceed
 
 > **Details:** See [docs/similarity.md](docs/similarity.md) for the full entity resolution analysis including thresholds, match strategies, and architecture notes.
 
+### Cross-Source Document Linking (REFERENCES edges)
+
+When one document explicitly references another — an Obsidian note that embeds a `gmail://` link, a calendar event description that links to an Obsidian file, an email that pastes a Slack permalink — Fieldnotes creates a `REFERENCES` edge in the knowledge graph to capture that explicit connection.
+
+**What it connects:** `REFERENCES` edges link any of the four main text-bearing node types (`CalendarEvent`, `Email`, `SlackMessage`, `File`) to any other indexed node. The subject is always the document containing the link; the object is the document being linked to.
+
+**Predicate:** `REFERENCES` — carried on a directed edge `(subject)-[:REFERENCES]->(object)`.
+
+**Merge keys:** Both subject and object nodes MERGE on `source_id`, so edges automatically bind to existing nodes as long as the target has already been indexed. Objects not yet in the graph are created as stub nodes and gain full content on the next ingest cycle.
+
+**Confidence:** `1.0` — extracted from structured source-id URLs and Slack permalinks, not LLM inference.
+
+**Sources of REFERENCES edges:**
+
+| URL pattern in text | Object label | Example |
+|---|---|---|
+| `gmail://<account>/message/<id>` | `Email` | `gmail://work@gmail.com/message/abc123` |
+| `google-calendar://<account>/event/<id>` | `CalendarEvent` | `google-calendar://work@gmail.com/event/xyz` |
+| `omnifocus://task/<id>` (normalized to `omnifocus://<id>`) | `Task` | `omnifocus://task/A1B2C3` |
+| `slack://<team>/<channel>/<ts>` | `SlackMessage` | `slack://T01/C01/1234567890.000100` |
+| `obsidian://open?vault=<name>&file=<rel_path>` | `File` | `obsidian://open?vault=Personal&file=Meetings%2FKris.md` |
+| `https://<workspace>.slack.com/archives/<channel>/p<ts>` | `SlackMessage` | Slack permalink from browser |
+
+**Re-indexing existing data:** REFERENCES edges are only produced during fresh ingest. To backfill the existing corpus, run:
+
+```bash
+fieldnotes reindex-references [--dry-run] [--label LABEL]
+```
+
+See [`reindex-references`](#reindex-references-dry-run---label-label) in the CLI reference for details.
+
 ### Initial Scan and Cursor Persistence
 
 On first startup, file and obsidian sources walk all configured directories and index every matching file. A SHA256-based cursor is saved to disk after the scan completes, recording the hash and mtime of every indexed file.
@@ -1157,6 +1188,20 @@ fieldnotes [-c CONFIG] [-v] <command>
     Fallback Persons:    9
     Qdrant points:       417
   Dry run — no changes made.
+  ```
+
+**`reindex-references [--dry-run] [--label LABEL]`** — Backfill `REFERENCES` edges for the existing corpus. Walks `CalendarEvent`, `Email`, `SlackMessage`, and `File` (Obsidian) nodes in Neo4j, re-runs `extract_source_link_hints` against their stored chunk text, and upserts the resulting edges. Idempotent — safe to re-run; MERGE ensures duplicate edges are not created.
+  - `--dry-run` — Print how many edges would be created without writing to Neo4j.
+  - `--label LABEL` — Scope to one node type: `CalendarEvent`, `Email`, `SlackMessage`, or `ObsidianNote`. Default: all four.
+
+  Example:
+
+  ```bash
+  fieldnotes reindex-references --dry-run
+  Dry run — would create 147 REFERENCES edge(s) across 312 node(s).
+
+  fieldnotes reindex-references --label ObsidianNote
+  Created 89 REFERENCES edge(s) across 203 node(s).
   ```
 
 **`search <query> [-k N] [--no-rerank] [--rerank-top-k N]`** — Hybrid search combining graph traversal and vector similarity. Returns ranked results with source metadata. Results are reranked by a cross-encoder by default (see [Reranker](#reranker)); use `--no-rerank` to disable or `--rerank-top-k` to control how many candidates survive reranking.

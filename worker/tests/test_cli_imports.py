@@ -116,6 +116,16 @@ def _probe_timeline(mod: Any) -> None:
     assert mod._fmt_timestamp("2025-01-01T12:34:56Z").startswith("2025-01-01")
 
 
+def _probe_reindex_references(mod: Any) -> None:
+    from worker.cli.reindex_references import SUPPORTED_LABELS, run_reindex_references
+
+    assert callable(run_reindex_references)
+    assert "CalendarEvent" in SUPPORTED_LABELS
+    assert "Email" in SUPPORTED_LABELS
+    assert "SlackMessage" in SUPPORTED_LABELS
+    assert "ObsidianNote" in SUPPORTED_LABELS
+
+
 def _probe_persons(mod: Any) -> None:
     # Identifier parsing is the runtime-canary for the persons handlers —
     # it pulls in the whole curation package via re-export.
@@ -172,6 +182,7 @@ _PROBES: dict[str, Callable[[Any], None]] = {
     "migrate": _probe_migrate,
     "persons": _probe_persons,
     "queue": _probe_queue,
+    "reindex_references": _probe_reindex_references,
     "reformulator": _probe_reformulator,
     "stream": _probe_stream,
     "timeline": _probe_timeline,

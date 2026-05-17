@@ -582,6 +582,27 @@ def _build_parser() -> argparse.ArgumentParser:
         "migrate invocations.  Default: serialize.",
     )
 
+    # ── reindex-references ────────────────────────────────────────
+    reindex_p = sub.add_parser(
+        "reindex-references",
+        help="Backfill REFERENCES edges for existing corpus nodes",
+    )
+    reindex_p.add_argument(
+        "--dry-run",
+        action="store_true",
+        dest="dry_run",
+        help="Print edge counts without writing to Neo4j.",
+    )
+    reindex_p.add_argument(
+        "--label",
+        default=None,
+        metavar="LABEL",
+        help=(
+            "Scope backfill to one node type: CalendarEvent, Email, "
+            "SlackMessage, ObsidianNote. Default: all four."
+        ),
+    )
+
     # ── persons (curation) ─────────────────────────────────────────
     persons_p = sub.add_parser(
         "persons",
@@ -1146,6 +1167,19 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 1
+
+    if args.command == "reindex-references":
+        from worker.cli.reindex_references import run_reindex_references
+
+        try:
+            return run_reindex_references(
+                config_path=args.config,
+                dry_run=args.dry_run,
+                label=args.label,
+            )
+        except Exception as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
 
     if args.command == "cluster":
         from worker.cli.cluster import run_cluster
