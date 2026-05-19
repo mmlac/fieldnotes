@@ -177,6 +177,62 @@ def test_cross_source_resolve_skips_never_same_as(monkeypatch):
     assert "NOT (a)-[:NEVER_SAME_AS]-(b)" in cypher
 
 
+# -- regression: review finding fn-29g block 2 --
+# Entity nodes are merged on `name` and have no `source_id`.  The previous
+# guard `AND a.source_id <> b.source_id` evaluated to null/false for Entity
+# pairs, silently preventing all cross-source SAME_AS edges.  The fix uses
+# coalesce(…, elementId(…)) so nodes without source_id fall back to the
+# Neo4j element ID (always unique per node).
+
+
+def test_cross_source_entity_reconciliation_uses_coalesce_dedup(monkeypatch):
+    """SAME_AS MERGE guard must use coalesce(source_id, elementId) for Entity nodes.
+
+    Entity nodes are MERGE'd on name and never have source_id set.  Without
+    the coalesce fallback, ``a.source_id <> b.source_id`` evaluates to
+    null/false and no SAME_AS edges are created for cross-source Entity pairs.
+    """
+    writer, session = _writer_with_session()
+
+    from worker.pipeline import writer as writer_mod
+
+    fake_match = MagicMock()
+    fake_match.entity_a = "Python"
+    fake_match.entity_b = "python"
+    fake_match.confidence = 0.95
+    fake_match.match_type = "fuzzy_name"
+
+    monkeypatch.setattr(
+        writer_mod, "resolve_cross_source", lambda by_source: [fake_match]
+    )
+
+    src_record_1 = MagicMock()
+    src_record_1.__getitem__ = lambda self, key: {
+        "src_type": "gmail",
+        "entities": [{"name": "Python", "type": "Concept", "confidence": 1.0}],
+    }[key]
+    src_record_2 = MagicMock()
+    src_record_2.__getitem__ = lambda self, key: {
+        "src_type": "obsidian",
+        "entities": [{"name": "python", "type": "Concept", "confidence": 1.0}],
+    }[key]
+    src_result = MagicMock()
+    src_result.__iter__ = MagicMock(return_value=iter([src_record_1, src_record_2]))
+
+    person_result = MagicMock()
+    person_result.__iter__ = MagicMock(return_value=iter([]))
+
+    create_result = MagicMock()
+    create_result.single.return_value = {"cnt": 1}
+
+    session.run.side_effect = [src_result, person_result, create_result]
+
+    writer._resolve_cross_source_neo4j()
+
+    merge_cypher = session.run.call_args_list[2][0][0]
+    assert "coalesce(a.source_id, elementId(a)) <> coalesce(b.source_id, elementId(b))" in merge_cypher
+
+
 # ---------------------------------------------------------------------------
 # Self-identity reconcile
 # ---------------------------------------------------------------------------

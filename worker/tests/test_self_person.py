@@ -306,6 +306,75 @@ class TestReconcileSelfPersonWriter:
         assert "MERGE (a)-[r:SAME_AS]->(b)" in closure_cypher
         assert "is_self = true" not in closure_cypher.split("MERGE")[1]
 
+    # -- regression: review finding fn-29g block 1 --
+    # _reconcile_self_person_neo4j() previously created self Person nodes
+    # without source_id.  The pairwise gate `WHERE a.source_id < b.source_id`
+    # then evaluated to null/false for freshly-created nodes, silently
+    # creating zero SAME_AS edges.  The fix sets source_id via coalesce in
+    # Phase 1 so both freshly-created and pre-existing nodes always have a
+    # stable key for the comparison.
+
+    def test_phase1_sets_source_id_via_coalesce(self):
+        """Phase 1 MERGE must assign source_id so pairwise/closure gates work.
+
+        Without source_id set, ``WHERE a.source_id < b.source_id`` in Phase 2
+        evaluates to null/false for freshly-created self Person nodes, silently
+        producing zero SAME_AS edges for multi-email [me] configs.
+        The coalesce guard preserves any existing source_id while guaranteeing
+        new nodes get ``'person:' + email`` as a stable de-dup key.
+        """
+        writer, session = _make_writer_with_responses(
+            [
+                {"names": []},  # phase 1: fresh nodes, no existing names
+                {"cnt": 1},  # pairwise SAME_AS
+                {"cnt": 0},  # closure
+            ]
+        )
+        writer.reconcile_self_person(MeConfig(emails=["a@x.com", "b@x.com"]))
+
+        phase1_cypher = session.run.call_args_list[0][0][0]
+        assert "p.source_id = coalesce(p.source_id, 'person:' + email)" in phase1_cypher
+
+    def test_pairwise_gate_uses_source_id(self):
+        """Phase 2 pairwise query uses source_id (not elementId) for the gate.
+
+        Self Person nodes are guaranteed to have source_id after Phase 1,
+        so the plain a.source_id < b.source_id comparison is correct and
+        stable for them.
+
+        No display_name query runs when there are no existing names and no
+        me_cfg.name, so pairwise is call index 1 (after the Phase 1 MERGE).
+        """
+        writer, session = _make_writer_with_responses(
+            [
+                {"names": []},  # phase 1: no names -> chosen=None -> no display_name query
+                {"cnt": 1},    # pairwise SAME_AS (index 1)
+                {"cnt": 0},    # closure (index 2)
+            ]
+        )
+        writer.reconcile_self_person(MeConfig(emails=["a@x.com", "b@x.com"]))
+
+        pairwise_cypher = session.run.call_args_list[1][0][0]
+        assert "a.source_id < b.source_id" in pairwise_cypher
+
+    def test_closure_gate_uses_source_id(self):
+        """Phase 3 is_self closure gate uses source_id for ordering.
+
+        No display_name query runs when there are no existing names, so
+        closure is call index 2 (phase 1, pairwise, closure).
+        """
+        writer, session = _make_writer_with_responses(
+            [
+                {"names": []},  # phase 1
+                {"cnt": 1},    # pairwise (index 1)
+                {"cnt": 0},    # closure (index 2)
+            ]
+        )
+        writer.reconcile_self_person(MeConfig(emails=["a@x.com", "b@x.com"]))
+
+        closure_cypher = session.run.call_args_list[2][0][0]
+        assert "a.source_id < b.source_id" in closure_cypher
+
 
 # ---------------------------------------------------------------------------
 # Pipeline wiring — me_config is None vs set

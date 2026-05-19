@@ -12,9 +12,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from neo4j import GraphDatabase
-
 from worker.config import load_config
+from worker.neo4j_driver import build_driver
 from worker.parsers.base import extract_source_link_hints
 from worker.pipeline.writer import _write_graph_hint
 
@@ -122,10 +121,7 @@ def run_reindex_references(
 
     targets = [label] if label else list(_LABEL_SPEC)
 
-    driver = GraphDatabase.driver(
-        cfg.neo4j.uri,
-        auth=(cfg.neo4j.user, cfg.neo4j.password),
-    )
+    driver = build_driver(cfg.neo4j)
 
     total_nodes = 0
     total_edges = 0

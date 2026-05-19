@@ -978,7 +978,7 @@ class Writer:
                     MATCH (b:Entity {name: m.name_b})
                     WHERE NOT (a)-[:SAME_AS]-(b)
                       AND NOT (a)-[:NEVER_SAME_AS]-(b)
-                      AND a.source_id <> b.source_id
+                      AND coalesce(a.source_id, elementId(a)) <> coalesce(b.source_id, elementId(b))
                     MERGE (a)-[r:SAME_AS]->(b)
                     SET r.confidence = m.confidence,
                         r.match_type = m.match_type,
@@ -1060,7 +1060,8 @@ class Writer:
                 """
                 UNWIND $emails AS email
                 MERGE (p:Person {email: email})
-                SET p.is_self = true
+                SET p.is_self = true,
+                    p.source_id = coalesce(p.source_id, 'person:' + email)
                 RETURN collect(p.name) AS names
                 """,
                 emails=emails,
@@ -1203,7 +1204,7 @@ class Writer:
             result = session.run(
                 """
                 MATCH (a)-[:SAME_AS*2..4]-(b)
-                WHERE a.source_id < b.source_id
+                WHERE coalesce(a.source_id, elementId(a)) < coalesce(b.source_id, elementId(b))
                   AND NOT (a)-[:SAME_AS]-(b)
                   AND NOT (a)-[:NEVER_SAME_AS]-(b)
                 WITH DISTINCT a, b
