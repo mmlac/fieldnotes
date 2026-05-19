@@ -121,7 +121,7 @@ def run_reindex_references(
 
     targets = [label] if label else list(_LABEL_SPEC)
 
-    driver = build_driver(cfg.neo4j)
+    driver = build_driver(cfg.neo4j.uri, cfg.neo4j.user, cfg.neo4j.password)
 
     total_nodes = 0
     total_edges = 0

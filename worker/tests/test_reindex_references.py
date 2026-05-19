@@ -170,10 +170,10 @@ class TestReindexReferences_DryRun:
         session = _make_fixture_session()
         driver = _make_driver(session)
 
-        with patch("worker.cli.reindex_references.GraphDatabase") as mock_gdb, patch(
+        with patch("worker.cli.reindex_references.build_driver") as mock_bd, patch(
             "worker.cli.reindex_references.load_config"
         ) as mock_cfg:
-            mock_gdb.driver.return_value = driver
+            mock_bd.return_value = driver
             mock_cfg.return_value.neo4j.uri = "bolt://localhost:7687"
             mock_cfg.return_value.neo4j.user = "neo4j"
             mock_cfg.return_value.neo4j.password = ""
@@ -191,12 +191,12 @@ class TestReindexReferences_DryRun:
         session = _make_fixture_session()
         driver = _make_driver(session)
 
-        with patch("worker.cli.reindex_references.GraphDatabase") as mock_gdb, patch(
+        with patch("worker.cli.reindex_references.build_driver") as mock_bd, patch(
             "worker.cli.reindex_references.load_config"
         ) as mock_cfg, patch(
             "worker.cli.reindex_references._configure_vault_map"
         ):
-            mock_gdb.driver.return_value = driver
+            mock_bd.return_value = driver
             mock_cfg.return_value.neo4j.uri = "bolt://localhost:7687"
             mock_cfg.return_value.neo4j.user = "neo4j"
             mock_cfg.return_value.neo4j.password = ""
@@ -217,12 +217,12 @@ class TestReindexReferences_LiveRun:
         session = _make_fixture_session()
         driver = _make_driver(session)
 
-        with patch("worker.cli.reindex_references.GraphDatabase") as mock_gdb, patch(
+        with patch("worker.cli.reindex_references.build_driver") as mock_bd, patch(
             "worker.cli.reindex_references.load_config"
         ) as mock_cfg, patch(
             "worker.cli.reindex_references._configure_vault_map"
         ):
-            mock_gdb.driver.return_value = driver
+            mock_bd.return_value = driver
             mock_cfg.return_value.neo4j.uri = "bolt://localhost:7687"
             mock_cfg.return_value.neo4j.user = "neo4j"
             mock_cfg.return_value.neo4j.password = ""
@@ -238,12 +238,12 @@ class TestReindexReferences_LiveRun:
         session = _make_fixture_session()
         driver = _make_driver(session)
 
-        with patch("worker.cli.reindex_references.GraphDatabase") as mock_gdb, patch(
+        with patch("worker.cli.reindex_references.build_driver") as mock_bd, patch(
             "worker.cli.reindex_references.load_config"
         ) as mock_cfg, patch(
             "worker.cli.reindex_references._configure_vault_map"
         ):
-            mock_gdb.driver.return_value = driver
+            mock_bd.return_value = driver
             mock_cfg.return_value.neo4j.uri = "bolt://localhost:7687"
             mock_cfg.return_value.neo4j.user = "neo4j"
             mock_cfg.return_value.neo4j.password = ""
@@ -272,7 +272,7 @@ class TestReindexReferences_Idempotent:
         def _make_drv(sess):
             return _make_driver(sess)
 
-        with patch("worker.cli.reindex_references.GraphDatabase") as mock_gdb, patch(
+        with patch("worker.cli.reindex_references.build_driver") as mock_bd, patch(
             "worker.cli.reindex_references.load_config"
         ) as mock_cfg, patch(
             "worker.cli.reindex_references._configure_vault_map"
@@ -283,12 +283,12 @@ class TestReindexReferences_Idempotent:
             mock_cfg.return_value.sources = {}
 
             session1 = _make_session()
-            mock_gdb.driver.return_value = _make_drv(session1)
+            mock_bd.return_value = _make_drv(session1)
             run_reindex_references(dry_run=False)
             first_count = session1.execute_write.call_count
 
             session2 = _make_session()
-            mock_gdb.driver.return_value = _make_drv(session2)
+            mock_bd.return_value = _make_drv(session2)
             run_reindex_references(dry_run=False)
             second_count = session2.execute_write.call_count
 
@@ -304,12 +304,12 @@ class TestReindexReferences_LabelFilter:
         session = _make_fixture_session()
         driver = _make_driver(session)
 
-        with patch("worker.cli.reindex_references.GraphDatabase") as mock_gdb, patch(
+        with patch("worker.cli.reindex_references.build_driver") as mock_bd, patch(
             "worker.cli.reindex_references.load_config"
         ) as mock_cfg, patch(
             "worker.cli.reindex_references._configure_vault_map"
         ):
-            mock_gdb.driver.return_value = driver
+            mock_bd.return_value = driver
             mock_cfg.return_value.neo4j.uri = "bolt://localhost:7687"
             mock_cfg.return_value.neo4j.user = "neo4j"
             mock_cfg.return_value.neo4j.password = ""
@@ -322,7 +322,7 @@ class TestReindexReferences_LabelFilter:
         assert session.execute_write.call_count == 1
 
     def test_unknown_label_returns_error(self, capsys):
-        with patch("worker.cli.reindex_references.GraphDatabase"), patch(
+        with patch("worker.cli.reindex_references.build_driver"), patch(
             "worker.cli.reindex_references.load_config"
         ):
             rc = run_reindex_references(label="UnknownLabel")
@@ -335,12 +335,12 @@ class TestReindexReferences_LabelFilter:
         session = _make_fixture_session()
         driver = _make_driver(session)
 
-        with patch("worker.cli.reindex_references.GraphDatabase") as mock_gdb, patch(
+        with patch("worker.cli.reindex_references.build_driver") as mock_bd, patch(
             "worker.cli.reindex_references.load_config"
         ) as mock_cfg, patch(
             "worker.cli.reindex_references._configure_vault_map"
         ):
-            mock_gdb.driver.return_value = driver
+            mock_bd.return_value = driver
             mock_cfg.return_value.neo4j.uri = "bolt://localhost:7687"
             mock_cfg.return_value.neo4j.user = "neo4j"
             mock_cfg.return_value.neo4j.password = ""
@@ -383,12 +383,12 @@ class TestReindexReferences_HandlesMissingVaultMap:
         session.run.side_effect = _run
         driver = _make_driver(session)
 
-        with patch("worker.cli.reindex_references.GraphDatabase") as mock_gdb, patch(
+        with patch("worker.cli.reindex_references.build_driver") as mock_bd, patch(
             "worker.cli.reindex_references.load_config"
         ) as mock_cfg, patch(
             "worker.cli.reindex_references._configure_vault_map"
         ), patch("worker.parsers.base._obsidian_vaults", None):
-            mock_gdb.driver.return_value = driver
+            mock_bd.return_value = driver
             mock_cfg.return_value.neo4j.uri = "bolt://localhost:7687"
             mock_cfg.return_value.neo4j.user = "neo4j"
             mock_cfg.return_value.neo4j.password = ""
@@ -405,12 +405,12 @@ class TestReindexReferences_HandlesMissingVaultMap:
         session = _make_fixture_session()
         driver = _make_driver(session)
 
-        with patch("worker.cli.reindex_references.GraphDatabase") as mock_gdb, patch(
+        with patch("worker.cli.reindex_references.build_driver") as mock_bd, patch(
             "worker.cli.reindex_references.load_config"
         ) as mock_cfg, patch(
             "worker.cli.reindex_references._configure_vault_map"
         ), patch("worker.parsers.base._obsidian_vaults", None):
-            mock_gdb.driver.return_value = driver
+            mock_bd.return_value = driver
             mock_cfg.return_value.neo4j.uri = "bolt://localhost:7687"
             mock_cfg.return_value.neo4j.user = "neo4j"
             mock_cfg.return_value.neo4j.password = ""
