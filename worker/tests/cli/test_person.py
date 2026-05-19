@@ -74,7 +74,7 @@ def driver() -> Generator[Driver, None, None]:
 
 
 @pytest.fixture
-def seeded(driver: Driver) -> dict[str, int]:
+def seeded(driver: Driver) -> dict[str, str]:
     """Mirrors ``tests/query/test_person.py``: seed Alice with multi-source edges."""
     t_now = _NOW
     t_y = t_now - timedelta(days=1)
@@ -88,19 +88,23 @@ def seeded(driver: Driver) -> dict[str, int]:
     cypher = """
     MERGE (p_main:Person {email: 'alice@example.com'})
       SET p_main.name = 'Alice Example',
+          p_main.source_id = 'person:alice@example.com',
           p_main.slack_user_id = 'U-ALICE',
           p_main.team_id = 'T-TEAM'
     MERGE (p_alt:Person {email: 'alice.alt@example.com'})
-      SET p_alt.name = 'Alice Example'
+      SET p_alt.name = 'Alice Example',
+          p_alt.source_id = 'person:alice.alt@example.com'
     MERGE (p_main)-[r1:SAME_AS]->(p_alt)
       SET r1.match_type = 'fuzzy_name',
           r1.confidence = 0.97,
           r1.cross_source = true
 
     MERGE (p_bob:Person {email: 'bob@example.com'})
-      SET p_bob.name = 'Bob Builder'
+      SET p_bob.name = 'Bob Builder',
+          p_bob.source_id = 'person:bob@example.com'
     MERGE (p_alicia:Person {email: 'alicia@example.com'})
-      SET p_alicia.name = 'Alicia Example'
+      SET p_alicia.name = 'Alicia Example',
+          p_alicia.source_id = 'person:alicia@example.com'
 
     MERGE (e1:Email {source_id: 'gmail://1'})
       SET e1.subject = 'Project kickoff',  e1.date = $d_now
@@ -170,7 +174,7 @@ def seeded(driver: Driver) -> dict[str, int]:
     MERGE (f2)-[:MENTIONS]->(p_main)
     MERGE (f3)-[:MENTIONS]->(p_alt)
 
-    RETURN id(p_main) AS p_main_id
+    RETURN p_main.source_id AS p_main_id
     """
     params = {
         "d_now": _iso(t_now),
@@ -188,7 +192,7 @@ def seeded(driver: Driver) -> dict[str, int]:
     with driver.session() as s:
         rec = s.run(cypher, **params).single()
         assert rec is not None
-        return {k: int(v) for k, v in rec.data().items()}
+        return {k: str(v) for k, v in rec.data().items()}
 
 
 def _run(
@@ -251,7 +255,7 @@ class TestPersonParser:
 
 
 @_NEEDS_NEO4J
-def test_person_email_renders_all_sections(seeded: dict[str, int]) -> None:
+def test_person_email_renders_all_sections(seeded: dict[str, str]) -> None:
     code, out, _err = _run(identifier="alice@example.com", since="365d")
     assert code == 0
     # Header
@@ -277,7 +281,7 @@ def test_person_email_renders_all_sections(seeded: dict[str, int]) -> None:
 
 
 @_NEEDS_NEO4J
-def test_person_unknown_exits_nonzero(seeded: dict[str, int]) -> None:
+def test_person_unknown_exits_nonzero(seeded: dict[str, str]) -> None:
     code, _out, err = _run(identifier="ghost@nowhere.invalid")
     assert code == 1
     assert "No Person found" in err
@@ -290,7 +294,7 @@ def test_person_unknown_exits_nonzero(seeded: dict[str, int]) -> None:
 
 
 @_NEEDS_NEO4J
-def test_person_ambiguous_name_shows_disambiguation(seeded: dict[str, int]) -> None:
+def test_person_ambiguous_name_shows_disambiguation(seeded: dict[str, str]) -> None:
     code, _out, err = _run(identifier="Alic Example")
     assert code == 1
     assert "Ambiguous" in err
@@ -313,7 +317,7 @@ def test_person_self_without_me_block_errors() -> None:  # No Neo4j needed
 
 @_NEEDS_NEO4J
 def test_person_self_with_me_block_resolves(
-    driver: Driver, seeded: dict[str, int]
+    driver: Driver, seeded: dict[str, str]
 ) -> None:
     # Flag Alice as self in the graph
     with driver.session() as s:
@@ -345,7 +349,7 @@ _REQUIRED_JSON_KEYS = {
 
 
 @_NEEDS_NEO4J
-def test_person_json_schema_stable(seeded: dict[str, int]) -> None:
+def test_person_json_schema_stable(seeded: dict[str, str]) -> None:
     code, out, _err = _run(
         identifier="alice@example.com",
         since="365d",
@@ -401,7 +405,7 @@ def test_person_json_empty_sections_are_arrays(driver: Driver) -> None:
 
 
 @_NEEDS_NEO4J
-def test_person_limit_caps_rows(seeded: dict[str, int]) -> None:
+def test_person_limit_caps_rows(seeded: dict[str, str]) -> None:
     code, out, _err = _run(
         identifier="alice@example.com",
         since="365d",

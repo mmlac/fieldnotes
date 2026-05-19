@@ -79,8 +79,8 @@ def _clean_neo4j(driver: Driver) -> Generator[None, None, None]:
 
 
 @pytest.fixture
-def seeded(driver: Driver) -> dict[str, int]:
-    """Seed the graph and return a map of named-anchor → Neo4j internal id."""
+def seeded(driver: Driver) -> dict[str, str]:
+    """Seed the graph and return a map of named-anchor → source_id."""
     t_now = _NOW
     t_yesterday = t_now - timedelta(days=1)
     t_2d = t_now - timedelta(days=2)
@@ -94,10 +94,12 @@ def seeded(driver: Driver) -> dict[str, int]:
     // Subject Person — has two emails linked by SAME_AS, plus a Slack identity
     MERGE (p_main:Person {email: 'alice@example.com'})
       SET p_main.name = 'Alice Example',
+          p_main.source_id = 'person:alice@example.com',
           p_main.slack_user_id = 'U-ALICE',
           p_main.team_id = 'T-TEAM'
     MERGE (p_alt:Person {email: 'alice.alt@example.com'})
-      SET p_alt.name = 'Alice Example'
+      SET p_alt.name = 'Alice Example',
+          p_alt.source_id = 'person:alice.alt@example.com'
     MERGE (p_main)-[r1:SAME_AS]->(p_alt)
       SET r1.match_type = 'fuzzy_name',
           r1.confidence = 0.97,
@@ -105,13 +107,16 @@ def seeded(driver: Driver) -> dict[str, int]:
 
     // A related Person who shares 3 documents with Alice
     MERGE (p_bob:Person {email: 'bob@example.com'})
-      SET p_bob.name = 'Bob Builder'
+      SET p_bob.name = 'Bob Builder',
+          p_bob.source_id = 'person:bob@example.com'
 
     // Two unrelated Persons (one fuzzy-name conflict, one stranger)
     MERGE (p_alicia:Person {email: 'alicia@example.com'})
-      SET p_alicia.name = 'Alicia Example'
+      SET p_alicia.name = 'Alicia Example',
+          p_alicia.source_id = 'person:alicia@example.com'
     MERGE (p_stranger:Person {email: 'stranger@example.com'})
-      SET p_stranger.name = 'Stranger Person'
+      SET p_stranger.name = 'Stranger Person',
+          p_stranger.source_id = 'person:stranger@example.com'
 
     // Emails — 5 spanning multiple sources/dates
     MERGE (e1:Email {source_id: 'gmail://1'})
@@ -202,11 +207,11 @@ def seeded(driver: Driver) -> dict[str, int]:
     // Plus s2 (SENT_BY): Bob authored a slack msg that mentions Alice → 4
     // Stranger shares 0 documents with Alice.
 
-    RETURN id(p_main)     AS p_main_id,
-           id(p_alt)      AS p_alt_id,
-           id(p_bob)      AS p_bob_id,
-           id(p_alicia)   AS p_alicia_id,
-           id(p_stranger) AS p_stranger_id
+    RETURN p_main.source_id     AS p_main_id,
+           p_alt.source_id      AS p_alt_id,
+           p_bob.source_id      AS p_bob_id,
+           p_alicia.source_id   AS p_alicia_id,
+           p_stranger.source_id AS p_stranger_id
     """
     params = {
         "d_now": _iso(t_now),
@@ -224,7 +229,7 @@ def seeded(driver: Driver) -> dict[str, int]:
     with driver.session() as s:
         rec = s.run(cypher, **params).single()
         assert rec is not None
-        return {k: int(v) for k, v in rec.data().items()}
+        return {k: str(v) for k, v in rec.data().items()}
 
 
 # ---------------------------------------------------------------------------
@@ -233,25 +238,25 @@ def seeded(driver: Driver) -> dict[str, int]:
 
 
 def test_find_person_by_email_canonicalizes_googlemail(
-    driver: Driver, seeded: dict[str, int]
+    driver: Driver, seeded: dict[str, str]
 ) -> None:
     # Seed an alternative googlemail.com row that should canonicalize to gmail.com
     with driver.session() as s:
-        s.run("MERGE (p:Person {email: 'carol@gmail.com'}) SET p.name = 'Carol Gmail'")
+        s.run("MERGE (p:Person {email: 'carol@gmail.com'}) SET p.name = 'Carol Gmail', p.source_id = 'person:carol@gmail.com'")
 
     person = find_person("Carol@GoogleMail.com", driver=driver)
     assert isinstance(person, Person)
     assert person.email == "carol@gmail.com"
 
 
-def test_find_person_by_slack_user_id(driver: Driver, seeded: dict[str, int]) -> None:
+def test_find_person_by_slack_user_id(driver: Driver, seeded: dict[str, str]) -> None:
     person = find_person("slack-user:T-TEAM/U-ALICE", driver=driver)
     assert isinstance(person, Person)
     assert person.email == "alice@example.com"
 
 
 def test_find_person_fuzzy_name_returns_list_on_ambiguity(
-    driver: Driver, seeded: dict[str, int]
+    driver: Driver, seeded: dict[str, str]
 ) -> None:
     result = find_person("Alic Example", driver=driver)
     # Both 'Alice Example' (canonicalized to one cluster) and 'Alicia Example'
@@ -265,7 +270,7 @@ def test_find_person_fuzzy_name_returns_list_on_ambiguity(
 
 
 def test_find_person_returns_none_on_miss(
-    driver: Driver, seeded: dict[str, int]
+    driver: Driver, seeded: dict[str, str]
 ) -> None:
     assert find_person("ghost@nowhere.invalid", driver=driver) is None
     assert find_person("Zzz Unmatchable Name", driver=driver) is None
@@ -278,7 +283,7 @@ def test_find_person_returns_none_on_miss(
 
 
 def test_recent_interactions_orders_desc_and_respects_limit(
-    driver: Driver, seeded: dict[str, int]
+    driver: Driver, seeded: dict[str, str]
 ) -> None:
     pid = seeded["p_main_id"]
     # Resolve via find_person so we exercise canonicalisation.
@@ -300,7 +305,7 @@ def test_recent_interactions_orders_desc_and_respects_limit(
 
 
 def test_recent_interactions_filters_by_since(
-    driver: Driver, seeded: dict[str, int]
+    driver: Driver, seeded: dict[str, str]
 ) -> None:
     canonical = find_person("alice@example.com", driver=driver)
     assert isinstance(canonical, Person)
@@ -325,7 +330,7 @@ def test_recent_interactions_filters_by_since(
 
 
 def test_top_topics_counts_distinct_docs(
-    driver: Driver, seeded: dict[str, int]
+    driver: Driver, seeded: dict[str, str]
 ) -> None:
     canonical = find_person("alice@example.com", driver=driver)
     assert isinstance(canonical, Person)
@@ -344,7 +349,7 @@ def test_top_topics_counts_distinct_docs(
 
 
 def test_related_people_excludes_same_as_cluster(
-    driver: Driver, seeded: dict[str, int]
+    driver: Driver, seeded: dict[str, str]
 ) -> None:
     canonical = find_person("alice@example.com", driver=driver)
     assert isinstance(canonical, Person)
@@ -365,7 +370,7 @@ def test_related_people_excludes_same_as_cluster(
 
 
 def test_open_tasks_excludes_completed_and_dropped(
-    driver: Driver, seeded: dict[str, int]
+    driver: Driver, seeded: dict[str, str]
 ) -> None:
     canonical = find_person("alice@example.com", driver=driver)
     assert isinstance(canonical, Person)
@@ -389,7 +394,7 @@ def test_open_tasks_excludes_completed_and_dropped(
 
 
 def test_files_mentioning_orders_by_mtime(
-    driver: Driver, seeded: dict[str, int]
+    driver: Driver, seeded: dict[str, str]
 ) -> None:
     canonical = find_person("alice@example.com", driver=driver)
     assert isinstance(canonical, Person)
@@ -406,7 +411,7 @@ def test_files_mentioning_orders_by_mtime(
 
 
 def test_identity_cluster_returns_match_type_and_confidence(
-    driver: Driver, seeded: dict[str, int]
+    driver: Driver, seeded: dict[str, str]
 ) -> None:
     canonical = find_person("alice@example.com", driver=driver)
     assert isinstance(canonical, Person)
@@ -426,7 +431,7 @@ def test_identity_cluster_returns_match_type_and_confidence(
 
 
 def test_get_profile_aggregates_all_sections(
-    driver: Driver, seeded: dict[str, int]
+    driver: Driver, seeded: dict[str, str]
 ) -> None:
     profile = get_profile(
         "alice@example.com",

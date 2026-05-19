@@ -415,7 +415,7 @@ class PersonCurator:
                 {clause_a}
                 {clause_b}
                 RETURN exists((a)-[:NEVER_SAME_AS]-(b)) AS blocked,
-                       id(a) = id(b) AS same_node
+                       a.source_id = b.source_id AS same_node
                 """,
                 **params,
             ).single()

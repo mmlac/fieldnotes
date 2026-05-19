@@ -88,7 +88,7 @@ class PreBrief:
 
 
 _EMAIL_THREADS_CYPHER = """\
-MATCH (p:Person) WHERE id(p) IN $cluster
+MATCH (p:Person) WHERE p.source_id IN $cluster
 MATCH (p)-[:SENT]->(:Email)-[:PART_OF]->(t:Thread)
 WITH DISTINCT t
 MATCH (e:Email)-[:PART_OF]->(t)
@@ -96,7 +96,7 @@ WITH t, max(e.date) AS last_date
 MATCH (last:Email)-[:PART_OF]->(t)
 WHERE last.date = last_date
 MATCH (last)<-[:SENT]-(sender:Person)
-WHERE id(sender) IN $cluster
+WHERE sender.source_id IN $cluster
 RETURN COALESCE(t.subject, last.subject, '(no subject)') AS subject,
        last_date AS last_date,
        last.subject AS last_subject
@@ -105,7 +105,7 @@ ORDER BY last_date DESC
 
 
 def _email_threads(
-    driver: Driver, cluster: list[int], since: datetime, limit: int
+    driver: Driver, cluster: list[str], since: datetime, limit: int
 ) -> list[EmailThreadSnippet]:
     if not cluster:
         return []
@@ -133,7 +133,7 @@ def _email_threads(
 
 
 _SLACK_MENTIONS_CYPHER = """\
-MATCH (target:Person) WHERE id(target) IN $cluster
+MATCH (target:Person) WHERE target.source_id IN $cluster
 MATCH (s:SlackMessage)-[:SENT_BY]->(target)
 MATCH (s)-[:MENTIONS]->(self_p:Person)
 WHERE self_p.is_self = true OR self_p.email IN $self_emails
@@ -153,7 +153,7 @@ ORDER BY ts DESC
 
 def _slack_mentions(
     driver: Driver,
-    cluster: list[int],
+    cluster: list[str],
     since: datetime,
     self_emails: list[str],
     limit: int,
@@ -188,7 +188,7 @@ def _slack_mentions(
 
 
 _TOPICS_CYPHER = """\
-MATCH (p:Person) WHERE id(p) IN $cluster
+MATCH (p:Person) WHERE p.source_id IN $cluster
 MATCH (d)-[r]-(p)
 WHERE NOT d:Person AND type(r) IN $edge_types
 WITH DISTINCT d
@@ -197,7 +197,7 @@ WITH d, COALESCE(
 ) AS doc_ts
 WHERE doc_ts IS NOT NULL
 MATCH (d)-[:TAGGED]->(t:Topic)
-RETURN t.name AS topic_name, id(d) AS doc_id, doc_ts AS doc_ts
+RETURN t.name AS topic_name, d.source_id AS doc_id, doc_ts AS doc_ts
 """
 
 
@@ -214,7 +214,7 @@ _PERSON_DOC_EDGES = (
 
 
 def _top_active_topics(
-    driver: Driver, cluster: list[int], since: datetime, k: int
+    driver: Driver, cluster: list[str], since: datetime, k: int
 ) -> list[TopicCount]:
     if not cluster:
         return []
@@ -227,7 +227,7 @@ def _top_active_topics(
             ).data()
         )
     since_epoch = _epoch_seconds(since)
-    counts: dict[str, set[int]] = {}
+    counts: dict[str, set[str]] = {}
     for row in rows:
         ts = str(row.get("doc_ts") or "")
         epoch = _ts_to_epoch(ts)
@@ -236,7 +236,9 @@ def _top_active_topics(
         topic = str(row.get("topic_name") or "")
         if not topic:
             continue
-        counts.setdefault(topic, set()).add(int(row["doc_id"]))
+        doc_id = row.get("doc_id")
+        if doc_id is not None:
+            counts.setdefault(topic, set()).add(str(doc_id))
     ranked = sorted(
         ((name, len(ids)) for name, ids in counts.items()),
         key=lambda pair: (-pair[1], pair[0]),
@@ -300,7 +302,7 @@ def _obsidian_people_note(vault_path: Path | None, name: str) -> str | None:
 
 
 _SOURCE_TYPES_CYPHER = """\
-MATCH (p:Person) WHERE id(p) IN $cluster
+MATCH (p:Person) WHERE p.source_id IN $cluster
 OPTIONAL MATCH (p)-[:SENT]->(out:Email)
 OPTIONAL MATCH (e_in:Email)-[:TO|MENTIONS]->(p)
 OPTIONAL MATCH (c)-[:ATTENDED_BY|ORGANIZED_BY|CREATED_BY]->(p)
@@ -317,7 +319,7 @@ RETURN
 """
 
 
-def _source_count(driver: Driver, cluster: list[int]) -> int:
+def _source_count(driver: Driver, cluster: list[str]) -> int:
     if not cluster:
         return 0
     with driver.session() as session:

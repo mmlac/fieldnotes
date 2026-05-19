@@ -54,7 +54,7 @@ _SLACK_USER_PREFIX = "slack-user:"
 class Person:
     """A canonical Person node returned by :func:`find_person`."""
 
-    id: int
+    id: str
     email: str | None = None
     name: str | None = None
     slack_user_id: str | None = None
@@ -147,7 +147,7 @@ def _open_driver(neo4j_cfg: Neo4jConfig | None) -> Driver:
 
 def _person_from_row(row: dict[str, Any]) -> Person:
     return Person(
-        id=int(row["id"]),
+        id=str(row["id"]),
         email=row.get("email"),
         name=row.get("name"),
         slack_user_id=row.get("slack_user_id"),
@@ -157,31 +157,31 @@ def _person_from_row(row: dict[str, Any]) -> Person:
     )
 
 
-def _canonical_for_id(tx: Any, person_id: int) -> Person | None:
+def _canonical_for_id(tx: Any, person_id: str) -> Person | None:
     """Return the highest-degree Person in *person_id*'s SAME_AS cluster.
 
     Degree counts every edge except SAME_AS itself, so a richly-connected
     email-keyed Person beats a stub slack-user-keyed Person that only
-    carries identity edges.  Ties break on the lowest internal id for
+    carries identity edges.  Ties break on the lowest source_id for
     deterministic output.
     """
     row = tx.run(
         """
-        MATCH (seed:Person) WHERE id(seed) = $pid
+        MATCH (seed:Person) WHERE seed.source_id = $pid
         OPTIONAL MATCH (seed)-[:SAME_AS*0..]-(p:Person)
         WITH collect(DISTINCT p) + seed AS members
         UNWIND members AS m
         WITH DISTINCT m AS p
         OPTIONAL MATCH (p)-[r]-()
         WITH p, sum(CASE WHEN type(r) = 'SAME_AS' OR r IS NULL THEN 0 ELSE 1 END) AS deg
-        RETURN id(p) AS id,
+        RETURN p.source_id AS id,
                p.email AS email,
                p.name AS name,
                p.slack_user_id AS slack_user_id,
                p.team_id AS team_id,
                p.source_id AS source_id,
                COALESCE(p.is_self, false) AS is_self
-        ORDER BY deg DESC, id(p) ASC
+        ORDER BY deg DESC, p.source_id ASC
         LIMIT 1
         """,
         pid=person_id,
@@ -189,20 +189,20 @@ def _canonical_for_id(tx: Any, person_id: int) -> Person | None:
     return _person_from_row(row.data()) if row else None
 
 
-def _cluster_ids(tx: Any, person_id: int) -> list[int]:
-    """All Neo4j ids in *person_id*'s SAME_AS cluster (including itself)."""
+def _cluster_ids(tx: Any, person_id: str) -> list[str]:
+    """All source_ids in *person_id*'s SAME_AS cluster (including itself)."""
     rows = tx.run(
         """
-        MATCH (seed:Person) WHERE id(seed) = $pid
+        MATCH (seed:Person) WHERE seed.source_id = $pid
         OPTIONAL MATCH (seed)-[:SAME_AS*0..]-(p:Person)
         WITH collect(DISTINCT p) + seed AS members
         UNWIND members AS m
         WITH DISTINCT m
-        RETURN id(m) AS id
+        RETURN m.source_id AS id
         """,
         pid=person_id,
     ).data()
-    return [int(r["id"]) for r in rows]
+    return [str(r["id"]) for r in rows if r["id"] is not None]
 
 
 # ---------------------------------------------------------------------------
@@ -250,12 +250,12 @@ def _find_person_tx(tx: Any, identifier: str) -> Person | list[Person] | None:
     if "@" in text:
         norm = canonicalize_email(text)
         row = tx.run(
-            "MATCH (p:Person {email: $email}) RETURN id(p) AS id LIMIT 1",
+            "MATCH (p:Person {email: $email}) RETURN p.source_id AS id LIMIT 1",
             email=norm,
         ).single()
-        if not row:
+        if not row or row["id"] is None:
             return None
-        return _canonical_for_id(tx, int(row["id"]))
+        return _canonical_for_id(tx, str(row["id"]))
 
     # 2. Slack user
     if text.startswith(_SLACK_USER_PREFIX):
@@ -267,13 +267,13 @@ def _find_person_tx(tx: Any, identifier: str) -> Person | list[Person] | None:
             return None
         row = tx.run(
             "MATCH (p:Person {slack_user_id: $uid, team_id: $tid}) "
-            "RETURN id(p) AS id LIMIT 1",
+            "RETURN p.source_id AS id LIMIT 1",
             uid=user_id,
             tid=team_id,
         ).single()
-        if not row:
+        if not row or row["id"] is None:
             return None
-        return _canonical_for_id(tx, int(row["id"]))
+        return _canonical_for_id(tx, str(row["id"]))
 
     # 3. Fuzzy name
     return _find_by_fuzzy_name(tx, text)
@@ -284,21 +284,23 @@ def _find_by_fuzzy_name(tx: Any, query: str) -> Person | list[Person] | None:
         """
         MATCH (p:Person)
         WHERE p.name IS NOT NULL AND trim(p.name) <> ''
-        RETURN id(p) AS id, p.name AS name
+        RETURN p.source_id AS id, p.name AS name
         """
     ).data()
 
     target = query.lower()
-    hits: list[int] = []
+    hits: list[str] = []
     for row in rows:
+        if row["id"] is None:
+            continue
         score = fuzz.token_sort_ratio(target, str(row["name"]).lower())
         if score >= _FUZZY_NAME_THRESHOLD:
-            hits.append(int(row["id"]))
+            hits.append(str(row["id"]))
 
     if not hits:
         return None
 
-    canonicals: dict[int, Person] = {}
+    canonicals: dict[str, Person] = {}
     for hit_id in hits:
         person = _canonical_for_id(tx, hit_id)
         if person is not None:
@@ -317,9 +319,9 @@ def _find_by_fuzzy_name(tx: Any, query: str) -> Person | list[Person] | None:
 
 
 _INTERACTIONS_CYPHER = """\
-MATCH (p:Person) WHERE id(p) IN $cluster
+MATCH (p:Person) WHERE p.source_id IN $cluster
 MATCH (p)-[:SENT]->(e:Email)
-RETURN id(e) AS doc_id,
+RETURN e.source_id AS doc_id,
        COALESCE(e.date, '') AS ts,
        'gmail' AS source_type,
        COALESCE(e.subject, e.source_id, '(no subject)') AS title,
@@ -328,9 +330,9 @@ RETURN id(e) AS doc_id,
 
 UNION
 
-MATCH (p:Person) WHERE id(p) IN $cluster
+MATCH (p:Person) WHERE p.source_id IN $cluster
 MATCH (e:Email)-[r:TO|MENTIONS]->(p)
-RETURN id(e) AS doc_id,
+RETURN e.source_id AS doc_id,
        COALESCE(e.date, '') AS ts,
        'gmail' AS source_type,
        COALESCE(e.subject, e.source_id, '(no subject)') AS title,
@@ -339,10 +341,10 @@ RETURN id(e) AS doc_id,
 
 UNION
 
-MATCH (p:Person) WHERE id(p) IN $cluster
+MATCH (p:Person) WHERE p.source_id IN $cluster
 MATCH (c)-[r:ATTENDED_BY|ORGANIZED_BY|CREATED_BY]->(p)
 WHERE c:CalendarEvent OR c:CalendarSeries
-RETURN id(c) AS doc_id,
+RETURN c.source_id AS doc_id,
        COALESCE(c.start_time, '') AS ts,
        'google_calendar' AS source_type,
        COALESCE(c.summary, c.source_id, '(no summary)') AS title,
@@ -351,9 +353,9 @@ RETURN id(c) AS doc_id,
 
 UNION
 
-MATCH (p:Person) WHERE id(p) IN $cluster
+MATCH (p:Person) WHERE p.source_id IN $cluster
 MATCH (s:SlackMessage)-[r:SENT_BY|MENTIONS]->(p)
-RETURN id(s) AS doc_id,
+RETURN s.source_id AS doc_id,
        COALESCE(s.last_ts, s.first_ts, '') AS ts,
        'slack' AS source_type,
        COALESCE(s.channel_name, s.source_id, '(slack)') AS title,
@@ -362,9 +364,9 @@ RETURN id(s) AS doc_id,
 
 UNION
 
-MATCH (p:Person) WHERE id(p) IN $cluster
+MATCH (p:Person) WHERE p.source_id IN $cluster
 MATCH (f:File)-[:MENTIONS]->(p)
-RETURN id(f) AS doc_id,
+RETURN f.source_id AS doc_id,
        COALESCE(f.modified_at, f.updated, f.created, '') AS ts,
        'file' AS source_type,
        COALESCE(f.title, f.name, f.path, f.source_id, '(file)') AS title,
@@ -374,7 +376,7 @@ RETURN id(f) AS doc_id,
 
 
 def recent_interactions(
-    person_id: int,
+    person_id: str,
     since: datetime,
     *,
     limit: int = _DEFAULT_INTERACTION_LIMIT,
@@ -483,7 +485,7 @@ _PERSON_DOC_TYPES = (
 
 
 _TOP_TOPICS_CYPHER = """\
-MATCH (p:Person) WHERE id(p) IN $cluster
+MATCH (p:Person) WHERE p.source_id IN $cluster
 MATCH (d)-[r]-(p)
 WHERE NOT d:Person AND type(r) IN $edge_types
 MATCH (d)-[:TAGGED]->(t:Topic)
@@ -495,7 +497,7 @@ LIMIT $k
 
 
 def top_topics(
-    person_id: int,
+    person_id: str,
     *,
     k: int = _DEFAULT_TOPIC_LIMIT,
     neo4j_cfg: Neo4jConfig | None = None,
@@ -532,13 +534,13 @@ def top_topics(
 
 
 _RELATED_CYPHER = """\
-MATCH (p:Person) WHERE id(p) IN $cluster
+MATCH (p:Person) WHERE p.source_id IN $cluster
 MATCH (d)-[r1]-(p)
 WHERE NOT d:Person AND type(r1) IN $edge_types
 MATCH (d)-[r2]-(other:Person)
-WHERE NOT id(other) IN $cluster AND type(r2) IN $edge_types
+WHERE NOT other.source_id IN $cluster AND type(r2) IN $edge_types
 WITH other, count(DISTINCT d) AS shared_count
-RETURN id(other) AS other_id,
+RETURN other.source_id AS other_id,
        other.name AS name,
        other.email AS email,
        shared_count
@@ -548,7 +550,7 @@ LIMIT $k
 
 
 def related_people(
-    person_id: int,
+    person_id: str,
     *,
     k: int = _DEFAULT_RELATED_LIMIT,
     neo4j_cfg: Neo4jConfig | None = None,
@@ -592,7 +594,7 @@ def related_people(
 
 
 _OPEN_TASKS_CYPHER = """\
-MATCH (p:Person) WHERE id(p) IN $cluster
+MATCH (p:Person) WHERE p.source_id IN $cluster
 MATCH (t:Task)-[:MENTIONS]->(p)
 WHERE COALESCE(t.status, 'active') <> 'completed'
   AND COALESCE(t.status, 'active') <> 'dropped'
@@ -605,13 +607,13 @@ RETURN t.name AS title,
        t.due_date AS due,
        t.defer_date AS defer,
        COALESCE(t.flagged, false) AS flagged,
-       id(t) AS task_id
+       t.source_id AS task_id
 ORDER BY flagged DESC, due ASC, task_id ASC
 """
 
 
 def open_tasks(
-    person_id: int,
+    person_id: str,
     *,
     neo4j_cfg: Neo4jConfig | None = None,
     driver: Driver | None = None,
@@ -652,9 +654,9 @@ def open_tasks(
 
 
 _FILES_CYPHER = """\
-MATCH (p:Person) WHERE id(p) IN $cluster
+MATCH (p:Person) WHERE p.source_id IN $cluster
 MATCH (f:File)-[:MENTIONS]->(p)
-RETURN id(f) AS file_id,
+RETURN f.source_id AS file_id,
        COALESCE(f.path, f.source_id) AS path,
        COALESCE(f.modified_at, f.updated, f.created) AS mtime,
        f.source AS source
@@ -664,7 +666,7 @@ LIMIT $k
 
 
 def files_mentioning(
-    person_id: int,
+    person_id: str,
     *,
     k: int = _DEFAULT_FILES_LIMIT,
     neo4j_cfg: Neo4jConfig | None = None,
@@ -704,10 +706,10 @@ def files_mentioning(
 
 
 _CLUSTER_CYPHER = """\
-MATCH (seed:Person) WHERE id(seed) = $pid
+MATCH (seed:Person) WHERE seed.source_id = $pid
 OPTIONAL MATCH (seed)-[r:SAME_AS]-(other:Person)
-RETURN id(other) AS other_id,
-       COALESCE(other.email, other.source_id, toString(id(other))) AS member,
+RETURN other.source_id AS other_id,
+       COALESCE(other.email, other.source_id) AS member,
        r.match_type AS match_type,
        r.confidence AS confidence,
        r.cross_source AS cross_source
@@ -715,7 +717,7 @@ RETURN id(other) AS other_id,
 
 
 def identity_cluster(
-    person_id: int,
+    person_id: str,
     *,
     neo4j_cfg: Neo4jConfig | None = None,
     driver: Driver | None = None,

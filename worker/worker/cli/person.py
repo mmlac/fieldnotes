@@ -147,11 +147,11 @@ def _resolve_self(driver: Driver) -> Person | None:
 
     def _tx(tx: Any) -> Person | None:
         row = tx.run(
-            "MATCH (p:Person {is_self: true}) RETURN id(p) AS id LIMIT 1"
+            "MATCH (p:Person {is_self: true}) RETURN p.source_id AS id LIMIT 1"
         ).single()
-        if not row:
+        if not row or row["id"] is None:
             return None
-        return _canonical_for_id(tx, int(row["id"]))
+        return _canonical_for_id(tx, str(row["id"]))
 
     with driver.session() as session:
         return session.execute_read(_tx)
@@ -228,7 +228,7 @@ def _last_seen(profile: PersonProfile) -> str | None:
     return profile.recent_interactions[0].timestamp
 
 
-def _total_interactions(driver: Driver, person_id: int) -> int:
+def _total_interactions(driver: Driver, person_id: str) -> int:
     """Count every doc-edge from any cluster member, regardless of date."""
     with driver.session() as session:
         cluster = session.execute_read(_cluster_ids, person_id)
@@ -237,7 +237,7 @@ def _total_interactions(driver: Driver, person_id: int) -> int:
         rows = session.execute_read(
             lambda tx: tx.run(
                 """
-                MATCH (p:Person) WHERE id(p) IN $cluster
+                MATCH (p:Person) WHERE p.source_id IN $cluster
                 MATCH (d)-[r]-(p)
                 WHERE NOT d:Person AND type(r) <> 'SAME_AS'
                 RETURN count(DISTINCT d) AS total

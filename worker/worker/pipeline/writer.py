@@ -634,7 +634,7 @@ class Writer:
                 UNWIND persons AS a
                 UNWIND persons AS b
                 WITH a, b
-                WHERE id(a) < id(b)
+                WHERE a.source_id < b.source_id
                   AND NOT (a)-[:NEVER_SAME_AS]-(b)
                 MERGE (a)-[:SAME_AS]->(b)
                 """
@@ -676,7 +676,7 @@ class Writer:
                 UNWIND persons AS a
                 UNWIND persons AS b
                 WITH a, b
-                WHERE id(a) < id(b)
+                WHERE a.source_id < b.source_id
                   AND NOT (a)-[:SAME_AS]-(b)
                   AND NOT (a)-[:NEVER_SAME_AS]-(b)
                 MERGE (a)-[r:SAME_AS]->(b)
@@ -763,7 +763,7 @@ class Writer:
                 MATCH (b:Person {name: pair.name_b})
                 WHERE NOT (a)-[:SAME_AS]-(b)
                   AND NOT (a)-[:NEVER_SAME_AS]-(b)
-                  AND id(a) <> id(b)
+                  AND a.source_id <> b.source_id
                 MERGE (a)-[r:SAME_AS]->(b)
                 SET r.confidence = pair.confidence,
                     r.match_type = 'fuzzy_name',
@@ -978,7 +978,7 @@ class Writer:
                     MATCH (b:Entity {name: m.name_b})
                     WHERE NOT (a)-[:SAME_AS]-(b)
                       AND NOT (a)-[:NEVER_SAME_AS]-(b)
-                      AND id(a) <> id(b)
+                      AND a.source_id <> b.source_id
                     MERGE (a)-[r:SAME_AS]->(b)
                     SET r.confidence = m.confidence,
                         r.match_type = m.match_type,
@@ -1100,7 +1100,7 @@ class Writer:
                 UNWIND persons AS a
                 UNWIND persons AS b
                 WITH a, b
-                WHERE id(a) < id(b)
+                WHERE a.source_id < b.source_id
                   AND NOT (a)-[:SAME_AS]-(b)
                   AND NOT (a)-[:NEVER_SAME_AS]-(b)
                 MERGE (a)-[r:SAME_AS]->(b)
@@ -1122,7 +1122,7 @@ class Writer:
             closure_result = session.run(
                 """
                 MATCH path = (a:Person {is_self: true})-[:SAME_AS*2..4]-(b:Person {is_self: true})
-                WHERE id(a) < id(b)
+                WHERE a.source_id < b.source_id
                   AND NOT (a)-[:SAME_AS]-(b)
                   AND NOT (a)-[:NEVER_SAME_AS]-(b)
                   AND ALL(node IN nodes(path) WHERE node.is_self = true)
@@ -1203,7 +1203,7 @@ class Writer:
             result = session.run(
                 """
                 MATCH (a)-[:SAME_AS*2..4]-(b)
-                WHERE id(a) < id(b)
+                WHERE a.source_id < b.source_id
                   AND NOT (a)-[:SAME_AS]-(b)
                   AND NOT (a)-[:NEVER_SAME_AS]-(b)
                 WITH DISTINCT a, b
