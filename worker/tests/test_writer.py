@@ -18,6 +18,7 @@ from worker.pipeline.writer import (
     PREDICATE_SYNONYMS,
     WriteUnit,
     Writer,
+    _batch_upsert_entities,
     _chunk_node_id,
     _clean_source_edges,
     _clean_stale_edges,
@@ -194,6 +195,32 @@ class TestNeo4jHelpers:
         assert kwargs["confidence"] == 0.5
         assert kwargs["type"] == "Person"
 
+    def test_upsert_entity_sets_source_id(self):
+        """Entity MERGE must set source_id so SAME_AS guards can compare it.
+
+        Without source_id, ``WHERE a.source_id <> b.source_id`` evaluates to
+        null/false, silently preventing all cross-source Entity SAME_AS edges.
+        """
+        tx = MagicMock()
+        _upsert_entity(tx, {"name": "Neo4j", "type": "Technology", "confidence": 0.9})
+        args, _ = tx.run.call_args
+        cypher = args[0]
+        assert "e.source_id = coalesce(e.source_id, 'entity:' + $name)" in cypher
+
+    def test_batch_upsert_entities_sets_source_id(self):
+        """Batch Entity MERGE must set source_id on every node."""
+        tx = MagicMock()
+        _batch_upsert_entities(
+            tx,
+            [
+                {"name": "Python", "type": "Concept", "confidence": 1.0},
+                {"name": "Neo4j", "type": "Technology", "confidence": 0.9},
+            ],
+        )
+        args, _ = tx.run.call_args
+        cypher = args[0]
+        assert "ent.source_id = coalesce(ent.source_id, 'entity:' + e.name)" in cypher
+
     def test_merge_mentions_edge(self):
         tx = MagicMock()
         _merge_mentions_edge(tx, "notes/test.md", "Neo4j")
@@ -210,6 +237,16 @@ class TestNeo4jHelpers:
         tx.run.assert_called_once()
         args, _ = tx.run.call_args
         assert "RELATED_TO" in args[0]
+
+    def test_merge_entity_edge_sets_source_id_on_both_endpoints(self):
+        """Triple MERGE must set source_id on both subject and object Entity nodes."""
+        tx = MagicMock()
+        triple = {"subject": "Alice", "predicate": "KNOWS", "object": "Bob"}
+        _merge_entity_edge(tx, triple)
+        args, _ = tx.run.call_args
+        cypher = args[0]
+        assert "s.source_id = coalesce(s.source_id, 'entity:' + $subject)" in cypher
+        assert "o.source_id = coalesce(o.source_id, 'entity:' + $object)" in cypher
 
     def test_merge_entity_edge_allowed_predicate(self):
         """Whitelisted predicates are used as-is."""

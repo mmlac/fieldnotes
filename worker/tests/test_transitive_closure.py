@@ -45,7 +45,7 @@ class TestCloseSameAsTransitive:
         query = mock_session.run.call_args[0][0]
         # Verify key parts of the Cypher query
         assert "SAME_AS*2..4" in query
-        assert "coalesce(a.source_id, elementId(a)) < coalesce(b.source_id, elementId(b))" in query
+        assert "a.source_id < b.source_id" in query
         assert "NOT (a)-[:SAME_AS]-(b)" in query
         assert "MERGE" in query
         assert "transitive_closure" in query
@@ -91,15 +91,15 @@ class TestTransitiveClosureLogic:
         assert "->(" not in query.split("MATCH")[1].split("WHERE")[0]
 
     def test_query_prevents_self_loops(self):
-        """coalesce(a.source_id, elementId(a)) < coalesce(...) prevents self-loops.
+        """a.source_id < b.source_id de-dups unordered pairs and prevents self-loops.
 
-        Uses coalesce so nodes without source_id (e.g. Entity) use elementId
-        as the stable de-dup key — a node cannot equal itself via elementId.
+        All SAME_AS endpoint types (Person, Entity, CalendarEvent, etc.) have
+        source_id set by their creation paths, so the direct comparison is safe.
         """
         writer, mock_session = self._make_writer(created_count=0)
         writer._close_same_as_transitive_neo4j()
         query = mock_session.run.call_args[0][0]
-        assert "coalesce(a.source_id, elementId(a)) < coalesce(b.source_id, elementId(b))" in query
+        assert "a.source_id < b.source_id" in query
 
     def test_query_skips_existing_edges(self):
         """NOT (a)-[:SAME_AS]-(b) prevents duplicate edges."""

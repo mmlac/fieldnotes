@@ -978,7 +978,7 @@ class Writer:
                     MATCH (b:Entity {name: m.name_b})
                     WHERE NOT (a)-[:SAME_AS]-(b)
                       AND NOT (a)-[:NEVER_SAME_AS]-(b)
-                      AND coalesce(a.source_id, elementId(a)) <> coalesce(b.source_id, elementId(b))
+                      AND a.source_id <> b.source_id
                     MERGE (a)-[r:SAME_AS]->(b)
                     SET r.confidence = m.confidence,
                         r.match_type = m.match_type,
@@ -1204,7 +1204,7 @@ class Writer:
             result = session.run(
                 """
                 MATCH (a)-[:SAME_AS*2..4]-(b)
-                WHERE coalesce(a.source_id, elementId(a)) < coalesce(b.source_id, elementId(b))
+                WHERE a.source_id < b.source_id
                   AND NOT (a)-[:SAME_AS]-(b)
                   AND NOT (a)-[:NEVER_SAME_AS]-(b)
                 WITH DISTINCT a, b
@@ -1647,6 +1647,7 @@ def _upsert_entity(tx: Any, entity: dict[str, Any]) -> None:
                       e.confidence = $confidence
         ON MATCH SET e.type = CASE WHEN $confidence > e.confidence THEN $type ELSE e.type END,
                      e.confidence = CASE WHEN $confidence > e.confidence THEN $confidence ELSE e.confidence END
+        SET e.source_id = coalesce(e.source_id, 'entity:' + $name)
         """,
         name=name,
         type=entity.get("type", "Concept"),
@@ -1805,7 +1806,11 @@ def _merge_entity_edge(tx: Any, triple: dict[str, str]) -> None:
     tx.run(
         f"""
         MERGE (s:Entity {{name: $subject}})
+        SET s.source_id = coalesce(s.source_id, 'entity:' + $subject)
+        WITH s
         MERGE (o:Entity {{name: $object}})
+        SET o.source_id = coalesce(o.source_id, 'entity:' + $object)
+        WITH s, o
         MERGE (s)-[:{predicate}]->(o)
         """,
         subject=_truncate_entity_name(triple["subject"]),
@@ -1945,6 +1950,7 @@ def _batch_upsert_entities(tx: Any, entities: list[dict[str, Any]]) -> None:
                                      THEN e.type ELSE ent.type END,
                      ent.confidence = CASE WHEN e.confidence > ent.confidence
                                           THEN e.confidence ELSE ent.confidence END
+        SET ent.source_id = coalesce(ent.source_id, 'entity:' + e.name)
         """,
         entities=[
             {
