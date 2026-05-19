@@ -368,7 +368,7 @@ def driver() -> Generator[Driver, None, None]:
 
 
 @pytest.fixture
-def seeded(driver: Driver) -> dict[str, int]:
+def seeded(driver: Driver) -> dict[str, str]:
     """Seed Alice (target) + Self (you) with varied edges in horizon."""
     t_now = _NOW
     t_y = t_now - timedelta(days=1)
@@ -379,9 +379,11 @@ def seeded(driver: Driver) -> dict[str, int]:
 
     cypher = """
     MERGE (alice:Person {email: 'alice@example.com'})
-      SET alice.name = 'Alice Example'
+      SET alice.name = 'Alice Example',
+          alice.source_id = 'person:alice@example.com'
     MERGE (self:Person {email: 'self@example.com'})
-      SET self.name = 'Me', self.is_self = true
+      SET self.name = 'Me', self.is_self = true,
+          self.source_id = 'person:self@example.com'
 
     // Email thread Alice replied to last (you owe her)
     MERGE (th_open:Thread {source_id: 'gmail://acct/thread/T1'})
@@ -451,7 +453,7 @@ def seeded(driver: Driver) -> dict[str, int]:
       SET att.title = 'agenda.pdf'
     MERGE (att)-[:ATTACHED_TO]->(cal)
 
-    RETURN id(alice) AS alice_id
+    RETURN alice.source_id AS alice_id
     """
     params = {
         "d_now": _iso(t_now),
@@ -467,13 +469,13 @@ def seeded(driver: Driver) -> dict[str, int]:
     with driver.session() as s:
         rec = s.run(cypher, **params).single()
         assert rec is not None
-        return {"alice_id": int(rec["alice_id"])}
+        return {"alice_id": str(rec["alice_id"])}
 
 
 @_NEEDS_NEO4J
 class TestAssembleSeven:
     def test_summary_assembles_all_seven_input_blocks(
-        self, driver: Driver, seeded: dict[str, int]
+        self, driver: Driver, seeded: dict[str, str]
     ) -> None:
         """Acceptance: pre-brief includes all populated input blocks."""
         alice = Person(
@@ -506,7 +508,7 @@ class TestAssembleSeven:
         assert "Sign-off" in topic_names
 
     def test_summary_meeting_id_adds_event_block(
-        self, driver: Driver, seeded: dict[str, int]
+        self, driver: Driver, seeded: dict[str, str]
     ) -> None:
         """Acceptance: valid meeting_id pulls calendar context."""
         alice = Person(
@@ -530,7 +532,7 @@ class TestAssembleSeven:
         assert "alice@example.com" in emails
 
     def test_summary_meeting_id_invalid_errors_cleanly(
-        self, driver: Driver, seeded: dict[str, int]
+        self, driver: Driver, seeded: dict[str, str]
     ) -> None:
         """Acceptance: bad meeting_id raises a clear ValueError."""
         alice = Person(

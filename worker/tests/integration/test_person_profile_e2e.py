@@ -83,17 +83,20 @@ def _required_keys(schema: dict[str, Any]) -> set[str]:
 _SEED_CYPHER = """
 MERGE (p_main:Person {email: 'alice@example.com'})
   SET p_main.name = 'Alice Example',
+      p_main.source_id = 'person:alice@example.com',
       p_main.slack_user_id = 'U-ALICE',
       p_main.team_id = 'T-TEAM'
 MERGE (p_alt:Person {email: 'alice.alt@example.com'})
-  SET p_alt.name = 'Alice Example'
+  SET p_alt.name = 'Alice Example',
+      p_alt.source_id = 'person:alice.alt@example.com'
 MERGE (p_main)-[r1:SAME_AS]->(p_alt)
   SET r1.match_type = 'fuzzy_name',
       r1.confidence = 0.97,
       r1.cross_source = true
 
 MERGE (p_bob:Person {email: 'bob@example.com'})
-  SET p_bob.name = 'Bob Builder'
+  SET p_bob.name = 'Bob Builder',
+      p_bob.source_id = 'person:bob@example.com'
 
 MERGE (e1:Email {source_id: 'gmail://1'})
   SET e1.subject = 'Project kickoff', e1.date = $d_now
@@ -132,7 +135,7 @@ MERGE (f1:File {source_id: '/notes/alice.md'})
       f1.source = 'obsidian'
 MERGE (f1)-[:MENTIONS]->(p_main)
 
-RETURN id(p_main) AS p_main_id
+RETURN p_main.source_id AS p_main_id
 """
 
 
@@ -157,11 +160,11 @@ def driver() -> Generator[Driver, None, None]:
 
 
 @pytest.fixture
-def seeded(driver: Driver) -> dict[str, int]:
+def seeded(driver: Driver) -> dict[str, str]:
     with driver.session() as s:
         rec = s.run(_SEED_CYPHER, **_seed_params()).single()
         assert rec is not None
-        return {k: int(v) for k, v in rec.data().items()}
+        return {k: str(v) for k, v in rec.data().items()}
 
 
 @pytest.fixture
@@ -250,7 +253,7 @@ def _run_cli(config: Path, *args: str) -> tuple[int, str, str]:
 
 @_NEEDS_NEO4J
 def test_e2e_cli_json_matches_documented_schema(
-    seeded: dict[str, int],
+    seeded: dict[str, str],
     config_file: Path,
     schema: dict[str, Any],
 ) -> None:
@@ -318,7 +321,7 @@ async def _call_mcp_person(config: Path) -> dict[str, Any]:
 
 @_NEEDS_NEO4J
 def test_e2e_mcp_payload_matches_cli_json(
-    seeded: dict[str, int],
+    seeded: dict[str, str],
     config_file: Path,
     schema: dict[str, Any],
 ) -> None:
@@ -386,7 +389,7 @@ class _StubRegistry:
 
 @_NEEDS_NEO4J
 def test_e2e_summary_brief_is_grounded_in_seed_data(
-    seeded: dict[str, int],
+    seeded: dict[str, str],
     config_file: Path,
 ) -> None:
     """`--summary` must produce a grounded `next_brief` and only feed seeded data to the LLM."""
