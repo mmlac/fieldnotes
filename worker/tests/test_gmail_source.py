@@ -1098,3 +1098,147 @@ class TestMultiAccount:
         assert result == "42"
         cur = json.loads(queue.load_cursor("gmail:personal"))
         assert cur["history_id"] == "42"
+
+
+# ---------------------------------------------------------------------------
+# Polling-loop resilience to transient network errors (start())
+# ---------------------------------------------------------------------------
+
+
+class TestPollingLoopResilience:
+    """Network handovers (e.g. Thunderbolt → WiFi on macOS) surface as
+    `OSError: [Errno 65] No route to host` from inside the googleapiclient
+    stack. Before the fix, those bubbled out of the polling loop, the
+    source task ended, and the daemon's `_on_source_task_done` callback
+    logged "crashed and will no longer emit events" — taking the source
+    out until daemon restart. The polling loop must catch transient
+    socket-level errors and continue.
+    """
+
+    @pytest.mark.asyncio
+    async def test_oserror_during_poll_does_not_kill_source(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from worker.sources import gmail as gmail_mod
+
+        # Skip OAuth + googleapiclient build — start() is going to call
+        # them but we don't need real network.
+        monkeypatch.setattr(
+            gmail_mod, "get_credentials", lambda *a, **kw: MagicMock()
+        )
+        service = MagicMock()
+        monkeypatch.setattr(gmail_mod, "build", lambda *a, **kw: service)
+        monkeypatch.setattr(gmail_mod, "initial_sync_source_done", lambda: None)
+
+        source = GmailSource()
+        source._client_secrets_path = Path("/fake/secrets.json")
+        source._account = "test@example.com"
+        source._poll_interval = 0.01
+        source._max_initial_threads = 10
+        source._label_filter = None  # _cursor_key is derived from _account  # skip _validate_label
+
+        # Pre-existing cursor → skip backfill.
+        queue = MagicMock()
+        queue.load_cursor.return_value = json.dumps({"history_id": "100"})
+
+        # Drive _poll_incremental through:
+        #   1) OSError 65 "No route to host"   ← the user's reported failure
+        #   2) OSError 51 "Network is unreachable"  ← another handover variant
+        #   3) success
+        #   4..) success, until we cancel
+        call_count = 0
+
+        async def fake_poll_incremental(*args: Any, **kwargs: Any) -> str:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise OSError(65, "No route to host")
+            if call_count == 2:
+                raise OSError(51, "Network is unreachable")
+            return f"cursor-{call_count}"
+
+        monkeypatch.setattr(
+            source, "_poll_incremental", AsyncMock(side_effect=fake_poll_incremental)
+        )
+
+        # Run start() and cancel after enough cycles for the OSErrors +
+        # several successful polls.
+        task = asyncio.create_task(source.start(queue))
+        try:
+            await asyncio.sleep(0.15)
+        finally:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        # The fix is proved by: _poll_incremental was called more than
+        # twice — i.e. the loop kept going past the two OSErrors and ran
+        # successfully at least once.
+        assert call_count >= 3, (
+            f"polling loop should have survived 2 transient OSErrors "
+            f"and continued; _poll_incremental called {call_count} times"
+        )
+
+    @pytest.mark.asyncio
+    async def test_oserror_during_backfill_path_does_not_kill_source(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When cursor is None and we re-backfill mid-loop, an OSError from
+        _backfill must also be caught — same crash-wrapper concern."""
+        from worker.sources import gmail as gmail_mod
+
+        monkeypatch.setattr(
+            gmail_mod, "get_credentials", lambda *a, **kw: MagicMock()
+        )
+        monkeypatch.setattr(gmail_mod, "build", lambda *a, **kw: MagicMock())
+        monkeypatch.setattr(gmail_mod, "initial_sync_source_done", lambda: None)
+
+        source = GmailSource()
+        source._client_secrets_path = Path("/fake/secrets.json")
+        source._account = "test@example.com"
+        source._poll_interval = 0.01
+        source._max_initial_threads = 10
+        source._label_filter = None  # _cursor_key is derived from _account
+
+        # No cursor stored → backfill path on every iteration.
+        queue = MagicMock()
+        queue.load_cursor.return_value = None
+
+        backfill_calls = 0
+
+        async def fake_backfill(
+            messages_api: Any,
+            queue_arg: Any,
+            *,
+            is_initial: bool,
+            indexed_check: Any = None,
+        ) -> str | None:
+            nonlocal backfill_calls
+            backfill_calls += 1
+            # Always return None so cursor stays None and we keep going
+            # through the backfill branch of the polling loop. Raise once
+            # in the middle to exercise the resilience path.
+            if backfill_calls == 2:
+                raise OSError(65, "No route to host")
+            return None
+
+        monkeypatch.setattr(
+            source, "_backfill", AsyncMock(side_effect=fake_backfill)
+        )
+
+        task = asyncio.create_task(source.start(queue))
+        try:
+            await asyncio.sleep(0.12)
+        finally:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        assert backfill_calls >= 3, (
+            f"backfill loop should have survived transient OSError; "
+            f"_backfill called {backfill_calls} times"
+        )

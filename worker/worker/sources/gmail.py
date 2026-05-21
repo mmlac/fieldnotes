@@ -348,25 +348,47 @@ class GmailSource(PythonSource):
 
         initial_sync_source_done()
 
-        # Polling loop
+        # Polling loop.
+        #
+        # A transient OSError (e.g. `[Errno 65] No route to host` after a
+        # Thunderbolt-to-WiFi handover on macOS) must not kill the source
+        # task — the daemon's `_on_source_task_done` callback would log
+        # "crashed and will no longer emit events" and the source would
+        # stop forever. Catch network-level failures, log a warning, skip
+        # this cycle, and try again on the next poll.
         try:
             while True:
                 await asyncio.sleep(self._poll_interval)
-                with observe_duration(GMAIL_POLL_DURATION):
-                    if cursor is None:
-                        # No valid cursor (e.g. history ID expired) — re-backfill.
-                        logger.info("No cursor available — re-running backfill")
-                        cursor = await self._backfill(
-                            messages_api,
-                            queue,
-                            is_initial=False,
-                            indexed_check=indexed_check,
-                        )
-                        # history_id saved via _ProgressTracker callbacks
-                    else:
-                        cursor = await self._poll_incremental(
-                            service, messages_api, queue, cursor
-                        )
+                try:
+                    with observe_duration(GMAIL_POLL_DURATION):
+                        if cursor is None:
+                            # No valid cursor (e.g. history ID expired) — re-backfill.
+                            logger.info("No cursor available — re-running backfill")
+                            cursor = await self._backfill(
+                                messages_api,
+                                queue,
+                                is_initial=False,
+                                indexed_check=indexed_check,
+                            )
+                            # history_id saved via _ProgressTracker callbacks
+                        else:
+                            cursor = await self._poll_incremental(
+                                service, messages_api, queue, cursor
+                            )
+                except OSError as exc:
+                    # Covers socket-level failures (no route, network
+                    # unreachable, DNS lookup failed, SSL EOF, etc. — all
+                    # subclasses of OSError) and built-in TimeoutError
+                    # (also an OSError subclass since Py 3.11). The
+                    # cursor variable is preserved from the previous
+                    # iteration; next poll resumes from there.
+                    logger.warning(
+                        "Gmail poll failed transiently (%s: %s) — "
+                        "skipping this cycle, will retry in %ds",
+                        type(exc).__name__,
+                        exc,
+                        self._poll_interval,
+                    )
         except asyncio.CancelledError:
             WATCHER_ACTIVE.labels(source_type="gmail").set(0)
             raise
