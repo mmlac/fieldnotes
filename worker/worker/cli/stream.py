@@ -249,13 +249,13 @@ def render_stream(
             if chunk.done:
                 state.input_tokens = chunk.input_tokens
                 state.output_tokens = chunk.output_tokens
-                continue
+                # Fall through — a chunk can carry both text AND done=True
+                # (the default stream_complete fallback in ModelProvider does
+                # exactly this). Skipping on done dropped the entire answer.
 
-            if not chunk.text:
-                continue
-
-            state.collected_text += chunk.text
-            _render_token(chunk.text, state, out)
+            if chunk.text:
+                state.collected_text += chunk.text
+                _render_token(chunk.text, state, out)
 
         # Flush any remaining buffer
         if state.buffer:

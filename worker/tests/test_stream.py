@@ -64,6 +64,26 @@ class TestRenderStream:
         result = render_stream(iter(chunks), file=out)
         assert result.text == "abc"
 
+    def test_text_on_done_chunk_is_rendered(self) -> None:
+        # ModelProvider.stream_complete's default fallback yields a single
+        # chunk with both text and done=True (it wraps the non-streaming
+        # complete() call). Earlier the renderer skipped text on done=True
+        # and the entire answer was silently dropped.
+        chunks = [
+            StreamChunk(
+                text="full answer",
+                input_tokens=12,
+                output_tokens=3,
+                done=True,
+            ),
+        ]
+        out = io.StringIO()
+        result = render_stream(iter(chunks), file=out)
+
+        assert result.text == "full answer"
+        assert result.input_tokens == 12
+        assert result.output_tokens == 3
+
 
 class TestRenderNoStream:
     """Test non-streaming render."""

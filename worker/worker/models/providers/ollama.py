@@ -118,6 +118,7 @@ class OllamaProvider(ModelProvider):
     _base_url: str = "http://localhost:11434"
     _completion_timeout: float = 600.0
     _embed_timeout: float = 600.0
+    _num_ctx: int | None = None
 
     @property
     def provider_type(self) -> str:
@@ -145,6 +146,15 @@ class OllamaProvider(ModelProvider):
             or cfg.get("embed_timeout", self._embed_timeout)
         )
 
+        # num_ctx: when set, passed through in the chat/stream payload's
+        # options block so Ollama allocates a larger KV cache. Without it,
+        # Ollama uses the Modelfile default (commonly 2048) and a prompt
+        # that overflows the window can stall or come back empty. None ==
+        # respect the model's default.
+        num_ctx_raw = os.environ.get("OLLAMA_NUM_CTX") or cfg.get("num_ctx")
+        if num_ctx_raw is not None and num_ctx_raw != "":
+            self._num_ctx = int(num_ctx_raw)
+
     @_ollama_retry
     def complete(self, model: str, req: CompletionRequest) -> CompletionResponse:
         messages: list[dict[str, Any]] = []
@@ -152,14 +162,17 @@ class OllamaProvider(ModelProvider):
             messages.append({"role": "system", "content": req.system})
         messages.extend(req.messages)
 
+        options: dict[str, Any] = {
+            "temperature": req.temperature,
+            "num_predict": req.max_tokens,
+        }
+        if self._num_ctx is not None:
+            options["num_ctx"] = self._num_ctx
         payload: dict[str, Any] = {
             "model": model,
             "messages": messages,
             "stream": False,
-            "options": {
-                "temperature": req.temperature,
-                "num_predict": req.max_tokens,
-            },
+            "options": options,
         }
         if req.tools:
             payload["tools"] = req.tools
@@ -192,14 +205,17 @@ class OllamaProvider(ModelProvider):
             messages.append({"role": "system", "content": req.system})
         messages.extend(req.messages)
 
+        options: dict[str, Any] = {
+            "temperature": req.temperature,
+            "num_predict": req.max_tokens,
+        }
+        if self._num_ctx is not None:
+            options["num_ctx"] = self._num_ctx
         payload: dict[str, Any] = {
             "model": model,
             "messages": messages,
             "stream": True,
-            "options": {
-                "temperature": req.temperature,
-                "num_predict": req.max_tokens,
-            },
+            "options": options,
         }
 
         raw_timeout = req.timeout if req.timeout is not None else self._completion_timeout

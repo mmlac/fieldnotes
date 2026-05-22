@@ -48,6 +48,27 @@ _COMMANDS = {"/history", "/clear", "/verbose", "/quit", "/save", "/sessions"}
 _MAX_CONTEXT_CHARS = 60_000
 
 
+def _format_error_for_user(exc: BaseException) -> str:
+    """Map opaque transport exceptions to a single user-readable line.
+
+    ``httpx.TimeoutException.__str__()`` returns an empty string, so the
+    naive ``print(f"error: {exc}")`` in ``run_ask`` produced literal
+    "error: " with no detail — indistinguishable from a silent hang.
+    """
+    import httpx
+
+    if isinstance(exc, httpx.TimeoutException):
+        return (
+            "timed out waiting for model response — increase the provider's "
+            "completion_timeout (or OLLAMA_COMPLETION_TIMEOUT env var) and retry"
+        )
+    if isinstance(exc, httpx.HTTPStatusError):
+        return f"model returned HTTP {exc.response.status_code}"
+    if isinstance(exc, httpx.RequestError):
+        return f"connection error ({exc.__class__.__name__})"
+    return str(exc) or exc.__class__.__name__
+
+
 @dataclass
 class _Turn:
     question: str
@@ -353,7 +374,6 @@ def _synthesize(
         system=ctx.system_prompt,
         messages=[{"role": "user", "content": ctx.user_prompt}],
         temperature=0.2,
-        timeout=120.0,
     )
     with spinner("Thinking..."):
         resp = model.complete(req, task="ask")
@@ -432,11 +452,21 @@ def _synthesize_stream(
         system=ctx.system_prompt,
         messages=[{"role": "user", "content": ctx.user_prompt}],
         temperature=0.2,
-        timeout=120.0,
     )
 
     chunks = model.stream_complete(req, task="ask")
     result = render_stream(chunks)
+
+    if not result.text.strip():
+        # Stream completed without raising but produced no tokens. Usually
+        # means the model returned done=true with empty content — check
+        # Ollama logs, num_ctx, or model load state. Without this message,
+        # the user sees only the [Sources] footer and assumes a hang.
+        print(
+            "\nerror: model returned no content "
+            "(check num_ctx / Ollama logs)",
+            file=sys.stderr,
+        )
 
     # Print footer after streamed answer.
     show_sources = session is None or session.verbose
@@ -738,7 +768,7 @@ def run_ask(
             print(answer)
             return 0
     except Exception as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        print(f"error: {_format_error_for_user(exc)}", file=sys.stderr)
         return 1
     finally:
         graph_querier.close()
@@ -811,7 +841,6 @@ def _run_json(
         system=ctx.system_prompt,
         messages=[{"role": "user", "content": ctx.user_prompt}],
         temperature=0.2,
-        timeout=120.0,
     )
     resp = model.complete(req, task="ask")
     elapsed = time.monotonic() - start

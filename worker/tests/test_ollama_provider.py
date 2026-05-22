@@ -69,6 +69,22 @@ class TestOllamaProviderConfigure:
         p.configure({"base_url": "http://localhost:11434/"})
         assert not p._base_url.endswith("/")
 
+    def test_num_ctx_default_unset(self) -> None:
+        p = OllamaProvider()
+        p.configure({})
+        assert p._num_ctx is None
+
+    def test_num_ctx_from_config(self) -> None:
+        p = OllamaProvider()
+        p.configure({"num_ctx": 16384})
+        assert p._num_ctx == 16384
+
+    def test_num_ctx_env_overrides_config(self, monkeypatch) -> None:
+        monkeypatch.setenv("OLLAMA_NUM_CTX", "32768")
+        p = OllamaProvider()
+        p.configure({"num_ctx": 8192})
+        assert p._num_ctx == 32768
+
 
 class TestOllamaComplete:
     @patch("worker.models.providers.ollama.httpx.post")
@@ -117,9 +133,29 @@ class TestOllamaComplete:
         assert payload["stream"] is False
         assert payload["options"]["temperature"] == 0.7
         assert payload["options"]["num_predict"] == 256
+        # num_ctx is omitted when unset so Ollama uses the Modelfile default
+        assert "num_ctx" not in payload["options"]
         # System message should be first
         assert payload["messages"][0] == {"role": "system", "content": "sys prompt"}
         assert payload["messages"][1] == {"role": "user", "content": "hi"}
+
+    @patch("worker.models.providers.ollama.httpx.post")
+    def test_num_ctx_included_when_configured(
+        self, mock_post, provider: OllamaProvider
+    ) -> None:
+        mock_post.return_value = _mock_response({"message": {"content": "ok"}})
+        provider._num_ctx = 16384
+
+        req = CompletionRequest(
+            system="",
+            messages=[{"role": "user", "content": "hi"}],
+        )
+        provider.complete("model-x", req)
+
+        payload = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get(
+            "json"
+        )
+        assert payload["options"]["num_ctx"] == 16384
 
     @patch("worker.models.providers.ollama.httpx.post")
     def test_no_system_message_when_empty(
@@ -206,6 +242,33 @@ class TestOllamaComplete:
             else mock_post.call_args.kwargs.get("url", "")
         )
         assert url == "http://localhost:11434/api/chat"
+
+
+class TestOllamaStreamComplete:
+    @patch("worker.models.providers.ollama.httpx.stream")
+    def test_num_ctx_included_when_configured(
+        self, mock_stream, provider: OllamaProvider
+    ) -> None:
+        # Build a context-manager mock whose response yields one done chunk.
+        ctx_mgr = mock_stream.return_value
+        resp_mock = ctx_mgr.__enter__.return_value
+        resp_mock.raise_for_status.return_value = None
+        resp_mock.iter_lines.return_value = iter(
+            ['{"message": {"content": "ok"}, "done": true}']
+        )
+
+        provider._num_ctx = 8192
+        req = CompletionRequest(
+            system="",
+            messages=[{"role": "user", "content": "hi"}],
+        )
+        list(provider.stream_complete("model-x", req))
+
+        payload = mock_stream.call_args.kwargs.get("json") or mock_stream.call_args[
+            1
+        ].get("json")
+        assert payload["stream"] is True
+        assert payload["options"]["num_ctx"] == 8192
 
 
 class TestOllamaEmbed:

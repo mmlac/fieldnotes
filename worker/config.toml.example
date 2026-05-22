@@ -23,6 +23,13 @@ vector_size = 768                 # must match your embedding model
 [modelproviders.ollama]
 type = "ollama"
 base_url = "http://localhost:11434"
+# completion_timeout = 600          # seconds; override with OLLAMA_COMPLETION_TIMEOUT env var
+# embed_timeout = 600               # seconds; override with OLLAMA_EMBED_TIMEOUT env var
+# num_ctx = 16384                   # KV cache size passed to /api/chat. Leave unset to use
+                                    # the Modelfile default (often 2048). Set higher when
+                                    # the ask pipeline's RAG context overflows the window —
+                                    # symptom is empty/timed-out chat responses on prompts
+                                    # >~6k chars. Override with OLLAMA_NUM_CTX env var.
 
 # Uncomment to use OpenAI (requires OPENAI_API_KEY env var or api_key below):
 # [modelproviders.openai]
