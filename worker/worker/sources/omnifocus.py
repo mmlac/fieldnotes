@@ -30,6 +30,7 @@ if TYPE_CHECKING:
 
 from worker.metrics import (
     INDEXED_PREFILTER_SKIPPED,
+    SOURCE_POLL_FAILED,
     SOURCE_WATCHER_EVENTS,
     WATCHER_ACTIVE,
     WATCHER_LAST_EVENT_TIMESTAMP,
@@ -262,6 +263,7 @@ class OmniFocusSource(PythonSource):
                 except Exception:
                     # Inverse-default: log + retry next cycle. See gmail.py
                     # for the rationale.
+                    SOURCE_POLL_FAILED.labels(source_type=_SOURCE_TYPE).inc()
                     logger.exception(
                         "OmniFocus poll cycle failed; will retry in %ds",
                         self._poll_interval,

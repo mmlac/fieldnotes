@@ -41,6 +41,7 @@ from slack_sdk.errors import SlackApiError
 
 from worker.metrics import (
     SLACK_DELETE_EVENTS_SKIPPED,
+    SOURCE_POLL_FAILED,
     SOURCE_WATCHER_EVENTS,
     WATCHER_ACTIVE,
     WATCHER_LAST_EVENT_TIMESTAMP,
@@ -669,6 +670,7 @@ class SlackSource(PythonSource):
                         initial_sync_source_done()
                         first_cycle = False
                 except Exception:
+                    SOURCE_POLL_FAILED.labels(source_type="slack").inc()
                     logger.exception(
                         "Slack poll cycle failed; will retry in %ds",
                         self._poll_interval,

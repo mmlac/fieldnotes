@@ -205,6 +205,18 @@ SOURCE_TASK_FAILED = Counter(
     registry=REGISTRY,
 )
 
+SOURCE_POLL_FAILED = Counter(
+    "source_poll_failed_total",
+    "Source polling cycle raised an exception. The source caught it, "
+    "logged a traceback, and will retry on the next poll interval. "
+    "A persistently non-zero rate here means the source is wedged "
+    "(auth expired, upstream API down, programmer error, etc.) — "
+    "investigate the worker log even though the source is still 'up' "
+    "per source_task_failed_total / fieldnotes_watcher_active.",
+    ["source_type"],
+    registry=REGISTRY,
+)
+
 # NOTE: ``account`` label here is bound by the config-validated account
 # name (see "Cardinality contract" comment block above).  Do not increment
 # this counter with an account value derived from user input.

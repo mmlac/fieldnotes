@@ -1304,6 +1304,72 @@ class TestPollingLoopResilience:
         )
 
     @pytest.mark.asyncio
+    async def test_source_poll_failed_metric_increments_on_each_failure(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Each caught poll failure increments source_poll_failed_total{source_type='gmail'}.
+
+        Gives Grafana a signal to alert on "source is wedged but still
+        nominally up" without scraping logs.
+        """
+        from worker.metrics import SOURCE_POLL_FAILED
+        from worker.sources import gmail as gmail_mod
+
+        monkeypatch.setattr(
+            gmail_mod, "get_credentials", lambda *a, **kw: MagicMock()
+        )
+        monkeypatch.setattr(gmail_mod, "build", lambda *a, **kw: MagicMock())
+        monkeypatch.setattr(gmail_mod, "initial_sync_source_done", lambda: None)
+
+        source = GmailSource()
+        source._client_secrets_path = Path("/fake/secrets.json")
+        source._account = "test@example.com"
+        source._poll_interval = 0.01
+        source._max_initial_threads = 10
+        source._label_filter = None
+
+        queue = MagicMock()
+        queue.load_cursor.return_value = json.dumps({"history_id": "100"})
+
+        before = SOURCE_POLL_FAILED.labels(source_type="gmail")._value.get()
+
+        # Always raise so we get a deterministic count of failures.
+        call_count = 0
+
+        async def always_fail(*args: Any, **kwargs: Any) -> str:
+            nonlocal call_count
+            call_count += 1
+            raise OSError(65, "No route to host")
+
+        monkeypatch.setattr(
+            source, "_poll_incremental", AsyncMock(side_effect=always_fail)
+        )
+
+        task = asyncio.create_task(source.start(queue))
+        try:
+            await asyncio.sleep(0.1)
+        finally:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        after = SOURCE_POLL_FAILED.labels(source_type="gmail")._value.get()
+        delta = after - before
+        # Counter incremented once per failure; we expect at least as many
+        # increments as the loop performed iterations.
+        assert delta == call_count, (
+            f"SOURCE_POLL_FAILED expected to increment once per failed "
+            f"cycle; got delta={delta} over {call_count} _poll_incremental "
+            f"calls"
+        )
+        assert delta >= 3, (
+            f"polling loop should have failed at least 3 times in the test "
+            f"window; got {delta}"
+        )
+
+    @pytest.mark.asyncio
     async def test_cancellederror_still_propagates(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

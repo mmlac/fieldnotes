@@ -33,6 +33,7 @@ from googleapiclient.errors import HttpError
 from worker.metrics import (
     GMAIL_POLL_DURATION,
     INDEXED_PREFILTER_SKIPPED,
+    SOURCE_POLL_FAILED,
     SOURCE_WATCHER_EVENTS,
     WATCHER_ACTIVE,
     WATCHER_LAST_EVENT_TIMESTAMP,
@@ -379,6 +380,7 @@ class GmailSource(PythonSource):
                                 service, messages_api, queue, cursor
                             )
                 except Exception:
+                    SOURCE_POLL_FAILED.labels(source_type="gmail").inc()
                     logger.exception(
                         "Gmail poll cycle failed; will retry in %ds",
                         self._poll_interval,

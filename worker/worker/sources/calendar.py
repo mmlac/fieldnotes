@@ -32,6 +32,7 @@ from googleapiclient.errors import HttpError
 from worker.log_sanitizer import redact_home_path
 from worker.metrics import (
     INDEXED_PREFILTER_SKIPPED,
+    SOURCE_POLL_FAILED,
     SOURCE_WATCHER_EVENTS,
     WATCHER_ACTIVE,
     WATCHER_LAST_EVENT_TIMESTAMP,
@@ -394,6 +395,7 @@ class GoogleCalendarSource(PythonSource):
                         initial_sync_source_done()
                         first_cycle = False
                 except Exception:
+                    SOURCE_POLL_FAILED.labels(source_type="google_calendar").inc()
                     logger.exception(
                         "Calendar poll cycle failed; will retry in %ds",
                         self._poll_interval,
