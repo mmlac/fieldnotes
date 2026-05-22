@@ -627,37 +627,52 @@ class SlackSource(PythonSource):
         first_cycle = True
         try:
             while True:
-                channels = await asyncio.to_thread(self._discover_conversations)
-                team_cur = cursor.setdefault(team_id, {})
-                for ch in channels:
-                    cid = ch.get("id", "")
-                    if not cid:
-                        continue
-                    try:
-                        await self._poll_conversation(
-                            ch,
-                            team_cur,
-                            queue,
-                            indexed_check=indexed_check,
-                            is_initial_cycle=first_cycle,
-                        )
-                    except RateLimitedError as exc:
-                        logger.error(
-                            "Slack rate limit exhausted polling channel %s: %s",
-                            cid,
-                            exc,
-                        )
-                    except SlackApiError as exc:
-                        logger.error("Slack API error polling channel %s: %s", cid, exc)
-                    except Exception:
-                        logger.exception("Unexpected error polling channel %s", cid)
-                    # Persist after each channel — atomic, cheap.
-                    _save_cursor(self._cursor_path, cursor)
-                    queue.save_cursor("slack", json.dumps(cursor))
+                # Inverse-default outer wrap: failures in _discover_conversations
+                # or in the per-channel loop's bookkeeping must not crash the
+                # source task. Per-channel polling has its own specific
+                # catches (RateLimitedError, SlackApiError, Exception). See
+                # gmail.py for the daemon-level rationale.
+                try:
+                    channels = await asyncio.to_thread(self._discover_conversations)
+                    team_cur = cursor.setdefault(team_id, {})
+                    for ch in channels:
+                        cid = ch.get("id", "")
+                        if not cid:
+                            continue
+                        try:
+                            await self._poll_conversation(
+                                ch,
+                                team_cur,
+                                queue,
+                                indexed_check=indexed_check,
+                                is_initial_cycle=first_cycle,
+                            )
+                        except RateLimitedError as exc:
+                            logger.error(
+                                "Slack rate limit exhausted polling channel %s: %s",
+                                cid,
+                                exc,
+                            )
+                        except SlackApiError as exc:
+                            logger.error(
+                                "Slack API error polling channel %s: %s", cid, exc
+                            )
+                        except Exception:
+                            logger.exception(
+                                "Unexpected error polling channel %s", cid
+                            )
+                        # Persist after each channel — atomic, cheap.
+                        _save_cursor(self._cursor_path, cursor)
+                        queue.save_cursor("slack", json.dumps(cursor))
 
-                if first_cycle:
-                    initial_sync_source_done()
-                    first_cycle = False
+                    if first_cycle:
+                        initial_sync_source_done()
+                        first_cycle = False
+                except Exception:
+                    logger.exception(
+                        "Slack poll cycle failed; will retry in %ds",
+                        self._poll_interval,
+                    )
 
                 await asyncio.sleep(self._poll_interval)
         except asyncio.CancelledError:

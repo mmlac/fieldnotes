@@ -1106,13 +1106,13 @@ class TestMultiAccount:
 
 
 class TestPollingLoopResilience:
-    """Network handovers (e.g. Thunderbolt → WiFi on macOS) surface as
-    `OSError: [Errno 65] No route to host` from inside the googleapiclient
-    stack. Before the fix, those bubbled out of the polling loop, the
-    source task ended, and the daemon's `_on_source_task_done` callback
-    logged "crashed and will no longer emit events" — taking the source
-    out until daemon restart. The polling loop must catch transient
-    socket-level errors and continue.
+    """The polling loop uses an inverse-default error policy: any Exception
+    raised during a poll cycle is logged and retried on the next interval.
+    Only BaseException subclasses (CancelledError, KeyboardInterrupt,
+    SystemExit) propagate. Without this, the daemon's `_on_source_task_done`
+    callback would log "crashed and will no longer emit events" on the
+    first transient failure (e.g. an `OSError: [Errno 65] No route to host`
+    from a Thunderbolt → WiFi handover) and the source would stop forever.
     """
 
     @pytest.mark.asyncio
@@ -1242,3 +1242,103 @@ class TestPollingLoopResilience:
             f"backfill loop should have survived transient OSError; "
             f"_backfill called {backfill_calls} times"
         )
+
+    @pytest.mark.asyncio
+    async def test_arbitrary_exception_during_poll_does_not_kill_source(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Inverse-default: catch every Exception subclass, not just OSError.
+
+        Regression test for a programmer-error-style raise from inside
+        `_poll_incremental` (e.g. an unexpected KeyError on a malformed API
+        response). The source must log + retry rather than terminate; an
+        operator can fix the bug later, but losing the entire source for
+        the rest of the daemon's lifetime is the wrong default.
+        """
+        from worker.sources import gmail as gmail_mod
+
+        monkeypatch.setattr(
+            gmail_mod, "get_credentials", lambda *a, **kw: MagicMock()
+        )
+        monkeypatch.setattr(gmail_mod, "build", lambda *a, **kw: MagicMock())
+        monkeypatch.setattr(gmail_mod, "initial_sync_source_done", lambda: None)
+
+        source = GmailSource()
+        source._client_secrets_path = Path("/fake/secrets.json")
+        source._account = "test@example.com"
+        source._poll_interval = 0.01
+        source._max_initial_threads = 10
+        source._label_filter = None
+
+        queue = MagicMock()
+        queue.load_cursor.return_value = json.dumps({"history_id": "100"})
+
+        call_count = 0
+
+        async def fake_poll_incremental(*args: Any, **kwargs: Any) -> str:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise KeyError("unexpected response shape")
+            if call_count == 2:
+                raise ValueError("bad cursor format")
+            return f"cursor-{call_count}"
+
+        monkeypatch.setattr(
+            source, "_poll_incremental", AsyncMock(side_effect=fake_poll_incremental)
+        )
+
+        task = asyncio.create_task(source.start(queue))
+        try:
+            await asyncio.sleep(0.15)
+        finally:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        assert call_count >= 3, (
+            f"polling loop should have survived non-OSError exceptions; "
+            f"_poll_incremental called {call_count} times"
+        )
+
+    @pytest.mark.asyncio
+    async def test_cancellederror_still_propagates(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The wide Exception catch must NOT swallow CancelledError —
+        the daemon's shutdown path relies on cancellation reaching the
+        outer try/except CancelledError block.
+        """
+        from worker.sources import gmail as gmail_mod
+
+        monkeypatch.setattr(
+            gmail_mod, "get_credentials", lambda *a, **kw: MagicMock()
+        )
+        monkeypatch.setattr(gmail_mod, "build", lambda *a, **kw: MagicMock())
+        monkeypatch.setattr(gmail_mod, "initial_sync_source_done", lambda: None)
+
+        source = GmailSource()
+        source._client_secrets_path = Path("/fake/secrets.json")
+        source._account = "test@example.com"
+        source._poll_interval = 0.5  # long enough that cancel hits asyncio.sleep
+        source._max_initial_threads = 10
+        source._label_filter = None
+
+        queue = MagicMock()
+        queue.load_cursor.return_value = json.dumps({"history_id": "100"})
+        monkeypatch.setattr(
+            source,
+            "_poll_incremental",
+            AsyncMock(return_value="cursor-1"),
+        )
+
+        task = asyncio.create_task(source.start(queue))
+        await asyncio.sleep(0.05)
+        task.cancel()
+
+        # The cancellation must surface as CancelledError — proving the
+        # except Exception block didn't swallow it.
+        with pytest.raises(asyncio.CancelledError):
+            await task

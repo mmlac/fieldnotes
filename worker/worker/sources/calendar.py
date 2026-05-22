@@ -352,38 +352,52 @@ class GoogleCalendarSource(PythonSource):
         first_cycle = True
         try:
             while True:
-                for cal_id in self._calendar_ids:
-                    try:
-                        sync_token = sync_tokens.get(cal_id)
-                        new_token = await self._poll_calendar(
-                            service,
-                            queue,
-                            cal_id,
-                            sync_token,
-                            sync_tokens,
-                            seen_series,
-                            indexed_check=indexed_check,
-                            drive_service=drive_service,
-                        )
-                        if new_token:
-                            sync_tokens[cal_id] = new_token
-                    except HttpError as exc:
-                        if exc.resp.status == 410:
-                            # Sync token expired — clear and do full resync
-                            logger.warning(
-                                "Calendar sync token expired for %s, "
-                                "performing full resync",
+                # Inverse-default outer wrap: failures in the per-cal iteration
+                # bookkeeping or anything else outside the inner try must not
+                # crash the source task. See gmail.py for the daemon-level
+                # rationale.
+                try:
+                    for cal_id in self._calendar_ids:
+                        try:
+                            sync_token = sync_tokens.get(cal_id)
+                            new_token = await self._poll_calendar(
+                                service,
+                                queue,
                                 cal_id,
+                                sync_token,
+                                sync_tokens,
+                                seen_series,
+                                indexed_check=indexed_check,
+                                drive_service=drive_service,
                             )
-                            sync_tokens.pop(cal_id, None)
-                        else:
-                            logger.error("Calendar API error for %s: %s", cal_id, exc)
-                    except Exception:
-                        logger.exception("Unexpected error polling calendar %s", cal_id)
+                            if new_token:
+                                sync_tokens[cal_id] = new_token
+                        except HttpError as exc:
+                            if exc.resp.status == 410:
+                                # Sync token expired — clear and do full resync
+                                logger.warning(
+                                    "Calendar sync token expired for %s, "
+                                    "performing full resync",
+                                    cal_id,
+                                )
+                                sync_tokens.pop(cal_id, None)
+                            else:
+                                logger.error(
+                                    "Calendar API error for %s: %s", cal_id, exc
+                                )
+                        except Exception:
+                            logger.exception(
+                                "Unexpected error polling calendar %s", cal_id
+                            )
 
-                if first_cycle:
-                    initial_sync_source_done()
-                    first_cycle = False
+                    if first_cycle:
+                        initial_sync_source_done()
+                        first_cycle = False
+                except Exception:
+                    logger.exception(
+                        "Calendar poll cycle failed; will retry in %ds",
+                        self._poll_interval,
+                    )
 
                 await asyncio.sleep(self._poll_interval)
         except asyncio.CancelledError:

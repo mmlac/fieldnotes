@@ -209,10 +209,18 @@ class MacOSAppsSource(PythonSource):
         first_cycle = True
         try:
             while True:
-                await self._scan(state, queue)
-                if first_cycle:
-                    initial_sync_source_done()
-                    first_cycle = False
+                try:
+                    await self._scan(state, queue)
+                    if first_cycle:
+                        initial_sync_source_done()
+                        first_cycle = False
+                except Exception:
+                    # Inverse-default: log + retry next cycle. See gmail.py
+                    # for the rationale.
+                    logger.exception(
+                        "macOS apps poll cycle failed; will retry in %ds",
+                        self._poll_interval,
+                    )
                 await asyncio.sleep(self._poll_interval)
         except asyncio.CancelledError:
             WATCHER_ACTIVE.labels(source_type=_SOURCE_TYPE).set(0)

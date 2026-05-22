@@ -291,10 +291,19 @@ class HomebrewSource(PythonSource):
         first_cycle = True
         try:
             while True:
-                await self._scan(brew_path, prev_state, queue)
-                if first_cycle:
-                    initial_sync_source_done()
-                    first_cycle = False
+                try:
+                    await self._scan(brew_path, prev_state, queue)
+                    if first_cycle:
+                        initial_sync_source_done()
+                        first_cycle = False
+                except Exception:
+                    # Inverse-default: log + retry next cycle. See gmail.py
+                    # for the rationale (the daemon's source-task crash
+                    # wrapper would otherwise kill this source forever).
+                    logger.exception(
+                        "Homebrew poll cycle failed; will retry in %ds",
+                        self._poll_interval,
+                    )
                 await asyncio.sleep(self._poll_interval)
         except asyncio.CancelledError:
             WATCHER_ACTIVE.labels(source_type="homebrew").set(0)

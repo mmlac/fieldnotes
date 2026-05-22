@@ -350,12 +350,15 @@ class GmailSource(PythonSource):
 
         # Polling loop.
         #
-        # A transient OSError (e.g. `[Errno 65] No route to host` after a
-        # Thunderbolt-to-WiFi handover on macOS) must not kill the source
-        # task — the daemon's `_on_source_task_done` callback would log
-        # "crashed and will no longer emit events" and the source would
-        # stop forever. Catch network-level failures, log a warning, skip
-        # this cycle, and try again on the next poll.
+        # Inverse-default error handling: any failure of a single poll
+        # cycle is logged and retried on the next interval. Only
+        # BaseException subclasses (CancelledError, KeyboardInterrupt,
+        # SystemExit) propagate. The crash-wrapper in serve_daemon.py
+        # turns an escaped exception into "Source task gmail crashed and
+        # will no longer emit events", which kills the source until the
+        # daemon restarts — that outcome is wrong for a long-running
+        # watcher. The cursor variable is preserved from the previous
+        # successful iteration, so the next poll resumes from there.
         try:
             while True:
                 await asyncio.sleep(self._poll_interval)
@@ -375,18 +378,9 @@ class GmailSource(PythonSource):
                             cursor = await self._poll_incremental(
                                 service, messages_api, queue, cursor
                             )
-                except OSError as exc:
-                    # Covers socket-level failures (no route, network
-                    # unreachable, DNS lookup failed, SSL EOF, etc. — all
-                    # subclasses of OSError) and built-in TimeoutError
-                    # (also an OSError subclass since Py 3.11). The
-                    # cursor variable is preserved from the previous
-                    # iteration; next poll resumes from there.
-                    logger.warning(
-                        "Gmail poll failed transiently (%s: %s) — "
-                        "skipping this cycle, will retry in %ds",
-                        type(exc).__name__,
-                        exc,
+                except Exception:
+                    logger.exception(
+                        "Gmail poll cycle failed; will retry in %ds",
                         self._poll_interval,
                     )
         except asyncio.CancelledError:

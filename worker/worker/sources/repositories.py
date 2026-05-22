@@ -358,14 +358,23 @@ class RepositorySource(PythonSource):
         first_cycle = True
         try:
             while True:
-                repos = _discover_repos(self._repo_roots)
-                for repo_path in repos:
-                    await self._scan_repo(
-                        repo_path, cursors, queue, indexed_check=indexed_check
+                try:
+                    repos = _discover_repos(self._repo_roots)
+                    for repo_path in repos:
+                        await self._scan_repo(
+                            repo_path, cursors, queue, indexed_check=indexed_check
+                        )
+                    if first_cycle:
+                        initial_sync_source_done()
+                        first_cycle = False
+                except Exception:
+                    # Inverse-default: log + retry next cycle. See gmail.py
+                    # for the rationale. Per-repo errors are also handled
+                    # inside _scan_repo via more specific catches.
+                    logger.exception(
+                        "Repositories poll cycle failed; will retry in %ds",
+                        self._poll_interval,
                     )
-                if first_cycle:
-                    initial_sync_source_done()
-                    first_cycle = False
                 await asyncio.sleep(self._poll_interval)
         except asyncio.CancelledError:
             WATCHER_ACTIVE.labels(source_type="repositories").set(0)
