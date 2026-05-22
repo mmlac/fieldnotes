@@ -298,8 +298,32 @@ class RateLimitConfig:
 
 
 @dataclass
+class RetrievalConfig:
+    """Parsed ``[retrieval]`` section.
+
+    Tunes the ask / MCP retrieval pipeline (`worker/query/`).
+
+    ``journal_folder_patterns`` — path substrings that identify a file
+    as a journal entry. Used by:
+      - The Cypher-generation chain in ``GraphQuerier``: examples
+        teach the LLM how to write WHERE clauses against ``:File``
+        nodes whose ``path`` contains any of these substrings.
+      - The vector post-filter in ``hybrid.merge``: when a question
+        explicitly references journals, vector results whose
+        ``source_id`` doesn't contain any of these substrings are
+        dropped.
+    Use lowercase substrings; matching is case-insensitive.
+    """
+
+    journal_folder_patterns: list[str] = field(
+        default_factory=lambda: ["/Journal/"]
+    )
+
+
+@dataclass
 class Config:
     core: CoreConfig = field(default_factory=CoreConfig)
+    retrieval: RetrievalConfig = field(default_factory=RetrievalConfig)
     neo4j: Neo4jConfig = field(default_factory=Neo4jConfig)
     qdrant: QdrantConfig = field(default_factory=QdrantConfig)
     providers: dict[str, ProviderConfig] = field(default_factory=dict)
@@ -1187,6 +1211,20 @@ def _parse(raw: dict[str, Any]) -> Config:
                 cfg.rate_limits.max_concurrency,
             ),
         )
+
+    # [retrieval]
+    if "retrieval" in raw:
+        rv = raw["retrieval"]
+        if "journal_folder_patterns" in rv:
+            _check_list_of(
+                "retrieval",
+                "journal_folder_patterns",
+                rv["journal_folder_patterns"],
+                str,
+            )
+            cfg.retrieval = RetrievalConfig(
+                journal_folder_patterns=list(rv["journal_folder_patterns"]),
+            )
 
     # [reranker]
     if "reranker" in raw:

@@ -204,9 +204,13 @@ class GraphQuerier:
         self,
         registry: ModelRegistry,
         neo4j_cfg: Neo4jConfig | None = None,
+        journal_folder_patterns: list[str] | None = None,
     ) -> None:
         neo4j_cfg = neo4j_cfg or Neo4jConfig()
         self._resolved = registry.for_role("query")
+        self._journal_folder_patterns: list[str] = list(
+            journal_folder_patterns or ["/Journal/"]
+        )
 
         self._graph = Neo4jGraph(
             url=neo4j_cfg.uri,
@@ -335,6 +339,66 @@ class GraphQuerier:
             ],
         }
 
+    def _build_examples(self) -> str:
+        """Construct the few-shot Cypher examples shown to the LLM.
+
+        Seeded with patterns that the bare schema doesn't teach well on its
+        own — date-range filters on ``:File`` / ``:Email`` / ``:CalendarEvent``,
+        the journal-folder filter (config-driven via
+        ``[retrieval] journal_folder_patterns``), and person-mention joins.
+        Empty before this was added → the LLM had to invent these patterns
+        each time and frequently got date arithmetic or property names wrong.
+        """
+        if self._journal_folder_patterns:
+            # CONTAINS literals; LangChain prompt sees them verbatim.
+            folder_or = " OR ".join(
+                f"f.path CONTAINS '{p}'" for p in self._journal_folder_patterns
+            )
+        else:
+            folder_or = "f.path CONTAINS '/Journal/'"
+
+        return f"""\
+# Examples
+# Use these as a template. Always RETURN ``source_id`` so the calling
+# pipeline can dedupe against vector results. Always include an ORDER BY
+# on the date property and a LIMIT.
+
+Question: Notes from the last 7 days
+Cypher: MATCH (f:File) WHERE f.modified_at >= datetime() - duration({{days: 7}}) \
+RETURN f.source_id AS source_id, f.path AS path, f.modified_at AS modified_at \
+ORDER BY f.modified_at DESC LIMIT 50
+
+Question: Summarize my journal entries of the last seven days
+Cypher: MATCH (f:File) WHERE ({folder_or}) \
+AND f.modified_at >= datetime() - duration({{days: 7}}) \
+RETURN f.source_id AS source_id, f.path AS path, f.modified_at AS modified_at \
+ORDER BY f.modified_at DESC LIMIT 50
+
+Question: What did I journal about this month
+Cypher: MATCH (f:File) WHERE ({folder_or}) \
+AND f.modified_at >= datetime.truncate('month', datetime()) \
+RETURN f.source_id AS source_id, f.path AS path, f.modified_at AS modified_at \
+ORDER BY f.modified_at DESC LIMIT 50
+
+Question: Emails from Alice in the last 30 days
+Cypher: MATCH (e:Email)-[:SENT_BY]->(p:Person) \
+WHERE (p.name CONTAINS 'Alice' OR p.email CONTAINS 'alice') \
+AND e.date >= datetime() - duration({{days: 30}}) \
+RETURN e.source_id AS source_id, e.subject AS subject, e.date AS date, p.name AS sender \
+ORDER BY e.date DESC LIMIT 50
+
+Question: Calendar events for this week
+Cypher: MATCH (e:CalendarEvent) WHERE e.start_time >= datetime() - duration({{days: 7}}) \
+AND e.start_time < datetime() + duration({{days: 7}}) \
+RETURN e.source_id AS source_id, e.summary AS title, e.start_time AS start_time \
+ORDER BY e.start_time ASC LIMIT 50
+
+Question: Notes that mention Bob Smith
+Cypher: MATCH (f:File)-[:MENTIONS]->(p:Person {{name: 'Bob Smith'}}) \
+RETURN f.source_id AS source_id, f.path AS path, f.modified_at AS modified_at \
+ORDER BY f.modified_at DESC LIMIT 50
+"""
+
     def query(self, question: str) -> GraphQueryResult:
         """Translate *question* to Cypher, execute, and return structured results.
 
@@ -345,7 +409,11 @@ class GraphQuerier:
             # Step 1: Generate Cypher (without executing against Neo4j).
             schema = self._graph.get_structured_schema
             gen_result = self._chain.cypher_generation_chain.invoke(
-                {"question": question, "schema": schema, "examples": ""}
+                {
+                    "question": question,
+                    "schema": schema,
+                    "examples": self._build_examples(),
+                }
             )
             # invoke() returns a dict with 'text' key; run() returned the string directly
             raw_cypher = (

@@ -669,6 +669,46 @@ batch_size = 32                  # cross-encoder batch size
 | `FIELDNOTES_MCP_AUTH_TOKEN` | MCP server auth token | — |
 | `GRAFANA_PASSWORD` | Grafana admin password | *required* |
 
+### Retrieval
+
+Tunes how `fieldnotes ask` (and the MCP `ask` tool) decides what's
+relevant. The pipeline runs two retrieval lanes — a graph lane
+(`GraphQuerier`, LLM-generated Cypher against Neo4j) and a vector lane
+(`VectorQuerier`, cosine similarity in Qdrant) — and merges them
+through `worker/query/hybrid.py`. Two knobs live under `[retrieval]`:
+
+```toml
+[retrieval]
+# Path substrings identifying journal-entry files. Used by the ask
+# pipeline to:
+#   1) Teach the Cypher-generation chain how to write WHERE clauses for
+#      questions like "summarize my journal entries of the last seven
+#      days" — examples are seeded with WHERE (f.path CONTAINS '<each
+#      pattern>') so the LLM produces precise queries instead of
+#      semantic-similarity guesses.
+#   2) Post-filter vector results when the question mentions "journal":
+#      results whose source_id doesn't contain any of these substrings
+#      are dropped. Matching is case-insensitive substring.
+# Add one entry per journal-folder convention across your vault(s).
+journal_folder_patterns = ["/Journal/"]
+```
+
+Multiple folder conventions across vaults are supported:
+
+```toml
+[retrieval]
+journal_folder_patterns = ["/Journal/", "/01 Daily/", "/Daily Notes/"]
+```
+
+The vector lane also applies an automatic date-window post-filter
+whenever the question carries an explicit time hint
+(`today`, `yesterday`, `this week|month|year`, `last N day(s)/week(s)/month(s)/year(s)`,
+`in the last N <unit>`). Vector results whose stored `date` falls
+outside that window are dropped before being passed to the LLM.
+Results with no parseable date are kept (best-effort strict). The
+graph lane is never post-filtered — the Cypher should have done the
+filtering itself.
+
 ## Migrating from Single-Account
 
 If you upgraded from a release that used the flat `[sources.gmail]` / `[sources.google_calendar]` schema, the daemon will refuse to start until you migrate. The `fieldnotes migrate gmail-multiaccount` command is a one-shot retag that does everything in place.

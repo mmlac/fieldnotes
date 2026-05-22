@@ -163,6 +163,20 @@ top_k_post = 10         # results kept after rerank
 score_threshold = 0.0   # drop candidates below this score
 batch_size = 32         # cross-encoder batch size
 
+# --- Retrieval tuning ---
+# Path substrings identifying journal-entry files. Used by the ask
+# pipeline (`fieldnotes ask` / MCP) to:
+#   1) Seed the Cypher-generation chain with examples that know your
+#      journal-folder filter, so questions like "summarize my journal
+#      entries of the last seven days" produce precise graph queries
+#      instead of noisy semantic matches.
+#   2) Post-filter vector results when the question mentions "journal":
+#      results whose source_id doesn't contain any of these substrings
+#      are dropped. Matching is case-insensitive substring.
+# Add one entry per journal-folder convention in your vault(s).
+[retrieval]
+journal_folder_patterns = ["/Journal/"]
+
 [modelproviders.local]
 type = "sentence_transformers"
 device = "auto"                   # auto | cpu | cuda | mps

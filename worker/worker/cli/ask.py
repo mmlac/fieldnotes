@@ -88,6 +88,7 @@ def _prepare_context(
     reranker=None,
     rerank_top_k_pre: int = 50,
     rerank_top_k_post: int = 20,
+    journal_folder_patterns: list[str] | None = None,
 ) -> _PreparedContext:
     """Run hybrid retrieval and build the RAG prompt."""
     verbose = session.verbose if session else False
@@ -139,12 +140,32 @@ def _prepare_context(
             logger.debug("Vector query failed: %s", exc)
             vector_result = VectorQueryResult(question=search_query, error=str(exc))
 
+        # Heuristic post-filters: drop vector results whose date falls
+        # outside an explicit time window in the question, and (when the
+        # user is asking about journals specifically) require the
+        # source_id to live in one of the configured journal folders.
+        # Suppresses the "asked about my journal, got a random PDF"
+        # failure mode that pure semantic similarity has on this prompt.
+        from worker.query._question_time import (
+            extract_date_window,
+            mentions_journal,
+        )
+
+        date_window = extract_date_window(search_query)
+        require_folders = (
+            journal_folder_patterns
+            if (journal_folder_patterns and mentions_journal(search_query))
+            else None
+        )
+
         hybrid = merge(
             search_query,
             graph_result,
             vector_result,
             reranker=reranker,
             top_k_post=rerank_top_k_post if reranker is not None else None,
+            date_window=date_window,
+            require_journal_folder=require_folders,
         )
 
     # Show progress tree with source breakdown.
@@ -300,6 +321,7 @@ def _synthesize(
     reranker=None,
     rerank_top_k_pre: int = 50,
     rerank_top_k_post: int = 20,
+    journal_folder_patterns: list[str] | None = None,
 ) -> str:
     """Run hybrid retrieval + LLM synthesis (non-streaming). Returns formatted answer text."""
     ctx = _prepare_context(
@@ -311,6 +333,7 @@ def _synthesize(
         reranker=reranker,
         rerank_top_k_pre=rerank_top_k_pre,
         rerank_top_k_post=rerank_top_k_post,
+        journal_folder_patterns=journal_folder_patterns,
     )
 
     if ctx.empty:
@@ -369,6 +392,7 @@ def _synthesize_stream(
     reranker=None,
     rerank_top_k_pre: int = 50,
     rerank_top_k_post: int = 20,
+    journal_folder_patterns: list[str] | None = None,
 ) -> str:
     """Run hybrid retrieval + streaming LLM synthesis. Returns the raw answer text."""
     from worker.cli.stream import render_stream
@@ -382,6 +406,7 @@ def _synthesize_stream(
         reranker=reranker,
         rerank_top_k_pre=rerank_top_k_pre,
         rerank_top_k_post=rerank_top_k_post,
+        journal_folder_patterns=journal_folder_patterns,
     )
 
     if ctx.empty:
@@ -450,7 +475,11 @@ def _run_repl(
 
     cfg = load_config(config_path)
     registry = ModelRegistry(cfg)
-    graph_querier = GraphQuerier(registry, cfg.neo4j)
+    graph_querier = GraphQuerier(
+        registry,
+        cfg.neo4j,
+        journal_folder_patterns=cfg.retrieval.journal_folder_patterns,
+    )
     vector_querier = VectorQuerier(registry, cfg.qdrant)
     reranker = build_reranker(cfg.reranker, registry)
     rerank_top_k_pre = cfg.reranker.top_k_pre
@@ -591,6 +620,7 @@ def _run_repl(
                         reranker=reranker,
                         rerank_top_k_pre=rerank_top_k_pre,
                         rerank_top_k_post=rerank_top_k_post,
+                        journal_folder_patterns=cfg.retrieval.journal_folder_patterns,
                     )
                     print()  # blank line after
                 else:
@@ -603,6 +633,7 @@ def _run_repl(
                         reranker=reranker,
                         rerank_top_k_pre=rerank_top_k_pre,
                         rerank_top_k_post=rerank_top_k_post,
+                        journal_folder_patterns=cfg.retrieval.journal_folder_patterns,
                     )
                     print(f"\n{answer}\n")
             except KeyboardInterrupt:
@@ -651,7 +682,11 @@ def run_ask(
 
     cfg = load_config(config_path)
     registry = ModelRegistry(cfg)
-    graph_querier = GraphQuerier(registry, cfg.neo4j)
+    graph_querier = GraphQuerier(
+        registry,
+        cfg.neo4j,
+        journal_folder_patterns=cfg.retrieval.journal_folder_patterns,
+    )
     vector_querier = VectorQuerier(registry, cfg.qdrant)
     reranker = build_reranker(cfg.reranker, registry)
     rerank_top_k_pre = cfg.reranker.top_k_pre
@@ -671,6 +706,7 @@ def run_ask(
                 reranker=reranker,
                 rerank_top_k_pre=rerank_top_k_pre,
                 rerank_top_k_post=rerank_top_k_post,
+                journal_folder_patterns=cfg.retrieval.journal_folder_patterns,
             )
 
         if stream:
@@ -683,6 +719,7 @@ def run_ask(
                 reranker=reranker,
                 rerank_top_k_pre=rerank_top_k_pre,
                 rerank_top_k_post=rerank_top_k_post,
+                journal_folder_patterns=cfg.retrieval.journal_folder_patterns,
             )
             print()  # trailing newline
             return 0
@@ -696,6 +733,7 @@ def run_ask(
                 reranker=reranker,
                 rerank_top_k_pre=rerank_top_k_pre,
                 rerank_top_k_post=rerank_top_k_post,
+                journal_folder_patterns=cfg.retrieval.journal_folder_patterns,
             )
             print(answer)
             return 0
@@ -732,6 +770,7 @@ def _run_json(
     reranker=None,
     rerank_top_k_pre: int = 50,
     rerank_top_k_post: int = 20,
+    journal_folder_patterns: list[str] | None = None,
 ) -> int:
     """Run a question and output structured JSON."""
     from worker.cli.stream import render_json
@@ -746,6 +785,7 @@ def _run_json(
         reranker=reranker,
         rerank_top_k_pre=rerank_top_k_pre,
         rerank_top_k_post=rerank_top_k_post,
+        journal_folder_patterns=journal_folder_patterns,
     )
 
     if ctx.empty:

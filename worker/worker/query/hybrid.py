@@ -4,12 +4,20 @@ Merges results from graph query (high precision) and vector search
 (high recall), deduplicates by source_id, and formats the merged
 context as a structured prompt fragment with [Graph context] and
 [Semantic context] sections for LLM consumption.
+
+Optionally post-filters vector results by ``date_window`` (drops
+out-of-window results) and ``require_journal_folder`` (drops results
+whose source_id doesn't match any configured journal-folder pattern).
+These exist because, without them, "Summarize my journal entries of
+the last 7 days" pulls in random PDFs and old emails that just happen
+to score well on semantic similarity to "journal".
 """
 
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from datetime import date, datetime
 
 from worker.query.graph import GraphQueryResult
 from worker.query.reranker import (
@@ -20,6 +28,53 @@ from worker.query.reranker import (
 from worker.query.vector import VectorQueryResult, VectorResult
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_iso_date(value: str) -> date | None:
+    """Best-effort parse of VectorResult.date into a calendar date.
+
+    Accepts ``YYYY-MM-DD`` and ``YYYY-MM-DDTHH:MM:SS[Z|+offset]`` forms.
+    Returns None when the value is empty or unparseable — caller treats
+    that as "unknown date, keep" to avoid losing data.
+    """
+    if not value:
+        return None
+    head = value.split("T", 1)[0]
+    try:
+        return datetime.strptime(head, "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
+def _filter_vector_results(
+    results: list[VectorResult],
+    *,
+    date_window: tuple[date, date] | None,
+    require_journal_folder: list[str] | None,
+) -> tuple[list[VectorResult], int, int]:
+    """Drop results that fall outside the date window or journal-folder set.
+
+    Returns ``(kept, dropped_by_date, dropped_by_folder)``. A result with
+    no parseable date is kept (the filter is best-effort strict — we don't
+    drop on missing data).
+    """
+    dropped_date = 0
+    dropped_folder = 0
+    kept: list[VectorResult] = []
+    for r in results:
+        if date_window is not None:
+            d = _parse_iso_date(r.date)
+            if d is not None and not (date_window[0] <= d <= date_window[1]):
+                dropped_date += 1
+                continue
+        if require_journal_folder:
+            sid_lower = r.source_id.lower()
+            matched = any(p.lower() in sid_lower for p in require_journal_folder)
+            if not matched:
+                dropped_folder += 1
+                continue
+        kept.append(r)
+    return kept, dropped_date, dropped_folder
 
 
 @dataclass
@@ -102,6 +157,8 @@ def merge(
     *,
     reranker: Reranker | None = None,
     top_k_post: int | None = None,
+    date_window: tuple[date, date] | None = None,
+    require_journal_folder: list[str] | None = None,
 ) -> HybridResult:
     """Merge graph and vector results with dedup by source_id.
 
@@ -126,6 +183,18 @@ def merge(
         How many vector results to keep after reranking.  Ignored when
         *reranker* is None or :class:`NullReranker`.  Defaults to the
         full deduped list.
+    date_window:
+        Optional ``(start, end)`` inclusive calendar-date window. Vector
+        results whose ``date`` parses to a value outside the window are
+        dropped before reranking. Results with no parseable date are
+        kept (best-effort strict). Graph results are never filtered here;
+        the Cypher should have done that.
+    require_journal_folder:
+        Optional list of path substrings (case-insensitive). When set,
+        vector results whose ``source_id`` doesn't contain any of these
+        substrings are dropped. Typically driven by
+        :func:`worker.query._question_time.mentions_journal` +
+        ``[retrieval] journal_folder_patterns``.
 
     Returns
     -------
@@ -145,6 +214,19 @@ def merge(
     deduped_vector: list[VectorResult] = [
         r for r in vector.results if r.source_id not in graph_source_ids
     ]
+
+    if date_window is not None or require_journal_folder:
+        deduped_vector, dropped_date, dropped_folder = _filter_vector_results(
+            deduped_vector,
+            date_window=date_window,
+            require_journal_folder=require_journal_folder,
+        )
+        if dropped_date or dropped_folder:
+            logger.info(
+                "Vector post-filter: dropped %d by date, %d by journal-folder",
+                dropped_date,
+                dropped_folder,
+            )
 
     pre_rerank_count = len(deduped_vector)
     if reranker is not None and not isinstance(reranker, NullReranker) and deduped_vector:
