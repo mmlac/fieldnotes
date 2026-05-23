@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import google.auth.exceptions
 import httpx
 import pytest
 from google.oauth2.credentials import Credentials
@@ -240,6 +241,70 @@ class TestGetCredentials:
         """Calling without account raises TypeError (no silent default)."""
         with pytest.raises(TypeError):
             get_credentials("unused.json")  # type: ignore[call-arg]
+
+    def test_refresh_error_headless_raises_reauth_and_deletes_token(
+        self, home: Path
+    ) -> None:
+        """RefreshError when headless: deletes stale token, raises ReauthRequiredError."""
+        token = token_path_for_account("default")
+        token.parent.mkdir(parents=True, exist_ok=True)
+        token.write_text('{"token": "stale"}')
+
+        mock_creds = _fake_creds(valid=False, expired=True, refresh_token="rt")
+        mock_creds.refresh.side_effect = google.auth.exceptions.RefreshError(
+            "invalid_grant"
+        )
+
+        with (
+            patch.object(
+                Credentials, "from_authorized_user_info", return_value=mock_creds
+            ),
+            patch("worker.sources.calendar_auth.Request"),
+            patch("worker.sources.calendar_auth.sys.stdin") as mock_stdin,
+            pytest.raises(ReauthRequiredError),
+        ):
+            mock_stdin.isatty.return_value = False
+            get_credentials("unused.json", account="default")
+
+        assert not token.exists(), "stale token must be deleted on RefreshError"
+
+    def test_refresh_error_interactive_reruns_consent_flow(
+        self, home: Path, tmp_path: Path
+    ) -> None:
+        """RefreshError when interactive: deletes stale token, runs consent flow."""
+        token = token_path_for_account("default")
+        token.parent.mkdir(parents=True, exist_ok=True)
+        token.write_text('{"token": "stale"}')
+
+        secrets = tmp_path / "secrets.json"
+        secrets.write_text('{"installed": {}}')
+
+        mock_creds = _fake_creds(valid=False, expired=True, refresh_token="rt")
+        mock_creds.refresh.side_effect = google.auth.exceptions.RefreshError(
+            "invalid_grant"
+        )
+
+        new_creds = _fake_creds(valid=True)
+        mock_flow = MagicMock()
+        mock_flow.run_local_server.return_value = new_creds
+
+        with (
+            patch.object(
+                Credentials, "from_authorized_user_info", return_value=mock_creds
+            ),
+            patch("worker.sources.calendar_auth.Request"),
+            patch("worker.sources.calendar_auth.sys.stdin") as mock_stdin,
+            patch(
+                "worker.sources.calendar_auth.InstalledAppFlow.from_client_secrets_file",
+                return_value=mock_flow,
+            ),
+        ):
+            mock_stdin.isatty.return_value = True
+            result = get_credentials(secrets, account="default")
+
+        assert result is new_creds
+        mock_flow.run_local_server.assert_called_once_with(port=0)
+        assert token.exists()
 
 
 class TestGetScopes:

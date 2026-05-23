@@ -17,9 +17,11 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 import time
 from pathlib import Path
 
+import google.auth.exceptions
 import httpx
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
@@ -106,7 +108,35 @@ def get_credentials(
 
     if creds and creds.expired and creds.refresh_token:
         logger.info("Refreshing expired Calendar token for account=%s", account)
-        creds.refresh(Request())
+        try:
+            creds.refresh(Request())
+        except google.auth.exceptions.RefreshError as exc:
+            logger.error(
+                "Calendar token refresh failed for account=%s (%s); "
+                "deleting stale token",
+                account,
+                exc,
+            )
+            try:
+                token_path.unlink()
+            except OSError:
+                pass
+            if sys.stdin.isatty():
+                logger.info(
+                    "Starting Calendar OAuth2 authorization flow for account=%s",
+                    account,
+                )
+                flow = InstalledAppFlow.from_client_secrets_file(
+                    str(client_secrets_path), scopes
+                )
+                creds = flow.run_local_server(port=0)
+            else:
+                raise ReauthRequiredError(
+                    f"Calendar OAuth2 refresh token for account={account!r} has been "
+                    f"revoked (invalid_grant). Delete "
+                    f"{redact_home_path(str(token_path))} and re-run the install "
+                    f"flow to re-authorize."
+                ) from exc
     else:
         logger.info(
             "Starting Calendar OAuth2 authorization flow for account=%s", account

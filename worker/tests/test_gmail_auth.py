@@ -11,11 +11,13 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import google.auth.exceptions
 import pytest
 from google.oauth2.credentials import Credentials
 
 from worker.sources.gmail_auth import (
     SCOPES,
+    ReauthRequiredError,
     get_credentials,
     token_path_for_account,
 )
@@ -213,7 +215,7 @@ class TestGetCredentials:
         assert token.parent.is_dir()
 
     def test_refresh_failure_propagates(self, home: Path) -> None:
-        """If token refresh raises, the error propagates to caller."""
+        """Non-RefreshError exceptions from token refresh propagate to caller."""
         token = token_path_for_account("default")
         token.parent.mkdir(parents=True, exist_ok=True)
         token.write_text('{"token": "old"}')
@@ -229,6 +231,71 @@ class TestGetCredentials:
             pytest.raises(Exception, match="refresh failed"),
         ):
             get_credentials("unused.json", account="default")
+
+    def test_refresh_error_headless_raises_reauth_and_deletes_token(
+        self, home: Path
+    ) -> None:
+        """RefreshError when headless: deletes stale token, raises ReauthRequiredError."""
+        token = token_path_for_account("default")
+        token.parent.mkdir(parents=True, exist_ok=True)
+        token.write_text('{"token": "stale"}')
+
+        mock_creds = _fake_creds(valid=False, expired=True, refresh_token="rt")
+        mock_creds.refresh.side_effect = google.auth.exceptions.RefreshError(
+            "invalid_grant"
+        )
+
+        with (
+            patch.object(
+                Credentials, "from_authorized_user_info", return_value=mock_creds
+            ),
+            patch("worker.sources.gmail_auth.Request"),
+            patch("worker.sources.gmail_auth.sys.stdin") as mock_stdin,
+            pytest.raises(ReauthRequiredError),
+        ):
+            mock_stdin.isatty.return_value = False
+            get_credentials("unused.json", account="default")
+
+        assert not token.exists(), "stale token must be deleted on RefreshError"
+
+    def test_refresh_error_interactive_reruns_consent_flow(
+        self, home: Path, tmp_path: Path
+    ) -> None:
+        """RefreshError when interactive: deletes stale token, runs consent flow."""
+        token = token_path_for_account("default")
+        token.parent.mkdir(parents=True, exist_ok=True)
+        token.write_text('{"token": "stale"}')
+
+        secrets = tmp_path / "secrets.json"
+        secrets.write_text('{"installed": {}}')
+
+        mock_creds = _fake_creds(valid=False, expired=True, refresh_token="rt")
+        mock_creds.refresh.side_effect = google.auth.exceptions.RefreshError(
+            "invalid_grant"
+        )
+
+        new_creds = _fake_creds(valid=True)
+        mock_flow = MagicMock()
+        mock_flow.run_local_server.return_value = new_creds
+
+        with (
+            patch.object(
+                Credentials, "from_authorized_user_info", return_value=mock_creds
+            ),
+            patch("worker.sources.gmail_auth.Request"),
+            patch("worker.sources.gmail_auth.sys.stdin") as mock_stdin,
+            patch(
+                "worker.sources.gmail_auth.InstalledAppFlow.from_client_secrets_file",
+                return_value=mock_flow,
+            ),
+        ):
+            mock_stdin.isatty.return_value = True
+            result = get_credentials(secrets, account="default")
+
+        assert result is new_creds
+        mock_flow.run_local_server.assert_called_once_with(port=0)
+        # New token saved; stale token gone (overwritten by new flow)
+        assert token.exists()
 
     def test_two_accounts_no_collision(self, home: Path, tmp_path: Path) -> None:
         """Saving account A then account B leaves both files intact."""
