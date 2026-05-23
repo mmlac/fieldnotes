@@ -428,18 +428,22 @@ the scope to an existing install is a one-time setup:
 
 #### Troubleshooting
 
-**RefreshError: invalid_grant: Token has been expired or revoked**
+**RefreshError: invalid_grant / ReauthRequiredError: Token has been expired or revoked**
 
-If `fieldnotes serve --daemon` crashes with this error, one of your OAuth refresh tokens has expired. This is the expected behavior for apps left in **Testing** mode — Google expires them after 7 days.
+If `fieldnotes serve --daemon` logs this error, one of your OAuth refresh tokens has expired. This is the expected behavior for apps left in **Testing** mode — Google invalidates them after 7 days.
 
 **Solution:**
-1. **Publish the app to "In production"** (recommended) — go to *APIs & Services → OAuth consent screen → Publish app*. After publishing, existing tokens expire on the next refresh attempt, then your daemon gets a fresh token with a 6-month lifespan.
-2. **Or: Re-run the OAuth consent flow** — delete the expired token(s) and restart:
+1. **Publish the app to "In production"** (strongly recommended) — go to *APIs & Services → OAuth consent screen → Publish app*. This removes the 7-day expiry. Personal users can click past the "unverified app" warning without full Google verification; Workspace users can set the user type to "Internal" to skip the requirement entirely. Production refresh tokens remain valid as long as they are actively used — Google revokes tokens that have been idle for 6 months, but tokens refreshed regularly have no fixed expiration.
+2. **Re-authorize interactively** — the daemon automatically deletes the expired token and logs a `ReauthRequiredError` (headless daemons cannot open a browser to re-authorize). Re-run **without** `--daemon` once to complete the OAuth consent flow in your browser, then restart the daemon:
    ```bash
-   rm ~/.fieldnotes/data/{gmail,calendar}_token-*.json
+   fieldnotes serve        # follow the browser prompt, then Ctrl-C
    fieldnotes serve --daemon
    ```
-   The daemon will pause at each configured Gmail/Calendar account and open your browser for a fresh consent screen. Approve the scopes, and the new token is saved. This is suitable for one-off runs but not recommended for long-running daemons — republishing is the better fix.
+   If the stale token was not auto-deleted (older installations), remove it before running the above:
+   ```bash
+   rm ~/.fieldnotes/data/{gmail,calendar}_token-*.json
+   ```
+   Skipping step 1 means the newly issued token will expire again in 7 days.
 
 **Prevention:** For daemon/long-running use, publish the app to "In production" when you first set up Gmail or Google Calendar. Personal users can use the "unverified app" warning without full verification; Workspace users can set the user type to "Internal" to avoid Testing-mode token expiration.
 
