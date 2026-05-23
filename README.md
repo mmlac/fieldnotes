@@ -434,14 +434,14 @@ If `fieldnotes serve --daemon` logs this error, one of your OAuth refresh tokens
 
 **Solution:**
 1. **Publish the app to "In production"** (strongly recommended) — go to *APIs & Services → OAuth consent screen → Publish app*. This removes the 7-day expiry. Personal users can click past the "unverified app" warning without full Google verification; Workspace users can set the user type to "Internal" to skip the requirement entirely. Production refresh tokens remain valid as long as they are actively used — Google revokes tokens that have been idle for 6 months, but tokens refreshed regularly have no fixed expiration.
-2. **Re-authorize interactively** — the daemon automatically deletes the expired token and logs a `ReauthRequiredError` (headless daemons cannot open a browser to re-authorize). Re-run **without** `--daemon` once to complete the OAuth consent flow in your browser, then restart the daemon:
+2. **Re-authorize interactively** — the daemon automatically deletes the expired token and logs a `ReauthRequiredError` (headless daemons cannot open a browser to re-authorize). Run `fieldnotes serve --daemon` **in a terminal with an attached stdin** (not via a system service or detached process) so the daemon detects the TTY and opens the browser OAuth flow:
    ```bash
-   fieldnotes serve        # follow the browser prompt, then Ctrl-C
-   fieldnotes serve --daemon
+   fieldnotes serve --daemon   # in an interactive terminal — follow the browser prompt, then Ctrl-C
    ```
    If the stale token was not auto-deleted (older installations), remove it before running the above:
    ```bash
    rm ~/.fieldnotes/data/{gmail,calendar}_token-*.json
+   fieldnotes serve --daemon   # in an interactive terminal
    ```
    Skipping step 1 means the newly issued token will expire again in 7 days.
 
