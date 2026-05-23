@@ -373,6 +373,8 @@ Gmail indexing requires a Google Cloud OAuth2 credential. This is a one-time set
 1. **Create a Google Cloud project** at [console.cloud.google.com](https://console.cloud.google.com) (e.g., name it "FieldNotes").
 2. **Enable the Gmail API**: Navigate to *APIs & Services → Library*, search for "Gmail API", and click *Enable*.
 3. **Configure the OAuth consent screen**: Go to *APIs & Services → OAuth consent screen*. Choose **External** as user type. Fill in the required app name and email fields. On the *Scopes* page, add `gmail.readonly`. On the *Test users* page, **add your own Gmail address**. Leave the app in **Testing** mode — this is sufficient for personal use and avoids Google's app verification process.
+
+   > **⚠️ Testing mode limitation:** Google expires refresh tokens after 7 days for External apps in Testing publishing status. A long-running `fieldnotes serve --daemon` will die with `RefreshError: invalid_grant` every ~7 days for all accounts at once. **For daemon/long-running use, publish the app to "In production"** via *APIs & Services → OAuth consent screen → Publish app*. Personal users can click past the "unverified app" warning without full Google verification. Workspace users can set the user type to "Internal" to avoid the 7-day cap. See [Troubleshooting](#troubleshooting) for recovery if you hit this error.
 4. **Create OAuth credentials**: Go to *APIs & Services → Credentials → Create Credentials → OAuth client ID*. Select **Desktop application** as the application type.
 5. **Download the credentials**: Click *Download JSON* and save it as `~/.fieldnotes/credentials.json` (or the path you set in `client_secrets_path`).
 6. **First run**: When the daemon starts with Gmail enabled, it will open your browser for a one-time consent screen — once per configured account. Approve read-only access (`gmail.readonly` scope). The resulting token is saved to `~/.fieldnotes/data/gmail_token-<account>.json` (mode `0600`) and refreshed automatically from then on.
@@ -389,6 +391,9 @@ Google Calendar uses the same OAuth credentials file and Google Cloud project as
 
 1. **Enable the Google Calendar API**: In the same Google Cloud project, go to *APIs & Services → Library*, search for "Google Calendar API", and click *Enable*.
 2. **Add the Calendar scope**: Go to *APIs & Services → OAuth consent screen → Edit App → Scopes* and add `calendar.events.readonly`. (If you set up Gmail and Calendar at the same time, add both scopes in one go.)
+
+   > **⚠️ Testing mode limitation:** See the [Gmail OAuth Setup](#gmail-oauth-setup) step 3 caveat — the same 7-day refresh token expiration applies to Calendar tokens in Testing mode. Publish the app to "In production" for daemon/long-running use.
+
 3. **First run**: When the daemon starts with Google Calendar enabled, it will open your browser for a one-time consent screen per configured account. Approve read-only access (`calendar.events.readonly` scope). The token is saved to `~/.fieldnotes/data/calendar_token-<account>.json` (mode `0600`) and refreshed automatically.
 4. **Multiple calendars per account**: Set `calendar_ids` to a list of calendar IDs. Use `"primary"` for the account's main calendar. Other calendars can be found in Google Calendar settings under *Settings for other calendars → Integrate calendar → Calendar ID*.
 5. **Multiple accounts**: Add additional `[sources.google_calendar.<account>]` sections — one per Google identity you want to index. Account labels must match `^[a-z][a-z0-9_-]{0,30}$`. See also the [`[me]`](#me-self-identity) block below to declare your own emails so the graph treats them as a single self-Person.
@@ -420,6 +425,27 @@ the scope to an existing install is a one-time setup:
 > linked from calendar events — it does not list, modify, or upload anything in your
 > Drive. Bytes are streamed in-memory, parsed, and discarded (see
 > [Attachments](#attachments)).
+
+#### Troubleshooting
+
+**RefreshError: invalid_grant / ReauthRequiredError: Token has been expired or revoked**
+
+If `fieldnotes serve --daemon` logs this error, one of your OAuth refresh tokens has expired. This is the expected behavior for apps left in **Testing** mode — Google invalidates them after 7 days.
+
+**Solution:**
+1. **Publish the app to "In production"** (strongly recommended) — go to *APIs & Services → OAuth consent screen → Publish app*. This removes the 7-day expiry. Personal users can click past the "unverified app" warning without full Google verification; Workspace users can set the user type to "Internal" to skip the requirement entirely. However, refresh tokens can still be revoked for other reasons even in production: user-initiated revocation, account password changes for tokens with Gmail scopes, or exceeding Google's per-client live-token limit.
+2. **Re-authorize interactively** — the daemon automatically deletes the expired token and logs a `ReauthRequiredError` (headless daemons cannot open a browser to re-authorize). Run `fieldnotes serve --daemon` **in a terminal with an attached stdin** (not via a system service or detached process) so the daemon detects the TTY and opens the browser OAuth flow:
+   ```bash
+   fieldnotes serve --daemon   # in an interactive terminal — follow the browser prompt, then Ctrl-C
+   ```
+   If the stale token was not auto-deleted (older installations), remove it before running the above:
+   ```bash
+   rm ~/.fieldnotes/data/{gmail,calendar}_token-*.json
+   fieldnotes serve --daemon   # in an interactive terminal
+   ```
+   Skipping step 1 means the newly issued token will expire again in 7 days.
+
+**Prevention:** For daemon/long-running use, publish the app to "In production" when you first set up Gmail or Google Calendar. Personal users can use the "unverified app" warning without full verification; Workspace users can set the user type to "Internal" to avoid Testing-mode token expiration.
 
 #### `[me]` Self-Identity
 
