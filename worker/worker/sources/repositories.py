@@ -148,8 +148,16 @@ def _get_remote_url(repo: git.Repo) -> str | None:
         return None
 
 
-def _discover_repos(roots: list[Path]) -> list[Path]:
-    """Find git repositories under *roots* (non-bare only)."""
+def _discover_repos(
+    roots: list[Path], exclude_repos: list[str] | None = None
+) -> list[Path]:
+    """Find git repositories under *roots* (non-bare only).
+
+    Repos whose directory name or full path matches any glob in *exclude_repos*
+    are skipped entirely — neither their files nor their commits are scanned.
+    This is distinct from ``exclude_patterns``, which filters files *within* a
+    repo by their repo-relative path.
+    """
     repos: list[Path] = []
     for root in roots:
         if not root.is_dir():
@@ -164,7 +172,22 @@ def _discover_repos(roots: list[Path]) -> list[Path]:
         for child in sorted(root.iterdir()):
             if child.is_dir() and (child / ".git").exists():
                 repos.append(child)
-    return repos
+
+    if not exclude_repos:
+        return repos
+
+    kept: list[Path] = []
+    for repo in repos:
+        # _matches_any globs each pattern against both the full path and the
+        # basename, so "gascity", "*/gascity", and an absolute path all work.
+        if _matches_any(str(repo), exclude_repos):
+            logger.info(
+                "Skipping repo %s (matches exclude_repos)",
+                redact_home_path(str(repo)),
+            )
+        else:
+            kept.append(repo)
+    return kept
 
 
 def _build_event(
@@ -289,7 +312,8 @@ class RepositorySource(PythonSource):
         repo_roots: list[str]             — directories to scan for repos (required)
         poll_interval_seconds: int        — polling interval (default: 300)
         include_patterns: list[str]       — file glob patterns to include
-        exclude_patterns: list[str]       — file glob patterns to exclude
+        exclude_patterns: list[str]       — file glob patterns to exclude (within a repo)
+        exclude_repos: list[str]          — repo name/path globs to skip entirely
         cursor_path: str                  — cursor persistence file (optional)
         max_file_size: int                — max file size in bytes (default: 100 MiB)
         max_commits: int                  — max commits to index per repo (default: 200)
@@ -300,6 +324,7 @@ class RepositorySource(PythonSource):
         self._poll_interval: int = DEFAULT_POLL_INTERVAL
         self._include_patterns: list[str] = list(DEFAULT_INCLUDE_PATTERNS)
         self._exclude_patterns: list[str] = list(DEFAULT_EXCLUDE_PATTERNS)
+        self._exclude_repos: list[str] = []
         self._index_only_patterns: list[str] = []
         self._cursor_path: Path = DEFAULT_CURSOR_PATH
         self._max_file_size: int = DEFAULT_MAX_FILE_SIZE
@@ -321,6 +346,8 @@ class RepositorySource(PythonSource):
             self._include_patterns = list(cfg["include_patterns"])
         if "exclude_patterns" in cfg:
             self._exclude_patterns = list(cfg["exclude_patterns"])
+        if "exclude_repos" in cfg:
+            self._exclude_repos = list(cfg["exclude_repos"])
         if "index_only_patterns" in cfg:
             self._index_only_patterns = list(cfg["index_only_patterns"])
 
@@ -360,7 +387,7 @@ class RepositorySource(PythonSource):
         try:
             while True:
                 try:
-                    repos = _discover_repos(self._repo_roots)
+                    repos = _discover_repos(self._repo_roots, self._exclude_repos)
                     for repo_path in repos:
                         await self._scan_repo(
                             repo_path, cursors, queue, indexed_check=indexed_check

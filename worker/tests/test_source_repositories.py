@@ -140,6 +140,25 @@ class TestDiscoverRepos:
         assert "b" in names
         assert "not_a_repo" not in names
 
+    def test_exclude_repos_by_name(self, tmp_path: Path) -> None:
+        _init_repo(tmp_path / "a")
+        _init_repo(tmp_path / "b")
+        _init_repo(tmp_path / "gascity")
+        repos = _discover_repos([tmp_path], exclude_repos=["gascity"])
+        names = {r.name for r in repos}
+        assert names == {"a", "b"}
+
+    def test_exclude_repos_by_path_glob(self, tmp_path: Path) -> None:
+        _init_repo(tmp_path / "a")
+        _init_repo(tmp_path / "skipme")
+        repos = _discover_repos([tmp_path], exclude_repos=["*/skipme"])
+        assert {r.name for r in repos} == {"a"}
+
+    def test_exclude_repos_empty_is_noop(self, tmp_path: Path) -> None:
+        _init_repo(tmp_path / "a")
+        repos = _discover_repos([tmp_path], exclude_repos=[])
+        assert {r.name for r in repos} == {"a"}
+
 
 # ── _matches_any ───────────────────────────────────────────────────
 
