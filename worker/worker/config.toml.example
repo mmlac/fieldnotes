@@ -41,6 +41,11 @@ vault_path = "~/obsidian-vault"
 repo_roots = []
 include_patterns = ["README*", "CHANGELOG*", "CONTRIBUTING*", "docs/**/*.md", "*.toml", "ADR/**/*.md"]
 exclude_patterns = ["node_modules/", ".git/", "vendor/", "target/", "__pycache__/"]
+# Skip whole repos by folder name or path glob (matched against the repo's
+# basename AND its full path). Unlike exclude_patterns — which filters files
+# *within* a repo — these repos are never discovered or scanned at all.
+# e.g. exclude_repos = ["gascity", "*/scratch-*"]
+exclude_repos = []
 # index_only_patterns = ["*.lock"]          # index filename only, skip content
 poll_interval_seconds = 300
 max_file_size = 104857600

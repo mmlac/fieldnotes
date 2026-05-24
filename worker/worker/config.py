@@ -452,6 +452,8 @@ def _validate_repositories_config(settings: dict[str, Any]) -> None:
         _check_list_of(section, "include_patterns", settings["include_patterns"], str)
     if "exclude_patterns" in settings:
         _check_list_of(section, "exclude_patterns", settings["exclude_patterns"], str)
+    if "exclude_repos" in settings:
+        _check_list_of(section, "exclude_repos", settings["exclude_repos"], str)
     if "index_only_patterns" in settings:
         _check_list_of(
             section, "index_only_patterns", settings["index_only_patterns"], str
