@@ -118,7 +118,7 @@ def _prepare_context(
     search_query = question
     if session and session.history:
         try:
-            extraction_model = registry.for_role("extraction")
+            extraction_model = registry.for_role("extract")
         except KeyError:
             extraction_model = None
         if extraction_model is not None:
@@ -368,7 +368,7 @@ def _synthesize(
     try:
         model = registry.for_role("query")
     except KeyError:
-        model = registry.for_role("extraction")
+        model = registry.for_role("extract")
 
     req = CompletionRequest(
         system=ctx.system_prompt,
@@ -446,7 +446,7 @@ def _synthesize_stream(
     try:
         model = registry.for_role("query")
     except KeyError:
-        model = registry.for_role("extraction")
+        model = registry.for_role("extract")
 
     req = CompletionRequest(
         system=ctx.system_prompt,
@@ -835,7 +835,7 @@ def _run_json(
     try:
         model = registry.for_role("query")
     except KeyError:
-        model = registry.for_role("extraction")
+        model = registry.for_role("extract")
 
     req = CompletionRequest(
         system=ctx.system_prompt,

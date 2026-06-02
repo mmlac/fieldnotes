@@ -61,7 +61,7 @@ extract = "local_chat"            # entity/triple extraction
 extract_fallback = "local_chat"   # retry on malformed JSON
 query = "local_chat"              # NL → Cypher translation
 vision = "local_chat"             # image analysis
-clustering = "local_chat"         # topic naming
+cluster_label = "local_chat"      # LLM that names/labels clusters
 completion = "local_chat"         # ask tool synthesis
 rerank = "bge_reranker"           # second-stage cross-encoder for hybrid search
 

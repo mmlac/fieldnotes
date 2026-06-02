@@ -988,7 +988,7 @@ class FieldnotesServer:
             model = self._registry.for_role("query")
         except KeyError:
             # Fall back to extraction role if query role not configured.
-            model = self._registry.for_role("extraction")
+            model = self._registry.for_role("extract")
 
         req = CompletionRequest(
             system=system_prompt,

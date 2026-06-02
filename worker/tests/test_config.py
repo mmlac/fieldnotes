@@ -2221,3 +2221,57 @@ class TestDoctorSlackDeleteSkipCounter:
         assert "Slack delete events" in out
         assert "3 delete event(s) were unprocessable" in out
         assert "missing_ts" in out
+
+
+class TestConfigTomlExampleRoles:
+    """config.toml.example (the developer reference config at the project root)
+    must define every role that production code resolves via for_role().
+    A missing role causes a hard KeyError at runtime; this test makes that
+    class of config↔code drift fail at CI time instead."""
+
+    # Every role string that production code resolves via for_role().
+    # Keep in sync with *_ROLE constants and direct for_role("...") calls.
+    REQUIRED_ROLES = {
+        "embed",
+        "extract",
+        "extract_fallback",
+        "query",
+        "vision",
+        "cluster_label",
+        "completion",
+        "rerank",
+    }
+
+    def _load_example_roles(self) -> dict:
+        import tomllib
+        from pathlib import Path as _P
+
+        # The project-root config.toml.example is the authoritative developer
+        # reference: it defines all model providers and roles.  The inner
+        # worker/config.toml.example is the minimal shipped copy (reranker only).
+        example = _P(__file__).resolve().parent.parent / "config.toml.example"
+        with example.open("rb") as fh:
+            raw = tomllib.load(fh)
+        return raw.get("models", {}).get("roles", {})
+
+    def test_cluster_label_role_present(self) -> None:
+        roles = self._load_example_roles()
+        assert "cluster_label" in roles, (
+            "config.toml.example is missing [models.roles] cluster_label — "
+            "fieldnotes cluster will hard-fail at the labeling stage"
+        )
+
+    def test_all_required_roles_present(self) -> None:
+        roles = self._load_example_roles()
+        missing = self.REQUIRED_ROLES - set(roles)
+        assert not missing, (
+            f"config.toml.example [models.roles] is missing: {sorted(missing)}. "
+            "Add each missing role or update REQUIRED_ROLES if the code no longer uses it."
+        )
+
+    def test_orphaned_clustering_role_removed(self) -> None:
+        roles = self._load_example_roles()
+        assert "clustering" not in roles, (
+            "config.toml.example still has the orphaned 'clustering' role — "
+            "no code calls for_role('clustering'); remove it to avoid confusion."
+        )
