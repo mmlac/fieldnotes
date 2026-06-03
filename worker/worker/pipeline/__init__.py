@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from typing import Any
+from typing import Any, Protocol
 
 from collections import defaultdict
 
@@ -71,6 +71,26 @@ logger = logging.getLogger(__name__)
 MAX_CHUNKS_PER_DOC = 10_000
 
 
+class ExtractionFailureSink(Protocol):
+    """Sink for per-chunk extraction failures (implemented by PersistentQueue).
+
+    Kept as a Protocol so the pipeline stays decoupled from the queue's storage.
+    """
+
+    def record_extraction_failure(
+        self,
+        *,
+        source_type: str,
+        source_id: str,
+        chunk_index: int,
+        error_type: str | None = ...,
+        error: str | None = ...,
+        output_tokens: int | None = ...,
+        response_chars: int | None = ...,
+        response_preview: str | None = ...,
+    ) -> None: ...
+
+
 class Pipeline:
     """Orchestrates document processing through all pipeline stages.
 
@@ -94,6 +114,7 @@ class Pipeline:
         vision_queue: VisionQueue | None = None,
         progress: ProgressReporter | None = None,
         me_config: MeConfig | None = None,
+        extraction_failures: ExtractionFailureSink | None = None,
     ) -> None:
         self._registry = registry
         self._writer = writer
@@ -101,10 +122,49 @@ class Pipeline:
         self._app_desc_cache = AppDescriptionCache()
         self._progress: ProgressReporter = progress or NullProgressReporter()
         self._me_config = me_config
+        self._extraction_failures = extraction_failures
 
     def set_me_config(self, new_me: MeConfig | None) -> None:
         """Hot-update the [me] config for end-of-batch self-identity reconciliation."""
         self._me_config = new_me
+
+    def set_extraction_failure_sink(
+        self, sink: ExtractionFailureSink | None
+    ) -> None:
+        """Wire the per-chunk extraction-failure log (set after the queue exists)."""
+        self._extraction_failures = sink
+
+    def _record_extraction_failures(
+        self,
+        doc: ParsedDocument,
+        chunks: list[Chunk],
+        results: list[ExtractionResult],
+    ) -> None:
+        """Persist each failed chunk's detail to the diagnostics log, if wired."""
+        if self._extraction_failures is None:
+            return
+        for chunk, result in zip(chunks, results):
+            if not result.failed:
+                continue
+            detail = result.error_detail or {}
+            try:
+                self._extraction_failures.record_extraction_failure(
+                    source_type=doc.source_type,
+                    source_id=doc.source_id,
+                    chunk_index=chunk.index,
+                    error_type=detail.get("error_type"),
+                    error=result.error,
+                    output_tokens=detail.get("output_tokens"),
+                    response_chars=detail.get("response_chars"),
+                    response_preview=detail.get("response_preview"),
+                )
+            except Exception as exc:  # diagnostics must never break ingest
+                logger.warning(
+                    "Could not persist extraction failure for %s chunk %d: %s",
+                    doc.source_id,
+                    chunk.index,
+                    exc,
+                )
 
     def reconcile_self_if_configured(self) -> None:
         """Run self-identity reconciliation if [me] is configured.
@@ -586,6 +646,7 @@ class Pipeline:
                     doc.source_type,
                     doc.source_id,
                 )
+                self._record_extraction_failures(doc, chunks, extraction_results)
                 if failed_count == len(extraction_results):
                     DOCUMENTS_FAILED.labels(
                         source_type=doc.source_type, stage="extract"

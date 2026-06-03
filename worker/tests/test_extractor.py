@@ -191,6 +191,8 @@ class TestCallAndParse:
             _call_and_parse(model, req)
 
     def test_malformed_json_raises(self) -> None:
+        # _call_and_parse normalises every parse failure to ExtractionError so
+        # it can attach the raw-response detail; the JSONDecodeError is chained.
         resp = CompletionResponse(text="not json {{{", tool_calls=None)
         model = _mock_model(resp)
         from worker.models.base import CompletionRequest
@@ -198,8 +200,28 @@ class TestCallAndParse:
         req = CompletionRequest(
             system="", messages=[{"role": "user", "content": "test"}]
         )
-        with pytest.raises(json.JSONDecodeError):
+        with pytest.raises(ExtractionError) as excinfo:
             _call_and_parse(model, req)
+        assert isinstance(excinfo.value.__cause__, json.JSONDecodeError)
+        assert excinfo.value.detail["error_type"] == "JSONDecodeError"
+
+    def test_failure_detail_captures_raw_response(self) -> None:
+        # An empty response with a maxed-out token budget is the reasoning-model
+        # budget-exhaustion signature: 0 chars but output_tokens at the cap.
+        resp = CompletionResponse(text="", tool_calls=None, output_tokens=16384)
+        model = _mock_model(resp)
+        from worker.models.base import CompletionRequest
+
+        req = CompletionRequest(
+            system="", messages=[{"role": "user", "content": "test"}]
+        )
+        with pytest.raises(ExtractionError) as excinfo:
+            _call_and_parse(model, req)
+        detail = excinfo.value.detail
+        assert detail["output_tokens"] == 16384
+        assert detail["response_chars"] == 0
+        assert detail["had_tool_calls"] is False
+        assert detail["response_preview"] == ""
 
     def test_tool_call_with_dict_arguments(self) -> None:
         """Some providers return arguments as a dict, not a JSON string."""
@@ -299,6 +321,28 @@ class TestExtractChunk:
         assert call_args.messages[0]["content"] == "Some text about Rust."
         assert call_args.tools == [EXTRACTION_TOOL]
         assert call_args.temperature == 0.0
+
+    def test_passes_raised_token_budget(self) -> None:
+        from worker.pipeline.extractor import EXTRACT_MAX_TOKENS
+
+        model = _mock_model(_tool_call_response(entities=[], triples=[]))
+        extract_chunk(_chunk(), model)
+
+        req = model.complete.call_args[0][0]
+        assert req.max_tokens == EXTRACT_MAX_TOKENS
+        assert req.max_tokens > 4096  # raised above the default
+
+    def test_failed_result_carries_error_detail(self) -> None:
+        bad = _mock_model(CompletionResponse(text="", tool_calls=None, output_tokens=16384))
+
+        result = extract_chunk(_chunk(index=7), bad)
+
+        assert result.failed is True
+        assert result.error is not None
+        assert "empty response" in result.error
+        assert result.error_detail["output_tokens"] == 16384
+        assert result.error_detail["response_chars"] == 0
+        assert result.error_detail["error_type"] == "ExtractionError"
 
 
 # ------------------------------------------------------------------

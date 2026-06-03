@@ -121,6 +121,54 @@ class TestFail:
         assert summary.get("failed") == 1
 
 
+class TestExtractionFailures:
+    def test_record_and_list_roundtrip(self, queue: PersistentQueue) -> None:
+        queue.record_extraction_failure(
+            source_type="file",
+            source_id="notes/a.md",
+            chunk_index=2,
+            error_type="ExtractionError",
+            error="LLM returned empty response (no tool_calls and no text)",
+            output_tokens=16384,
+            response_chars=0,
+            response_preview="''",
+        )
+
+        rows = queue.list_extraction_failures()
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["source_id"] == "notes/a.md"
+        assert row["chunk_index"] == 2
+        assert row["error_type"] == "ExtractionError"
+        assert row["output_tokens"] == 16384
+        assert row["response_chars"] == 0
+
+    def test_list_filters_by_source_and_orders_newest_first(
+        self, queue: PersistentQueue
+    ) -> None:
+        for i in range(3):
+            queue.record_extraction_failure(
+                source_type="file", source_id="a.md", chunk_index=i
+            )
+        queue.record_extraction_failure(
+            source_type="file", source_id="b.md", chunk_index=0
+        )
+
+        a_rows = queue.list_extraction_failures(source_id="a.md")
+        assert len(a_rows) == 3
+        # Newest first: last-recorded chunk_index (2) leads.
+        assert a_rows[0]["chunk_index"] == 2
+        assert len(queue.list_extraction_failures(source_id="b.md")) == 1
+        assert len(queue.list_extraction_failures()) == 4
+
+    def test_list_respects_limit(self, queue: PersistentQueue) -> None:
+        for i in range(5):
+            queue.record_extraction_failure(
+                source_type="file", source_id="a.md", chunk_index=i
+            )
+        assert len(queue.list_extraction_failures(limit=2)) == 2
+
+
 class TestDedup:
     def test_is_enqueued_returns_true_for_pending(self, queue: PersistentQueue, event: dict) -> None:
         queue.enqueue(event)

@@ -17,7 +17,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from worker.models.base import CompletionRequest
+from worker.models.base import CompletionRequest, CompletionResponse
 from worker.models.resolver import ModelRegistry, ResolvedModel
 from worker.pipeline.chunker import Chunk
 
@@ -26,6 +26,16 @@ logger = logging.getLogger(__name__)
 EXTRACT_ROLE = "extract"
 FALLBACK_ROLE = "extract_fallback"
 LLM_TIMEOUT = float(os.environ.get("FIELDNOTES_LLM_TIMEOUT", 600.0))
+
+# Output token budget (Ollama num_predict) for each extraction call. Reasoning
+# models spend tokens on chain-of-thought before emitting the tool call, so the
+# 4096 default can be exhausted mid-thought — leaving an empty/truncated
+# response that fails to parse. Generous by default; tune with the env var.
+EXTRACT_MAX_TOKENS = int(os.environ.get("FIELDNOTES_EXTRACT_MAX_TOKENS", "16384"))
+
+# When an extraction response fails to parse, capture at most this many
+# characters of the raw model output so the failure is debuggable.
+MAX_LOGGED_RESPONSE_LEN = 2000
 
 ALLOWED_ENTITY_TYPES = frozenset(
     {"Person", "Technology", "Project", "Organization", "Concept", "Location"}
@@ -178,6 +188,11 @@ class ExtractionResult:
     entities: list[dict[str, Any]] = field(default_factory=list)
     triples: list[dict[str, str]] = field(default_factory=list)
     failed: bool = False
+    # Populated only when ``failed`` is True: a concise reason and the
+    # structured detail (error_type, output_tokens, response preview, ...) so
+    # the pipeline can log and persist *why* the chunk failed.
+    error: str | None = None
+    error_detail: dict[str, Any] | None = None
 
 
 def extract_chunk(
@@ -208,22 +223,25 @@ def extract_chunk(
         tools=[EXTRACTION_TOOL],
         temperature=0.0,
         timeout=LLM_TIMEOUT,
+        max_tokens=EXTRACT_MAX_TOKENS,
     )
 
     try:
         return _call_and_parse(model, req)
-    except (json.JSONDecodeError, ValidationError, ExtractionError) as exc:
-        logger.warning("Primary extraction failed for chunk %d: %s", chunk.index, exc)
+    except ExtractionError as exc:
+        detail = exc.detail
+        _log_extraction_failure("Primary", chunk.index, exc, logger.warning)
         if fallback_model is not None:
             try:
                 return _call_and_parse(fallback_model, req)
-            except (json.JSONDecodeError, ValidationError, ExtractionError) as exc2:
-                logger.error(
-                    "Fallback extraction also failed for chunk %d: %s",
-                    chunk.index,
-                    exc2,
-                )
-        return ExtractionResult(failed=True)
+            except ExtractionError as exc2:
+                detail = exc2.detail
+                _log_extraction_failure("Fallback", chunk.index, exc2, logger.error)
+        return ExtractionResult(
+            failed=True,
+            error=detail.get("error") or str(exc),
+            error_detail=detail,
+        )
 
 
 def extract_chunks(
@@ -273,35 +291,77 @@ def extract_chunks(
     return results
 
 
+def _failure_detail(resp: CompletionResponse, exc: Exception) -> dict[str, Any]:
+    """Build a structured record of why an extraction response failed to parse.
+
+    An empty response from a reasoning model that exhausted its token budget
+    shows up here as ``response_chars=0`` with ``output_tokens`` at the cap —
+    distinguishing it from malformed JSON (non-zero chars) or a refusal.
+    """
+    text = resp.text or ""
+    preview = text[:MAX_LOGGED_RESPONSE_LEN]
+    if len(text) > MAX_LOGGED_RESPONSE_LEN:
+        preview += "…[truncated]"
+    return {
+        "error_type": type(exc).__name__,
+        "error": str(exc),
+        "output_tokens": resp.output_tokens,
+        "had_tool_calls": bool(resp.tool_calls),
+        "response_chars": len(text),
+        "response_preview": preview,
+    }
+
+
+def _log_extraction_failure(
+    which: str, chunk_index: int, exc: ExtractionError, log: Callable[..., None]
+) -> None:
+    """Log an extraction failure with the raw-response detail attached."""
+    d = exc.detail
+    log(
+        "%s extraction failed for chunk %d: %s "
+        "(%s output tokens, tool_calls=%s, %s chars): %r",
+        which,
+        chunk_index,
+        d.get("error", str(exc)),
+        d.get("output_tokens"),
+        d.get("had_tool_calls"),
+        d.get("response_chars"),
+        d.get("response_preview", ""),
+    )
+
+
 def _call_and_parse(model: ResolvedModel, req: CompletionRequest) -> ExtractionResult:
     """Call the model and parse tool_call arguments into an ExtractionResult.
 
     Raises
     ------
-    json.JSONDecodeError
-        If the tool_call arguments cannot be parsed as JSON.
-    ValidationError
-        If the parsed JSON is missing required fields.
+    ExtractionError
+        If the response can't be parsed into a result. The error's ``detail``
+        carries the raw-response context (output_tokens, preview, ...).
     """
     resp = model.complete(req, task="extract_entities")
 
-    # Try to extract from tool_calls first
-    if resp.tool_calls:
-        for tc in resp.tool_calls:
-            fn = tc.get("function", tc)
-            name = fn.get("name", "")
-            if name == "extract_entities_and_triples":
-                args = fn.get("arguments", {})
-                if isinstance(args, str):
-                    args = json.loads(args)
-                return _validate_and_build(args)
+    try:
+        # Try to extract from tool_calls first
+        if resp.tool_calls:
+            for tc in resp.tool_calls:
+                fn = tc.get("function", tc)
+                name = fn.get("name", "")
+                if name == "extract_entities_and_triples":
+                    args = fn.get("arguments", {})
+                    if isinstance(args, str):
+                        args = json.loads(args)
+                    return _validate_and_build(args)
 
-    # Some models return JSON in the text body instead of tool_calls
-    if resp.text and resp.text.strip():
-        data = json.loads(resp.text)
-        return _validate_and_build(data)
+        # Some models return JSON in the text body instead of tool_calls
+        if resp.text and resp.text.strip():
+            return _validate_and_build(json.loads(resp.text))
 
-    raise ExtractionError("LLM returned empty response (no tool_calls and no text)")
+        raise ExtractionError("LLM returned empty response (no tool_calls and no text)")
+    except (json.JSONDecodeError, ValidationError, ExtractionError) as exc:
+        # Normalise every parse failure to ExtractionError with raw-response
+        # context attached, so callers can log and persist *why* it failed.
+        raise ExtractionError(str(exc), detail=_failure_detail(resp, exc)) from exc
 
 
 def _validate_and_build(data: dict[str, Any]) -> ExtractionResult:
@@ -410,4 +470,12 @@ class ValidationError(Exception):
 
 
 class ExtractionError(Exception):
-    """Raised when extraction fails entirely (empty LLM response, all retries exhausted)."""
+    """Raised when extraction fails entirely (empty LLM response, all retries exhausted).
+
+    Carries an optional ``detail`` dict describing the raw model response that
+    failed to parse, so callers can log and persist the cause.
+    """
+
+    def __init__(self, message: str, *, detail: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.detail: dict[str, Any] = detail or {}

@@ -808,3 +808,59 @@ class TestClose:
         pipeline, _, writer = _make_pipeline()
         pipeline.close()
         writer.close.assert_called_once()
+
+
+class TestRecordExtractionFailures:
+    def _failed(self, detail: dict) -> ExtractionResult:
+        return ExtractionResult(failed=True, error=detail.get("error"), error_detail=detail)
+
+    def test_records_each_failed_chunk_with_detail(self):
+        pipeline, _, _ = _make_pipeline()
+        sink = MagicMock()
+        pipeline.set_extraction_failure_sink(sink)
+
+        chunks = [Chunk(text="a", index=0), Chunk(text="b", index=1)]
+        results = [
+            ExtractionResult(),  # chunk 0 succeeded
+            self._failed(
+                {
+                    "error_type": "ExtractionError",
+                    "error": "empty response",
+                    "output_tokens": 16384,
+                    "response_chars": 0,
+                    "response_preview": "",
+                }
+            ),
+        ]
+
+        pipeline._record_extraction_failures(_doc(source_id="a.md"), chunks, results)
+
+        sink.record_extraction_failure.assert_called_once_with(
+            source_type="file",
+            source_id="a.md",
+            chunk_index=1,
+            error_type="ExtractionError",
+            error="empty response",
+            output_tokens=16384,
+            response_chars=0,
+            response_preview="",
+        )
+
+    def test_no_sink_is_a_noop(self):
+        pipeline, _, _ = _make_pipeline()  # no sink wired
+        chunks = [Chunk(text="a", index=0)]
+        results = [ExtractionResult(failed=True, error="x", error_detail={})]
+        # Must not raise.
+        pipeline._record_extraction_failures(_doc(), chunks, results)
+
+    def test_sink_error_does_not_propagate(self):
+        pipeline, _, _ = _make_pipeline()
+        sink = MagicMock()
+        sink.record_extraction_failure.side_effect = RuntimeError("db down")
+        pipeline.set_extraction_failure_sink(sink)
+
+        chunks = [Chunk(text="a", index=0)]
+        results = [ExtractionResult(failed=True, error="x", error_detail={})]
+        # Diagnostics must never break ingest.
+        pipeline._record_extraction_failures(_doc(), chunks, results)
+        sink.record_extraction_failure.assert_called_once()

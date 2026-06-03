@@ -73,6 +73,24 @@ CREATE TABLE IF NOT EXISTS cursors (
     value      TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS extraction_failures (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    occurred_at      TEXT NOT NULL,
+    source_type      TEXT NOT NULL,
+    source_id        TEXT NOT NULL,
+    chunk_index      INTEGER NOT NULL,
+    error_type       TEXT,
+    error            TEXT,
+    output_tokens    INTEGER,
+    response_chars   INTEGER,
+    response_preview TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_extraction_failures_source
+    ON extraction_failures(source_id);
+CREATE INDEX IF NOT EXISTS idx_extraction_failures_time
+    ON extraction_failures(occurred_at);
 """
 
 DEFAULT_MAX_RETRIES = 3
@@ -345,6 +363,81 @@ class PersistentQueue:
                     "UPDATE queue SET status = 'failed', error = ? WHERE id = ?",
                     (error, queue_id),
                 )
+
+    # ------------------------------------------------------------------
+    # Extraction failure log (queryable diagnostics)
+    # ------------------------------------------------------------------
+
+    def record_extraction_failure(
+        self,
+        *,
+        source_type: str,
+        source_id: str,
+        chunk_index: int,
+        error_type: str | None = None,
+        error: str | None = None,
+        output_tokens: int | None = None,
+        response_chars: int | None = None,
+        response_preview: str | None = None,
+    ) -> None:
+        """Persist a single per-chunk extraction failure for later querying.
+
+        Best-effort: a diagnostics write must never break ingest, so DB errors
+        here are logged and swallowed rather than propagated.
+        """
+        try:
+            with self._lock:
+                self._conn.execute(
+                    "INSERT INTO extraction_failures "
+                    "(occurred_at, source_type, source_id, chunk_index, error_type, "
+                    "error, output_tokens, response_chars, response_preview) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        _now_iso(),
+                        source_type,
+                        source_id,
+                        chunk_index,
+                        error_type,
+                        error,
+                        output_tokens,
+                        response_chars,
+                        response_preview,
+                    ),
+                )
+        except sqlite3.Error as exc:
+            logger.warning("Failed to record extraction failure: %s", exc)
+
+    def list_extraction_failures(
+        self, *, source_id: str | None = None, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        """Return recent extraction failures (newest first), optionally by source."""
+        clauses: list[str] = []
+        params: list[Any] = []
+        if source_id is not None:
+            clauses.append("source_id = ?")
+            params.append(source_id)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(limit)
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id, occurred_at, source_type, source_id, chunk_index, "
+                "error_type, error, output_tokens, response_chars, response_preview "
+                f"FROM extraction_failures {where} ORDER BY id DESC LIMIT ?",
+                params,
+            ).fetchall()
+        cols = (
+            "id",
+            "occurred_at",
+            "source_type",
+            "source_id",
+            "chunk_index",
+            "error_type",
+            "error",
+            "output_tokens",
+            "response_chars",
+            "response_preview",
+        )
+        return [dict(zip(cols, row)) for row in rows]
 
     # ------------------------------------------------------------------
     # Cursors

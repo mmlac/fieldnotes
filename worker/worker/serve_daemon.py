@@ -111,6 +111,8 @@ async def _run_daemon(cfg: Config, *, config_path: Path | None = None, progress_
         db_path=data_dir / "queue.db",
         indexed_check=indexed_check,
     )
+    # Persist per-chunk extraction failures into the queue DB for querying.
+    pipeline.set_extraction_failure_sink(queue)
     recovered = queue.recover()
     if recovered:
         logger.info(
