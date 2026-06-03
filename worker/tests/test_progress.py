@@ -331,3 +331,31 @@ class TestPhaseProgress:
             advance(1, 3)
             advance(2, 3)
             advance(3, 3)
+
+    def test_eta_survives_slow_updates(self) -> None:
+        # Regression: with Rich's default 30s speed window, a phase whose
+        # per-item work exceeds 30s evicts every prior speed sample, so ETA
+        # renders "-:--:--" forever. phase_progress must keep enough samples
+        # for speed (and therefore ETA) to compute. Drive the real Progress
+        # built by phase_progress with a fake clock advancing 60s/update and
+        # assert the underlying task still has a speed.
+        import rich.progress as rp
+
+        captured: list = []
+        real = rp.Progress
+
+        class _SpyProgress(real):
+            def __init__(self, *args, **kwargs):
+                self._clock = {"t": 1000.0}
+                kwargs["get_time"] = lambda: self._clock["t"]
+                super().__init__(*args, **kwargs)
+                captured.append(self)
+
+        with patch.object(rp, "Progress", _SpyProgress):
+            with phase_progress("Labeling clusters", total=536) as advance:
+                for done in range(1, 26):  # 25 slow "clusters"
+                    captured[0]._clock["t"] += 60.0  # each takes 60s (> 30s)
+                    advance(done, 536)
+                task = captured[0].tasks[0]
+                assert task.speed is not None
+                assert task.time_remaining is not None

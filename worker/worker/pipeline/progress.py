@@ -252,6 +252,12 @@ def phase_progress(
         TimeRemainingColumn(),
         console=Console(file=sys.stderr),
         transient=False,
+        # Rich estimates ETA from speed samples within this trailing window
+        # (default 30s) and evicts older ones. When a single unit of work
+        # takes longer than the window — e.g. a per-cluster LLM call — every
+        # update leaves just one sample, so speed (and ETA) never computes.
+        # Keep all samples so ETA is a stable whole-run average.
+        speed_estimate_period=float("inf"),
     )
     with progress:
         task = progress.add_task(description, total=total)
