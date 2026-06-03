@@ -807,23 +807,34 @@ class TestMetadataOnlyRouting:
     """Metadata-only docs skip LLM extraction but still write to the graph."""
 
     def test_metadata_only_doc_does_not_call_extract_chunks(self):
-        pipeline, _, writer = _make_pipeline()
+        pipeline, registry, writer = _make_pipeline()
         doc = _doc(
             text="File: budget.xlsx in /vault/attachments/",
             metadata_only=True,
         )
+        fake_chunk = Chunk(text="File: budget.xlsx in /vault/attachments/", index=0)
 
-        with patch("worker.pipeline.chunk_text") as mock_chunk:
+        with patch("worker.pipeline.chunk_text", return_value=[fake_chunk]) as mock_chunk:
             with patch("worker.pipeline.extract_chunks") as mock_extract:
-                pipeline.process(doc)
-                mock_chunk.assert_not_called()
-                mock_extract.assert_not_called()
+                with patch(
+                    "worker.pipeline.embed_chunks",
+                    return_value=[("File: budget.xlsx in /vault/attachments/", [0.1, 0.2])],
+                ) as mock_embed:
+                    pipeline.process(doc)
+                    # chunk and embed ARE called — filename text gets indexed for vector search
+                    mock_chunk.assert_called_once_with(doc.text)
+                    mock_embed.assert_called_once()
+                    # LLM extraction is NOT called for metadata-only docs
+                    mock_extract.assert_not_called()
 
-        # Source node must still be written
+        # Writer receives the filename chunk and its vector
         writer.write.assert_called_once()
         unit = writer.write.call_args[0][0]
         assert unit.doc is doc
-        assert unit.chunks == []
+        assert len(unit.chunks) == 1
+        assert unit.chunks[0].text == "File: budget.xlsx in /vault/attachments/"
+        assert unit.vectors == [[0.1, 0.2]]
+        assert unit.entities == []
 
     def test_metadata_only_doc_with_filename_content_not_extracted(self):
         """The 'C&F collection.txt' scenario: text file treated as index_only."""
@@ -834,10 +845,16 @@ class TestMetadataOnlyRouting:
             text="File: C&F collection.txt in /vault/attachments/",
             metadata_only=True,
         )
+        fake_chunk = Chunk(text="File: C&F collection.txt in /vault/attachments/", index=0)
 
-        with patch("worker.pipeline.extract_chunks") as mock_extract:
-            pipeline.process(doc)
-            mock_extract.assert_not_called()
+        with patch("worker.pipeline.chunk_text", return_value=[fake_chunk]):
+            with patch("worker.pipeline.extract_chunks") as mock_extract:
+                with patch(
+                    "worker.pipeline.embed_chunks",
+                    return_value=[("File: C&F collection.txt in /vault/attachments/", [0.1])],
+                ):
+                    pipeline.process(doc)
+                    mock_extract.assert_not_called()
 
         writer.write.assert_called_once()
 

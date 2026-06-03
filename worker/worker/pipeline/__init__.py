@@ -317,12 +317,16 @@ class Pipeline:
             return
 
         # Text pipeline: chunk → embed → extract → resolve → write.
-        # Metadata-only docs carry a synthetic filename description, not real
-        # content — skip LLM extraction and write the source node directly.
-        if parsed_doc.text and not parsed_doc.metadata_only:
-            self._process_text(parsed_doc, existing_hash=existing_hash)
+        # Metadata-only docs still get chunked and embedded (so filename-based
+        # vector search works), but skip the LLM extraction step.
+        if parsed_doc.text:
+            self._process_text(
+                parsed_doc,
+                existing_hash=existing_hash,
+                skip_extraction=parsed_doc.metadata_only,
+            )
         else:
-            # No text, no image, or metadata-only: write graph hints and source node only
+            # No text, no image: write graph hints and source node only
             with observe_duration(PIPELINE_DURATION, stage="write"):
                 self._writer.write(WriteUnit(doc=parsed_doc))
 
@@ -549,7 +553,11 @@ class Pipeline:
         return already_indexed, existing_hashes
 
     def _process_text(
-        self, doc: ParsedDocument, *, existing_hash: str | None = None
+        self,
+        doc: ParsedDocument,
+        *,
+        existing_hash: str | None = None,
+        skip_extraction: bool = False,
     ) -> None:
         """Run the full text pipeline for a document with text content."""
         # 0. Extract email addresses from text → Person MENTIONS hints
@@ -628,6 +636,30 @@ class Pipeline:
                 )
 
             CHUNKS_EMBEDDED.inc(len(chunks))
+
+            # Metadata-only: skip LLM extraction but preserve chunks/vectors for search
+            if skip_extraction:
+                unit = WriteUnit(
+                    doc=doc,
+                    chunks=chunks,
+                    vectors=vectors,
+                    entities=[],
+                    triples=[],
+                    content_hash=content_hash,
+                )
+                self._progress.set_stage(doc.source_id, "write")
+                with observe_duration(PIPELINE_DURATION, stage="write"):
+                    self._writer.write(unit)
+                DOCUMENTS_PROCESSED.labels(
+                    source_type=doc.source_type, operation=doc.operation
+                ).inc()
+                logger.info(
+                    "Indexed metadata-only %s %s: %d chunks (no extraction)",
+                    doc.source_type,
+                    doc.source_id,
+                    len(chunks),
+                )
+                return
 
             # 3. Extract entities and triples
             self._progress.set_stage(doc.source_id, "extract")
