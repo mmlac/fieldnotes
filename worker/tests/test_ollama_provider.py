@@ -140,6 +140,58 @@ class TestOllamaComplete:
         assert payload["messages"][1] == {"role": "user", "content": "hi"}
 
     @patch("worker.models.providers.ollama.httpx.post")
+    def test_reasoning_false_sends_think_false(
+        self, mock_post, provider: OllamaProvider
+    ) -> None:
+        mock_post.return_value = _mock_response({"message": {"content": "ok"}})
+
+        req = CompletionRequest(
+            system="",
+            messages=[{"role": "user", "content": "hi"}],
+            reasoning=False,
+        )
+        provider.complete("model-x", req)
+
+        payload = mock_post.call_args.kwargs["json"]
+        assert payload["think"] is False
+
+    @patch("worker.models.providers.ollama.httpx.post")
+    def test_reasoning_none_omits_think(
+        self, mock_post, provider: OllamaProvider
+    ) -> None:
+        mock_post.return_value = _mock_response({"message": {"content": "ok"}})
+
+        req = CompletionRequest(
+            system="",
+            messages=[{"role": "user", "content": "hi"}],
+        )
+        provider.complete("model-x", req)
+
+        payload = mock_post.call_args.kwargs["json"]
+        assert "think" not in payload
+
+    @patch("worker.models.providers.ollama.httpx.post")
+    def test_empty_content_falls_back_to_thinking(
+        self, mock_post, provider: OllamaProvider
+    ) -> None:
+        # A thinking model that exhausts num_predict mid-thought returns empty
+        # content with the reasoning stranded in message.thinking.
+        mock_post.return_value = _mock_response(
+            {
+                "message": {"content": "", "thinking": "still reasoning..."},
+                "eval_count": 4096,
+            }
+        )
+
+        req = CompletionRequest(
+            system="", messages=[{"role": "user", "content": "hi"}]
+        )
+        resp = provider.complete("model-x", req)
+
+        assert resp.text == "still reasoning..."
+        assert resp.output_tokens == 4096
+
+    @patch("worker.models.providers.ollama.httpx.post")
     def test_num_ctx_included_when_configured(
         self, mock_post, provider: OllamaProvider
     ) -> None:

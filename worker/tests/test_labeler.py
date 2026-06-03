@@ -179,6 +179,40 @@ class TestCallLabelingModel:
         req = model.complete.call_args[0][0]
         assert req.temperature == 0.0
 
+    def test_disables_reasoning(self) -> None:
+        # Labeling must not let a thinking model spend its budget on CoT.
+        model = _mock_model()
+
+        _call_labeling_model(model, ["text"])
+
+        req = model.complete.call_args[0][0]
+        assert req.reasoning is False
+
+    def test_parses_fenced_json(self) -> None:
+        model = MagicMock()
+        model.complete.return_value = CompletionResponse(
+            text='```json\n{"label": "Vector Search", "description": "On vectors."}\n```'
+        )
+
+        label, desc = _call_labeling_model(model, ["chunk"])
+
+        assert label == "Vector Search"
+        assert desc == "On vectors."
+
+    def test_parses_json_after_think_block(self) -> None:
+        model = MagicMock()
+        model.complete.return_value = CompletionResponse(
+            text=(
+                "<think>These chunks are about ML.</think>\n"
+                '{"label": "Machine Learning", "description": "ML notes."}'
+            )
+        )
+
+        label, desc = _call_labeling_model(model, ["chunk"])
+
+        assert label == "Machine Learning"
+        assert desc == "ML notes."
+
     def test_warns_on_word_count_out_of_range(self, caplog) -> None:
         model = _mock_model(
             label="One",

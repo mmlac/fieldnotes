@@ -14,9 +14,11 @@ from __future__ import annotations
 import json
 import os
 import logging
+import re
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 from qdrant_client import QdrantClient
@@ -39,6 +41,10 @@ MAX_DESCRIPTION_LEN = 500
 # of the raw model output so the failure is debuggable without flooding logs
 # on a pathological (e.g. multi-KB) response.
 MAX_LOGGED_RESPONSE_LEN = 2000
+
+# Reasoning models may wrap their answer in a <think>...</think> block; strip
+# it before looking for the JSON object.
+_THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 
 SYSTEM_PROMPT = """\
 You are a topic labeling system. Given a set of text chunks that belong to the \
@@ -182,6 +188,25 @@ def _get_central_chunk_texts(
     return [text for _, text in scored[:top_k]]
 
 
+def _parse_label_json(text: str) -> dict[str, Any]:
+    """Parse the label JSON from a model response, tolerating common wrappers.
+
+    Strips any ``<think>...</think>`` reasoning block, then extracts the
+    outermost ``{...}`` object — so Markdown code fences (```json), leading
+    reasoning, or trailing prose don't break parsing — before handing it to
+    ``json.loads``. Raises ``json.JSONDecodeError`` when no JSON object can be
+    recovered, so the caller's existing fallback path runs.
+    """
+    cleaned = _THINK_BLOCK_RE.sub("", text)
+    start = cleaned.find("{")
+    end = cleaned.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        # Nothing object-like; let json.loads raise on the cleaned text so the
+        # caller logs the raw response and applies its fallback label.
+        return json.loads(cleaned.strip())
+    return json.loads(cleaned[start : end + 1])
+
+
 def _call_labeling_model(
     model: ResolvedModel,
     texts: list[str],
@@ -197,12 +222,16 @@ def _call_labeling_model(
         messages=[{"role": "user", "content": combined}],
         temperature=0.0,
         timeout=LLM_TIMEOUT,
+        # Labeling needs a direct JSON answer; without this a thinking model
+        # can burn its whole token budget on chain-of-thought and return
+        # empty content, which parses as nothing.
+        reasoning=False,
     )
 
     resp = model.complete(req, task="label_topic")
 
     try:
-        data = json.loads(resp.text)
+        data = _parse_label_json(resp.text)
         label = str(data["label"]).strip()
         description = str(data["description"]).strip()
 

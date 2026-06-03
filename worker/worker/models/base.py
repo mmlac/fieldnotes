@@ -16,6 +16,14 @@ class CompletionRequest:
     timeout: float | None = (
         None  # per-request timeout in seconds; None = provider default
     )
+    # Tri-state thinking/reasoning control for models that support it:
+    #   None  = use the model/provider default
+    #   False = force reasoning OFF (answer directly)
+    #   True  = force reasoning ON
+    # Tasks needing a single parseable answer (e.g. JSON labeling) set this
+    # False so a thinking model can't spend its whole token budget on
+    # chain-of-thought and return empty content.
+    reasoning: bool | None = None
 
 
 @dataclass

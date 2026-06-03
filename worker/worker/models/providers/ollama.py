@@ -174,6 +174,12 @@ class OllamaProvider(ModelProvider):
             "stream": False,
             "options": options,
         }
+        if req.reasoning is not None:
+            # Ollama 0.9+ top-level flag. Disabling it makes a thinking model
+            # answer directly into message.content instead of spending the
+            # num_predict budget on a separate thinking field (which can
+            # leave content empty). Ignored by non-thinking models.
+            payload["think"] = req.reasoning
         if req.tools:
             payload["tools"] = req.tools
 
@@ -190,8 +196,14 @@ class OllamaProvider(ModelProvider):
         message = data.get("message", {})
         tool_calls = message.get("tool_calls") or None
 
+        # Thinking models split output into message.thinking (chain-of-thought)
+        # and message.content (final answer). If content is empty — e.g. the
+        # model exhausted num_predict mid-thought — fall back to the thinking
+        # text so the caller has something to parse / log rather than "".
+        text = message.get("content") or message.get("thinking") or ""
+
         return CompletionResponse(
-            text=message.get("content", ""),
+            text=text,
             tool_calls=tool_calls,
             input_tokens=data.get("prompt_eval_count", 0),
             output_tokens=data.get("eval_count", 0),
@@ -217,6 +229,8 @@ class OllamaProvider(ModelProvider):
             "stream": True,
             "options": options,
         }
+        if req.reasoning is not None:
+            payload["think"] = req.reasoning
 
         raw_timeout = req.timeout if req.timeout is not None else self._completion_timeout
         timeout = httpx.Timeout(connect=10.0, read=raw_timeout, write=30.0, pool=10.0)
