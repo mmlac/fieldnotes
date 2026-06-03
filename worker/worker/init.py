@@ -153,6 +153,37 @@ def _prompt_multi_select(
     return selected or [items[i - 1][id_key] for i in sorted(default_set) if 0 < i <= len(items)]
 
 
+def _prompt_single_select(
+    prompt: str,
+    items: list[dict[str, str]],
+    id_key: str,
+    label_key: str,
+    default: int = 1,
+) -> str:
+    """Present numbered items and let the user pick exactly one (by number).
+
+    Returns the chosen item's ``id_key`` value; empty or invalid input falls
+    back to the ``default`` (1-based) item's id.
+    """
+    print(f"\n{prompt}")
+    for i, item in enumerate(items, 1):
+        marker = " *" if i == default else ""
+        label = item[label_key]
+        item_id = item[id_key]
+        if item_id and label != item_id:
+            print(f"  {i:>3}. {label} ({item_id}){marker}")
+        else:
+            print(f"  {i:>3}. {label}{marker}")
+    print("  (* = default)")
+
+    response = _prompt("Enter a number", str(default)).strip()
+    if response.isdigit():
+        idx = int(response) - 1
+        if 0 <= idx < len(items):
+            return items[idx][id_key]
+    return items[default - 1][id_key]
+
+
 def _prompt_password(prompt: str, *, min_length: int = 0) -> str:
     """Prompt for a password without echoing.
 
@@ -350,45 +381,39 @@ def _interactive_config(config_text: str) -> str:
                 f"  Credentials file not found at {gmail_secrets_path}\n"
                 "  Download it from the Google Cloud Console (OAuth client ID → Desktop app).\n"
                 "  See README → Gmail OAuth Setup for details.\n"
-                "  Gmail will be configured but label selection will be skipped.",
+                "  Gmail will be configured to index all mail (edit label_filter to restrict).",
             )
-            config_text = _append_gmail_config(
-                config_text, secrets_path, ["INBOX"],
-            )
+            config_text = _append_gmail_config(config_text, secrets_path, "")
         else:
             print("  Authenticating with Gmail (this will open your browser)...")
             try:
                 labels = _list_gmail_labels(gmail_secrets_path)
                 if not labels:
-                    print("  No labels found — defaulting to INBOX.")
-                    config_text = _append_gmail_config(
-                        config_text, secrets_path, ["INBOX"],
-                    )
+                    print("  No labels found — indexing all mail.")
+                    config_text = _append_gmail_config(config_text, secrets_path, "")
                 else:
-                    # Find the index of INBOX for the default selection
-                    inbox_indices = [
-                        i + 1
-                        for i, lb in enumerate(labels)
-                        if lb["id"] == "INBOX"
+                    # The runtime honours a single optional label, so offer
+                    # "all mail" (the default) plus a one-label restriction.
+                    options = [
+                        {"id": "", "name": "All mail (inbox + sent + archived)"},
+                        *labels,
                     ]
-                    selected = _prompt_multi_select(
-                        "Select Gmail labels to index:",
-                        labels,
+                    choice = _prompt_single_select(
+                        "Restrict Gmail to one label, or index all mail:",
+                        options,
                         id_key="id",
                         label_key="name",
-                        defaults=inbox_indices or [1],
+                        default=1,
                     )
                     config_text = _append_gmail_config(
-                        config_text, secrets_path, selected,
+                        config_text, secrets_path, choice,
                     )
-                    print(f"  ✓ Gmail configured with labels: {', '.join(selected)}")
+                    print(f"  ✓ Gmail configured: {choice or 'all mail'}")
             except Exception as exc:
                 logger.debug("Gmail label listing failed", exc_info=True)
                 print(f"  Could not list labels: {exc}")
-                print("  Gmail will be configured with default label INBOX.")
-                config_text = _append_gmail_config(
-                    config_text, secrets_path, ["INBOX"],
-                )
+                print("  Gmail will be configured to index all mail.")
+                config_text = _append_gmail_config(config_text, secrets_path, "")
 
     # 6. Google Calendar
     print()
@@ -462,29 +487,46 @@ def _interactive_config(config_text: str) -> str:
 def _append_gmail_config(
     config_text: str,
     credentials_path: str,
-    labels: list[str],
+    label_filter: str = "",
+    *,
+    account: str = "default",
 ) -> str:
-    """Append a ``[sources.gmail]`` TOML section to *config_text*."""
-    labels_toml = ", ".join(f'"{_escape_toml_string(lb)}"' for lb in labels)
-    section = (
-        "\n[sources.gmail]\n"
-        f'client_secrets_path = "{_escape_toml_string(credentials_path)}"\n'
-        f"label_filter = [{labels_toml}]\n"
-        "poll_interval_seconds = 300\n"
-        "max_initial_threads = 500\n"
-    )
-    return config_text + section
+    """Append a ``[sources.gmail.<account>]`` TOML section to *config_text*.
+
+    Uses the keyed multi-account schema (a bare ``[sources.gmail]`` is the
+    legacy shape the loader rejects). ``label_filter`` restricts ingestion to
+    a single Gmail label; the empty default ingests all mail (inbox + sent +
+    archived) and is emitted as a commented hint rather than a value.
+    """
+    lines = [
+        f"\n[sources.gmail.{account}]",
+        f'client_secrets_path = "{_escape_toml_string(credentials_path)}"',
+    ]
+    if label_filter:
+        lines.append(f'label_filter = "{_escape_toml_string(label_filter)}"')
+    else:
+        lines.append(
+            '# label_filter = "INBOX"   # restrict to one label; omit/"" = all mail'
+        )
+    lines += ["poll_interval_seconds = 300", "max_initial_threads = 500"]
+    return config_text + "\n".join(lines) + "\n"
 
 
 def _append_calendar_config(
     config_text: str,
     credentials_path: str,
     calendar_ids: list[str],
+    *,
+    account: str = "default",
 ) -> str:
-    """Append a ``[sources.google_calendar]`` TOML section to *config_text*."""
+    """Append a ``[sources.google_calendar.<account>]`` TOML section.
+
+    Keyed multi-account schema — a bare ``[sources.google_calendar]`` is the
+    legacy shape the loader rejects.
+    """
     ids_toml = ", ".join(f'"{_escape_toml_string(c)}"' for c in calendar_ids)
     section = (
-        "\n[sources.google_calendar]\n"
+        f"\n[sources.google_calendar.{account}]\n"
         f'client_secrets_path = "{_escape_toml_string(credentials_path)}"\n'
         f"calendar_ids = [{ids_toml}]\n"
         "poll_interval_seconds = 300\n"

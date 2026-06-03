@@ -14,6 +14,7 @@ from worker.init import (
     _list_gmail_labels,
     _prompt_multi_select,
     _prompt_path,
+    _prompt_single_select,
     _prompt_yes_no,
 )
 
@@ -374,29 +375,42 @@ class TestListCalendars:
 # ── Config generation helpers ───────────────────────────────────────
 
 
+def _active_label_filter_lines(text: str) -> list[str]:
+    """Uncommented label_filter lines (the commented hint doesn't count)."""
+    return [ln for ln in text.splitlines() if ln.strip().startswith("label_filter")]
+
+
 class TestAppendGmailConfig:
-    def test_single_label(self) -> None:
-        result = _append_gmail_config("# config", "~/.fn/creds.json", ["INBOX"])
-        assert '[sources.gmail]' in result
-        assert 'label_filter = ["INBOX"]' in result
+    def test_single_label_keyed_string(self) -> None:
+        result = _append_gmail_config("# config", "~/.fn/creds.json", "INBOX")
+        # Keyed multi-account section, label_filter as a STRING (not array).
+        assert "[sources.gmail.default]" in result
+        assert "[sources.gmail]\n" not in result
+        assert 'label_filter = "INBOX"' in result
         assert 'client_secrets_path = "~/.fn/creds.json"' in result
         assert "poll_interval_seconds = 300" in result
 
-    def test_multiple_labels(self) -> None:
-        result = _append_gmail_config(
-            "", "~/c.json", ["INBOX", "SENT", "Label_1"],
-        )
-        assert 'label_filter = ["INBOX", "SENT", "Label_1"]' in result
+    def test_all_mail_default_omits_active_filter(self) -> None:
+        result = _append_gmail_config("", "~/c.json", "")
+        assert "[sources.gmail.default]" in result
+        # No active label_filter — all mail; only the commented hint remains.
+        assert _active_label_filter_lines(result) == []
+        assert "# label_filter" in result
+
+    def test_custom_account_name(self) -> None:
+        result = _append_gmail_config("", "~/c.json", "IMPORTANT", account="work")
+        assert "[sources.gmail.work]" in result
 
     def test_special_chars_escaped(self) -> None:
-        result = _append_gmail_config("", 'C:\\Users\\me\\creds.json', ["INBOX"])
-        assert 'C:\\\\Users\\\\me\\\\creds.json' in result
+        result = _append_gmail_config("", "C:\\Users\\me\\creds.json", "INBOX")
+        assert "C:\\\\Users\\\\me\\\\creds.json" in result
 
 
 class TestAppendCalendarConfig:
-    def test_single_calendar(self) -> None:
+    def test_single_calendar_keyed(self) -> None:
         result = _append_calendar_config("# config", "~/c.json", ["primary"])
-        assert "[sources.google_calendar]" in result
+        assert "[sources.google_calendar.default]" in result
+        assert "[sources.google_calendar]\n" not in result
         assert 'calendar_ids = ["primary"]' in result
         assert "max_initial_days = 90" in result
 
@@ -408,6 +422,10 @@ class TestAppendCalendarConfig:
             'calendar_ids = ["primary", "work@group.calendar.google.com"]'
             in result
         )
+
+    def test_custom_account_name(self) -> None:
+        result = _append_calendar_config("", "~/c.json", ["primary"], account="work")
+        assert "[sources.google_calendar.work]" in result
 
 
 # ── Integration: interactive config with Gmail/Calendar ─────────────
@@ -473,14 +491,29 @@ class TestInteractiveGmailCalendar:
             "",      # obsidian vault → default
             "y",     # set up gmail?
             "",      # credentials path → default
-            "1,3",   # select labels: Inbox, Work
+            "4",     # single-select: 1=All mail, 2=Inbox, 3=Sent, 4=Work
             "n",     # set up calendar?
         ]
         result = self._run_interactive(
             inputs, gmail_labels=labels, creds_exist=True,
         )
-        assert '[sources.gmail]' in result
-        assert 'label_filter = ["INBOX", "Label_1"]' in result
+        assert "[sources.gmail.default]" in result
+        assert 'label_filter = "Label_1"' in result
+
+    def test_gmail_all_mail_default(self) -> None:
+        labels = [{"id": "INBOX", "name": "Inbox"}]
+        inputs = [
+            "", "", "",  # provider, documents, obsidian
+            "y",         # set up gmail?
+            "",          # credentials path → default
+            "1",         # single-select: 1 = All mail (the default)
+            "n",         # calendar? no
+        ]
+        result = self._run_interactive(
+            inputs, gmail_labels=labels, creds_exist=True,
+        )
+        assert "[sources.gmail.default]" in result
+        assert _active_label_filter_lines(result) == []  # all mail
 
     def test_gmail_declined(self) -> None:
         inputs = [
@@ -491,7 +524,7 @@ class TestInteractiveGmailCalendar:
             "n",     # calendar? no
         ]
         result = self._run_interactive(inputs)
-        assert "[sources.gmail]" not in result
+        assert "[sources.gmail" not in result
 
     def test_calendar_with_selection(self) -> None:
         cals = [
@@ -510,10 +543,10 @@ class TestInteractiveGmailCalendar:
         result = self._run_interactive(
             inputs, calendars=cals, creds_exist=True,
         )
-        assert "[sources.google_calendar]" in result
+        assert "[sources.google_calendar.default]" in result
         assert 'calendar_ids = ["primary", "work@group.calendar.google.com"]' in result
 
-    def test_gmail_creds_missing_falls_back(self) -> None:
+    def test_gmail_creds_missing_falls_back_to_all_mail(self) -> None:
         inputs = [
             "",      # provider
             "",      # documents
@@ -523,8 +556,8 @@ class TestInteractiveGmailCalendar:
             "n",     # calendar? no
         ]
         result = self._run_interactive(inputs, creds_exist=False)
-        assert '[sources.gmail]' in result
-        assert 'label_filter = ["INBOX"]' in result
+        assert "[sources.gmail.default]" in result
+        assert _active_label_filter_lines(result) == []  # all mail, no label
 
     def test_calendar_reuses_gmail_creds_path(self) -> None:
         labels = [{"id": "INBOX", "name": "Inbox"}]
@@ -535,15 +568,75 @@ class TestInteractiveGmailCalendar:
             "",      # obsidian
             "y",     # gmail? yes
             "~/my/creds.json",  # credentials path
-            "1",     # select INBOX
+            "1",     # gmail single-select: 1 = All mail
             "y",     # calendar? yes
             # no credentials path prompt — reuses gmail path
-            "1",     # select primary
+            "1",     # select primary calendar
         ]
         result = self._run_interactive(
             inputs, gmail_labels=labels, calendars=cals, creds_exist=True,
         )
-        assert "[sources.gmail]" in result
-        assert "[sources.google_calendar]" in result
+        assert "[sources.gmail.default]" in result
+        assert "[sources.google_calendar.default]" in result
         # Both should reference the same creds path
         assert result.count("~/my/creds.json") == 2
+
+
+# ── _prompt_single_select ───────────────────────────────────────────
+
+
+class TestPromptSingleSelect:
+    ITEMS = [
+        {"id": "", "name": "All mail"},
+        {"id": "INBOX", "name": "Inbox"},
+        {"id": "SENT", "name": "Sent"},
+    ]
+
+    def test_selects_by_number(self) -> None:
+        with patch("builtins.input", side_effect=["2"]):
+            assert _prompt_single_select("p", self.ITEMS, "id", "name") == "INBOX"
+
+    def test_default_on_empty(self) -> None:
+        with patch("builtins.input", side_effect=[""]):
+            assert _prompt_single_select("p", self.ITEMS, "id", "name", default=1) == ""
+
+    def test_out_of_range_falls_back_to_default(self) -> None:
+        with patch("builtins.input", side_effect=["99"]):
+            assert (
+                _prompt_single_select("p", self.ITEMS, "id", "name", default=2)
+                == "INBOX"
+            )
+
+    def test_non_numeric_falls_back_to_default(self) -> None:
+        with patch("builtins.input", side_effect=["abc"]):
+            assert _prompt_single_select("p", self.ITEMS, "id", "name", default=1) == ""
+
+
+# ── Regression: generated config must parse through the real loader ──
+
+
+class TestGeneratedConfigRoundTrip:
+    """init used to emit the legacy non-keyed ``[sources.gmail]`` shape, which
+    the loader rejects with MigrationRequiredError (and label_filter as an
+    array failed the str type check). Prove the generated sections now parse.
+    """
+
+    def test_gmail_and_calendar_parse_as_keyed_accounts(self) -> None:
+        import tomllib
+
+        from worker.config import MigrationRequiredError, _parse
+
+        text = '[neo4j]\npassword = "x"\n'
+        text = _append_gmail_config(text, "~/c.json", "")  # all mail (default)
+        text = _append_calendar_config(text, "~/c.json", ["primary"])
+        text = _append_gmail_config(text, "~/w.json", "IMPORTANT", account="work")
+
+        try:
+            cfg = _parse(tomllib.loads(text))
+        except MigrationRequiredError as exc:  # pragma: no cover - regression guard
+            pytest.fail(f"init-generated config rejected by loader: {exc}")
+
+        assert set(cfg.gmail) == {"default", "work"}
+        assert cfg.gmail["default"].label_filter == ""  # all mail
+        assert cfg.gmail["work"].label_filter == "IMPORTANT"
+        assert cfg.google_calendar["default"].calendar_ids == ["primary"]
