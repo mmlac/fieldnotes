@@ -15,6 +15,7 @@ import json
 import os
 import logging
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import numpy as np
@@ -33,6 +34,11 @@ LLM_TIMEOUT = float(os.environ.get("FIELDNOTES_LLM_TIMEOUT", 600.0))
 
 MAX_LABEL_LEN = 100
 MAX_DESCRIPTION_LEN = 500
+
+# When a labeling response fails to parse, log at most this many characters
+# of the raw model output so the failure is debuggable without flooding logs
+# on a pathological (e.g. multi-KB) response.
+MAX_LOGGED_RESPONSE_LEN = 2000
 
 SYSTEM_PROMPT = """\
 You are a topic labeling system. Given a set of text chunks that belong to the \
@@ -58,6 +64,7 @@ def label_clusters(
     qdrant_cfg: QdrantConfig | None = None,
     *,
     top_k: int = DEFAULT_TOP_K,
+    on_progress: Callable[[int, int], None] | None = None,
 ) -> list[LabeledCluster]:
     """Label each cluster by sending central chunks to the LLM.
 
@@ -71,6 +78,11 @@ def label_clusters(
         Qdrant connection settings. Uses defaults if None.
     top_k:
         Number of most-central chunks to send to the LLM per cluster.
+    on_progress:
+        Optional callback invoked as ``on_progress(done, total)`` after
+        each cluster is labeled, where ``done`` counts up from 1 to
+        ``total``. Lets the CLI drive a live progress bar without the
+        labeler depending on any display backend.
 
     Returns
     -------
@@ -86,11 +98,14 @@ def label_clusters(
 
     try:
         results: list[LabeledCluster] = []
-        for cluster in clusters:
+        total = len(clusters)
+        for done, cluster in enumerate(clusters, start=1):
             labeled = _label_single_cluster(
                 cluster, model, client, qdrant_cfg.collection, top_k
             )
             results.append(labeled)
+            if on_progress is not None:
+                on_progress(done, total)
         _deduplicate_labels(results)
         return results
     finally:
@@ -216,7 +231,22 @@ def _call_labeling_model(
 
         return label, description
     except (json.JSONDecodeError, KeyError, TypeError) as exc:
-        logger.error("Failed to parse labeling response: %s", exc)
+        raw = resp.text or ""
+        preview = raw[:MAX_LOGGED_RESPONSE_LEN]
+        if len(raw) > MAX_LOGGED_RESPONSE_LEN:
+            preview += "…[truncated]"
+        # %r so an empty / whitespace-only response is visible (e.g. '' or
+        # '  '); output_tokens distinguishes a model that returned nothing
+        # from one that returned non-JSON prose.
+        logger.error(
+            "Failed to parse labeling response for cluster %d: %s "
+            "(raw: %d chars, %d output tokens): %r",
+            cluster_id,
+            exc,
+            len(raw),
+            resp.output_tokens,
+            preview,
+        )
         return (
             f"Unknown Topic (cluster_{cluster_id})",
             "LLM response could not be parsed.",

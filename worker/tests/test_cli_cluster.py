@@ -39,6 +39,26 @@ class TestClusterParser:
         assert args.min_cluster_size == 3
         assert args.force is True
 
+    def test_cluster_progress_defaults_to_none(self) -> None:
+        parser = _build_parser()
+        args = parser.parse_args(["cluster"])
+        assert args.progress is None
+
+    def test_cluster_no_progress(self) -> None:
+        parser = _build_parser()
+        args = parser.parse_args(["cluster", "--no-progress"])
+        assert args.progress is False
+
+    def test_cluster_progress(self) -> None:
+        parser = _build_parser()
+        args = parser.parse_args(["cluster", "--progress"])
+        assert args.progress is True
+
+    def test_cluster_progress_flags_mutually_exclusive(self) -> None:
+        parser = _build_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args(["cluster", "--progress", "--no-progress"])
+
 
 # ------------------------------------------------------------------
 # run_cluster tests (mocked backends)
@@ -178,6 +198,68 @@ class TestRunCluster:
 
         assert rc == 0
         assert "No clusters found" in capsys.readouterr().out
+
+    @patch("worker.cli.cluster.phase_progress")
+    @patch("worker.cli.cluster.link_apps_to_topics")
+    @patch("worker.cli.cluster.write_clusters")
+    @patch("worker.cli.cluster.label_clusters")
+    @patch("worker.cli.cluster.cluster_embeddings")
+    @patch("worker.cli.cluster._corpus_size", return_value=200)
+    @patch("worker.cli.cluster.ModelRegistry")
+    @patch("worker.cli.cluster.load_config")
+    def test_progress_enabled_wires_callback(
+        self,
+        mock_load: MagicMock,
+        mock_reg: MagicMock,
+        mock_corpus: MagicMock,
+        mock_cluster: MagicMock,
+        mock_label: MagicMock,
+        mock_write: MagicMock,
+        mock_link: MagicMock,
+        mock_phase: MagicMock,
+    ) -> None:
+        mock_load.return_value = _make_config_mock()
+        mock_cluster.return_value = _make_cluster_results(2)
+        mock_label.return_value = [MagicMock(), MagicMock()]
+        sentinel = object()
+        mock_phase.return_value.__enter__.return_value = sentinel
+
+        from worker.cli.cluster import run_cluster
+
+        run_cluster(config_path=None, progress=True)
+
+        mock_phase.assert_called_once_with("Labeling clusters", 2)
+        assert mock_label.call_args.kwargs["on_progress"] is sentinel
+
+    @patch("worker.cli.cluster.phase_progress")
+    @patch("worker.cli.cluster.link_apps_to_topics")
+    @patch("worker.cli.cluster.write_clusters")
+    @patch("worker.cli.cluster.label_clusters")
+    @patch("worker.cli.cluster.cluster_embeddings")
+    @patch("worker.cli.cluster._corpus_size", return_value=200)
+    @patch("worker.cli.cluster.ModelRegistry")
+    @patch("worker.cli.cluster.load_config")
+    def test_progress_disabled_skips_bar(
+        self,
+        mock_load: MagicMock,
+        mock_reg: MagicMock,
+        mock_corpus: MagicMock,
+        mock_cluster: MagicMock,
+        mock_label: MagicMock,
+        mock_write: MagicMock,
+        mock_link: MagicMock,
+        mock_phase: MagicMock,
+    ) -> None:
+        mock_load.return_value = _make_config_mock()
+        mock_cluster.return_value = _make_cluster_results(2)
+        mock_label.return_value = [MagicMock(), MagicMock()]
+
+        from worker.cli.cluster import run_cluster
+
+        run_cluster(config_path=None, progress=False)
+
+        mock_phase.assert_not_called()
+        assert "on_progress" not in mock_label.call_args.kwargs
 
     @patch("worker.cli.cluster.cluster_embeddings")
     @patch("worker.cli.cluster._corpus_size", return_value=200)

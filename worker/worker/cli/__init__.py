@@ -440,6 +440,20 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Run even if corpus is below min_corpus_size",
     )
+    cluster_progress = cluster_p.add_mutually_exclusive_group()
+    cluster_progress.add_argument(
+        "--progress",
+        dest="progress",
+        action="store_true",
+        default=None,
+        help="Force the live labeling progress bar on (default: auto-detect TTY)",
+    )
+    cluster_progress.add_argument(
+        "--no-progress",
+        dest="progress",
+        action="store_false",
+        help="Disable the live labeling progress bar",
+    )
 
     # ── backup ─────────────────────────────────────────────────────
     backup_p = sub.add_parser(
@@ -1189,6 +1203,7 @@ def main(argv: list[str] | None = None) -> int:
                 config_path=args.config,
                 min_cluster_size=args.min_cluster_size,
                 force=args.force,
+                progress=args.progress,
             )
         except Exception as exc:
             print(f"error: {exc}", file=sys.stderr)

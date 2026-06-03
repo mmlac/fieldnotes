@@ -360,14 +360,13 @@ _LOG_FILE = Path.home() / ".fieldnotes" / "data" / "daemon.log"
 def _resolve_progress_enabled(progress: bool | None) -> bool:
     """Decide whether the live Rich progress display should be active.
 
-    ``True``/``False`` from the caller is honoured verbatim so users can
-    force-enable progress in piped contexts (e.g. tmux) or suppress it
-    in interactive ones.  When unspecified, fall back to TTY detection
-    on stderr — matching the channel the progress display writes to.
+    Thin wrapper around
+    :func:`worker.pipeline.progress.resolve_progress_enabled` so the daemon
+    and the ``cluster`` CLI share identical TTY-detection semantics.
     """
-    if progress is not None:
-        return progress
-    return sys.stderr.isatty()
+    from worker.pipeline.progress import resolve_progress_enabled
+
+    return resolve_progress_enabled(progress)
 
 
 def run_daemon(

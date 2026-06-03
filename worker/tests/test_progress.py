@@ -17,6 +17,8 @@ from worker.pipeline.progress import (
     NullProgressReporter,
     ProgressReporter,
     RichProgressReporter,
+    phase_progress,
+    resolve_progress_enabled,
 )
 from worker.pipeline.resolver import ResolutionResult
 from worker.pipeline.writer import Writer
@@ -293,3 +295,39 @@ class TestRichProgressReporter:
         finally:
             root.removeHandler(sentinel)
             root.handlers = original
+
+
+# ------------------------------------------------------------------
+# resolve_progress_enabled
+# ------------------------------------------------------------------
+
+
+class TestResolveProgressEnabled:
+    def test_explicit_true_honoured(self) -> None:
+        assert resolve_progress_enabled(True) is True
+
+    def test_explicit_false_honoured(self) -> None:
+        assert resolve_progress_enabled(False) is False
+
+    def test_none_auto_detects_tty(self) -> None:
+        with patch("worker.pipeline.progress.sys.stderr") as mock_stderr:
+            mock_stderr.isatty.return_value = True
+            assert resolve_progress_enabled(None) is True
+            mock_stderr.isatty.return_value = False
+            assert resolve_progress_enabled(None) is False
+
+
+# ------------------------------------------------------------------
+# phase_progress
+# ------------------------------------------------------------------
+
+
+class TestPhaseProgress:
+    def test_yields_advance_callback(self) -> None:
+        # The bar renders to stderr (non-TTY under pytest = quiet); the
+        # contract under test is that advance() drives it without error.
+        with phase_progress("Labeling clusters", total=3) as advance:
+            assert callable(advance)
+            advance(1, 3)
+            advance(2, 3)
+            advance(3, 3)

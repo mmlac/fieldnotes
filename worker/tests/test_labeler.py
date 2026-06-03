@@ -190,6 +190,32 @@ class TestCallLabelingModel:
         assert label == "One"
         assert "words" in caplog.text
 
+    def test_logs_raw_response_on_parse_failure(self, caplog) -> None:
+        # An empty generation is the real-world failure ("Expecting value:
+        # line 1 column 1"); the log must surface enough to debug it.
+        model = MagicMock()
+        model.complete.return_value = CompletionResponse(text="", output_tokens=0)
+
+        _call_labeling_model(model, ["chunk"], cluster_id=7)
+
+        assert "Failed to parse labeling response" in caplog.text
+        assert "cluster 7" in caplog.text
+        assert "0 output tokens" in caplog.text
+        assert "''" in caplog.text  # repr of the empty raw response
+
+    def test_logs_truncate_long_response(self, caplog) -> None:
+        from worker.clustering.labeler import MAX_LOGGED_RESPONSE_LEN
+
+        model = MagicMock()
+        model.complete.return_value = CompletionResponse(text="x" * 5000)
+
+        _call_labeling_model(model, ["chunk"])
+
+        assert "truncated" in caplog.text
+        assert "5000 chars" in caplog.text
+        # Only the prefix is logged, not the full 5000-char body.
+        assert "x" * (MAX_LOGGED_RESPONSE_LEN + 50) not in caplog.text
+
 
 # ---------------------------------------------------------------------------
 # label_clusters (integration with mocks)
@@ -232,6 +258,31 @@ class TestLabelClusters:
 
         assert results == []
         registry.for_role.assert_not_called()
+
+    def test_on_progress_called_per_cluster(self) -> None:
+        clusters = [
+            _make_cluster(cluster_id=0, chunk_ids=["a"]),
+            _make_cluster(cluster_id=1, chunk_ids=["b"]),
+            _make_cluster(cluster_id=2, chunk_ids=["c"]),
+        ]
+        calls: list[tuple[int, int]] = []
+
+        with patch("worker.clustering.labeler.QdrantClient") as MockClient:
+            client = MockClient.return_value
+            client.retrieve.return_value = [
+                _make_qdrant_point("a", [1.0, 0.0, 0.0], "text"),
+            ]
+            registry = MagicMock()
+            registry.for_role.return_value = _mock_model()
+
+            label_clusters(
+                clusters,
+                registry,
+                on_progress=lambda done, total: calls.append((done, total)),
+            )
+
+        # Fired once per cluster, counting up to a constant total.
+        assert calls == [(1, 3), (2, 3), (3, 3)]
 
     def test_closes_qdrant_client(self) -> None:
         clusters = [_make_cluster()]

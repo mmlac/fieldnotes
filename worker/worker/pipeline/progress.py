@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import logging
 import sys
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from threading import Lock
 from typing import Protocol
 
@@ -200,3 +202,61 @@ class RichProgressReporter:
             for handler in self._removed_handlers:
                 root.addHandler(handler)
             self._removed_handlers.clear()
+
+
+def resolve_progress_enabled(progress: bool | None) -> bool:
+    """Decide whether a live Rich progress display should be active.
+
+    ``True``/``False`` from the caller is honoured verbatim so users can
+    force-enable progress in piped contexts (e.g. tmux) or suppress it in
+    interactive ones.  When unspecified, fall back to TTY detection on
+    stderr — matching the channel the progress display writes to.
+    """
+    if progress is not None:
+        return progress
+    return sys.stderr.isatty()
+
+
+@contextmanager
+def phase_progress(
+    description: str, total: int
+) -> Iterator[Callable[[int, int], None]]:
+    """Show a single determinate progress bar for one synchronous phase.
+
+    Styled to match :class:`RichProgressReporter` (spinner, label, bar,
+    M-of-N, elapsed, ETA) and rendered on stderr.  Yields an ``advance``
+    callback taking ``(completed, total)``; callers invoke it after each
+    unit of work to move the bar.  Used by long synchronous CLI phases
+    such as ``fieldnotes cluster`` labeling, which would otherwise grind
+    silently with no feedback.
+    """
+    from rich.console import Console
+    from rich.progress import (
+        BarColumn,
+        MofNCompleteColumn,
+        Progress,
+        SpinnerColumn,
+        TextColumn,
+        TimeElapsedColumn,
+        TimeRemainingColumn,
+    )
+
+    progress = Progress(
+        SpinnerColumn(),
+        TextColumn("[bold cyan]{task.description}[/]"),
+        BarColumn(bar_width=None),
+        MofNCompleteColumn(),
+        TextColumn("•"),
+        TimeElapsedColumn(),
+        TextColumn("ETA"),
+        TimeRemainingColumn(),
+        console=Console(file=sys.stderr),
+        transient=False,
+    )
+    with progress:
+        task = progress.add_task(description, total=total)
+
+        def advance(completed: int, _total: int | None = None) -> None:
+            progress.update(task, completed=completed)
+
+        yield advance

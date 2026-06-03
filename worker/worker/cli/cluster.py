@@ -14,6 +14,7 @@ from worker.clustering.writer import write_clusters
 from worker.clustering.app_linker import link_apps_to_topics
 from worker.config import load_config
 from worker.models.resolver import ModelRegistry
+from worker.pipeline.progress import phase_progress, resolve_progress_enabled
 
 # Qdrant timeout for the corpus-size check (seconds).
 _QDRANT_TIMEOUT_S = 30
@@ -40,12 +41,17 @@ def run_cluster(
     config_path: Path | None = None,
     min_cluster_size: int | None = None,
     force: bool = False,
+    progress: bool | None = None,
 ) -> int:
     """Run the full clustering pipeline synchronously with progress output.
+
+    ``progress`` forces the live labeling progress bar on (``True``) or off
+    (``False``); ``None`` auto-detects a TTY, matching ``fieldnotes serve``.
 
     Returns an exit code (0 = success, 1 = error).
     """
     cfg = load_config(config_path)
+    progress_enabled = resolve_progress_enabled(progress)
     registry = ModelRegistry(cfg)
     qdrant_cfg = cfg.qdrant
     neo4j_cfg = cfg.neo4j
@@ -89,9 +95,16 @@ def run_cluster(
 
     total_assigned = sum(len(c.chunk_ids) for c in clusters)
 
-    # 3. Label clusters
+    # 3. Label clusters — the long pole (one LLM call per cluster), so show
+    #    a live bar when attached to a TTY.
     print(f"Labeling {len(clusters)} clusters...")
-    labeled = label_clusters(clusters, registry, qdrant_cfg)
+    if progress_enabled:
+        with phase_progress("Labeling clusters", len(clusters)) as advance:
+            labeled = label_clusters(
+                clusters, registry, qdrant_cfg, on_progress=advance
+            )
+    else:
+        labeled = label_clusters(clusters, registry, qdrant_cfg)
 
     # 4. Write to Neo4j
     print("Writing topics to Neo4j...")
