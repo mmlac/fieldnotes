@@ -496,3 +496,42 @@ class TestObsidianParser_EmitsCrossSystemReferencesEdge:
         doc = self.parser.parse(_make_event(note))[0]
         refs = [h for h in doc.graph_hints if h.predicate == "REFERENCES"]
         assert refs == []
+
+
+class TestObsidianParserMetadataOnlyMarker:
+    """metadata_only flag distinguishes index-only (attachment) docs from real notes."""
+
+    parser = ObsidianParser()
+
+    def test_regular_markdown_note_has_metadata_only_false(self):
+        note = "---\ntitle: My Note\n---\nSome real content."
+        doc = self.parser.parse(_make_event(note))[0]
+        assert doc.metadata_only is False
+        assert doc.text == "Some real content."
+
+    def test_index_only_file_has_metadata_only_true(self):
+        event = _make_event(
+            "",
+            source_id="/vault/attachments/budget.xlsx",
+            meta={"index_only": True, "size_bytes": 4096},
+        )
+        docs = self.parser.parse(event)
+        assert len(docs) == 1
+        doc = docs[0]
+        assert doc.metadata_only is True
+        assert "budget.xlsx" in doc.text
+
+    def test_index_only_text_file_metadata_only_true(self):
+        # Reproduces the "C&F collection.txt" case: a text attachment in an Obsidian
+        # vault is flagged index_only by the Go source, so we emit a synthetic doc.
+        event = _make_event(
+            "actual content that should not reach the LLM",
+            source_id="/vault/attachments/C&F collection.txt",
+            meta={"index_only": True},
+        )
+        docs = self.parser.parse(event)
+        assert len(docs) == 1
+        doc = docs[0]
+        assert doc.metadata_only is True
+        # text is the synthetic filename description, not the file body
+        assert "C&F collection.txt" in doc.text

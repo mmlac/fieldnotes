@@ -803,6 +803,60 @@ class TestOnVisionResult:
 # ------------------------------------------------------------------
 
 
+class TestMetadataOnlyRouting:
+    """Metadata-only docs skip LLM extraction but still write to the graph."""
+
+    def test_metadata_only_doc_does_not_call_extract_chunks(self):
+        pipeline, _, writer = _make_pipeline()
+        doc = _doc(
+            text="File: budget.xlsx in /vault/attachments/",
+            metadata_only=True,
+        )
+
+        with patch("worker.pipeline.chunk_text") as mock_chunk:
+            with patch("worker.pipeline.extract_chunks") as mock_extract:
+                pipeline.process(doc)
+                mock_chunk.assert_not_called()
+                mock_extract.assert_not_called()
+
+        # Source node must still be written
+        writer.write.assert_called_once()
+        unit = writer.write.call_args[0][0]
+        assert unit.doc is doc
+        assert unit.chunks == []
+
+    def test_metadata_only_doc_with_filename_content_not_extracted(self):
+        """The 'C&F collection.txt' scenario: text file treated as index_only."""
+        pipeline, _, writer = _make_pipeline()
+        doc = _doc(
+            source_type="obsidian",
+            source_id="/vault/attachments/C&F collection.txt",
+            text="File: C&F collection.txt in /vault/attachments/",
+            metadata_only=True,
+        )
+
+        with patch("worker.pipeline.extract_chunks") as mock_extract:
+            pipeline.process(doc)
+            mock_extract.assert_not_called()
+
+        writer.write.assert_called_once()
+
+    def test_regular_content_doc_still_calls_extract_chunks(self):
+        """Non-metadata-only docs with text still go through the full text pipeline."""
+        pipeline, _, writer = _make_pipeline()
+        doc = _doc(
+            text="This is real document content with meaningful text.",
+            metadata_only=False,
+        )
+
+        with patch(
+            "worker.pipeline.chunk_text",
+            return_value=[],
+        ) as mock_chunk:
+            pipeline.process(doc)
+            mock_chunk.assert_called_once_with(doc.text)
+
+
 class TestClose:
     def test_close_delegates_to_writer(self):
         pipeline, _, writer = _make_pipeline()

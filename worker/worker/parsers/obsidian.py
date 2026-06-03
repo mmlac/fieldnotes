@@ -111,6 +111,7 @@ class ObsidianParser(BaseParser):
                     text=desc_text,
                     node_label="File",
                     node_props=node_props,
+                    metadata_only=True,
                 )
             ]
 

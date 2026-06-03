@@ -398,6 +398,46 @@ class TestFileParserMetadataOnly:
         assert docs[0].text == "File: loose.bin"
 
 
+class TestFileParserMetadataOnlyMarker:
+    """metadata_only flag distinguishes synthetic filename docs from real content docs."""
+
+    def test_text_file_has_metadata_only_false(self, parser: FileParser) -> None:
+        event = {
+            "mime_type": "text/plain",
+            "source_id": "/vault/notes/C&F collection.txt",
+            "text": "Some actual text content here.",
+        }
+        docs = parser.parse(event)
+        assert len(docs) == 1
+        assert docs[0].metadata_only is False
+        assert docs[0].text == "Some actual text content here."
+
+    def test_binary_file_has_metadata_only_true(self, parser: FileParser) -> None:
+        event = {
+            "mime_type": "application/octet-stream",
+            "source_id": "/projects/model.3mf",
+        }
+        docs = parser.parse(event)
+        assert len(docs) == 1
+        assert docs[0].metadata_only is True
+
+    def test_index_only_text_file_has_metadata_only_true(self, parser: FileParser) -> None:
+        # A .txt file inside an Obsidian vault can be flagged index_only by the Go
+        # source when it matches index_only_patterns (e.g. vault attachments).
+        # This is the root cause for "C&F collection.txt" — legitimate routing.
+        event = {
+            "mime_type": "text/plain",
+            "source_id": "/vault/attachments/C&F collection.txt",
+            "text": "some content",
+            "meta": {"index_only": True},
+        }
+        docs = parser.parse(event)
+        assert len(docs) == 1
+        # Routed to metadata-only path by index_only flag, so text is synthetic
+        assert docs[0].metadata_only is True
+        assert "C&F collection.txt" in docs[0].text
+
+
 class TestFileParserRegistration:
     def test_registered_in_parser_registry(self) -> None:
         from worker.parsers.registry import get

@@ -292,6 +292,11 @@ class ParsedDocument:
     # Source metadata passed through to Qdrant payload
     source_metadata: dict[str, Any] = field(default_factory=dict)
 
+    # True when text is a synthetic filename description ("File: <name> in <dir>/"),
+    # not real document content. The pipeline skips LLM extraction for these docs
+    # but still writes the source node, embeddings, and metadata to the graph.
+    metadata_only: bool = False
+
 
 
 

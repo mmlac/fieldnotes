@@ -330,5 +330,6 @@ class FileParser(BaseParser):
                 mime_type=mime or "application/octet-stream",
                 node_label="File",
                 node_props=props,
+                metadata_only=True,
             )
         ]

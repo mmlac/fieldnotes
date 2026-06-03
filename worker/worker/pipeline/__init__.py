@@ -316,11 +316,13 @@ class Pipeline:
                 )
             return
 
-        # Text pipeline: chunk → embed → extract → resolve → write
-        if parsed_doc.text:
+        # Text pipeline: chunk → embed → extract → resolve → write.
+        # Metadata-only docs carry a synthetic filename description, not real
+        # content — skip LLM extraction and write the source node directly.
+        if parsed_doc.text and not parsed_doc.metadata_only:
             self._process_text(parsed_doc, existing_hash=existing_hash)
         else:
-            # No text and no image — just write graph hints and source node
+            # No text, no image, or metadata-only: write graph hints and source node only
             with observe_duration(PIPELINE_DURATION, stage="write"):
                 self._writer.write(WriteUnit(doc=parsed_doc))
 
