@@ -147,7 +147,11 @@ class GmailAccountConfig:
     client_secrets_path: str = "~/.fieldnotes/gmail_credentials.json"
     poll_interval_seconds: int = 300
     max_initial_threads: int = 500
-    label_filter: str = "INBOX"
+    # "" (default) fetches all mail — inbox + sent + archived (Gmail keeps
+    # spam/trash out since includeSpamTrash is never set). Set a single label
+    # name (e.g. "INBOX") to restrict; labelIds are AND-combined, so only one
+    # label applies and there's no inbox+sent-only combination.
+    label_filter: str = ""
     download_attachments: bool = False
     attachment_indexable_mimetypes: list[str] = field(
         default_factory=lambda: list(DEFAULT_INDEXABLE_MIMETYPES)

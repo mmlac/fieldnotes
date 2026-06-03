@@ -325,6 +325,20 @@ class TestGmailEndToEnd:
         assert source._label_filter == "IMPORTANT"
         assert source._client_secrets_path == secrets.resolve()
 
+    def test_gmail_source_empty_label_filter_means_all_mail(self, tmp_path) -> None:
+        """An empty/omitted label_filter → no labelIds → all mail (incl. sent)."""
+        secrets = tmp_path / "creds.json"
+        secrets.write_text("{}")
+
+        # Explicit empty string (the new default) and omitted both mean "all".
+        for cfg in (
+            {"account": "d", "client_secrets_path": str(secrets), "label_filter": ""},
+            {"account": "d", "client_secrets_path": str(secrets)},
+        ):
+            source = GmailSource()
+            source.configure(cfg)
+            assert source._label_filter is None
+
     def test_gmail_source_configure_requires_secrets(self) -> None:
         """GmailSource.configure() raises if client_secrets_path missing."""
         source = GmailSource()

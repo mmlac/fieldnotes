@@ -9,7 +9,8 @@ Config section ``[sources.gmail]``::
 
     poll_interval_seconds = 300
     max_initial_threads = 500
-    # label_filter = "INBOX"   # optional — omit to fetch all messages
+    # label_filter = "INBOX"   # optional — restrict to one label; default ""
+    #                          # (or omitted) fetches all mail incl. sent
     client_secrets_path = "~/.fieldnotes/credentials.json"
 """
 
@@ -224,7 +225,7 @@ class GmailSource(PythonSource):
     Config keys (from ``[sources.gmail]``):
         poll_interval_seconds: int  — polling interval (default: 300)
         max_initial_threads: int    — backfill limit (default: 500)
-        label_filter: str           — Gmail label to poll (optional, omit for all)
+        label_filter: str           — restrict to one Gmail label; "" / omitted = all mail
         client_secrets_path: str    — OAuth2 client secrets file (required)
     """
 

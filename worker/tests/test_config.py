@@ -831,6 +831,19 @@ class TestParseGmailMultiAccount:
         # gmail accounts must NOT leak into the generic sources dict.
         assert "gmail" not in cfg.sources
 
+    def test_default_label_filter_is_empty_all_mail(self) -> None:
+        # Omitting label_filter defaults to "" — all mail (inbox + sent +
+        # archived), not inbox-only. The Gmail source treats "" as no labelIds.
+        raw = {
+            "sources": {
+                "gmail": {
+                    "personal": {"client_secrets_path": "/secrets/gmail.json"},
+                }
+            }
+        }
+        cfg = _parse(raw)
+        assert cfg.gmail["personal"].label_filter == ""
+
     def test_two_accounts(self) -> None:
         raw = {
             "sources": {
@@ -1274,7 +1287,8 @@ class TestMultiAccountDataclassDefaults:
         assert acct.enabled is True
         assert acct.poll_interval_seconds == 300
         assert acct.max_initial_threads == 500
-        assert acct.label_filter == "INBOX"
+        # Default "" = all mail (inbox + sent), not inbox-only.
+        assert acct.label_filter == ""
 
     def test_calendar_account_defaults(self) -> None:
         acct = CalendarAccountConfig(name="x")
