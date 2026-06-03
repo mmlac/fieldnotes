@@ -860,18 +860,36 @@ class TestMetadataOnlyRouting:
 
     def test_regular_content_doc_still_calls_extract_chunks(self):
         """Non-metadata-only docs with text still go through the full text pipeline."""
-        pipeline, _, writer = _make_pipeline()
+        pipeline, registry, _ = _make_pipeline()
+        real_text = "This is real document content with meaningful text."
         doc = _doc(
-            text="This is real document content with meaningful text.",
+            text=real_text,
             metadata_only=False,
         )
+        fake_chunk = Chunk(text=real_text, index=0)
 
         with patch(
             "worker.pipeline.chunk_text",
-            return_value=[],
+            return_value=[fake_chunk],
         ) as mock_chunk:
-            pipeline.process(doc)
-            mock_chunk.assert_called_once_with(doc.text)
+            with patch(
+                "worker.pipeline.embed_chunks",
+                return_value=[(real_text, [0.1, 0.2])],
+            ):
+                with patch(
+                    "worker.pipeline.extract_chunks",
+                    return_value=[ExtractionResult()],
+                ) as mock_extract:
+                    with patch(
+                        "worker.pipeline.resolve_entities_from_registry",
+                        return_value=ResolutionResult(entities=[]),
+                    ):
+                        pipeline.process(doc)
+                        mock_chunk.assert_called_once_with(real_text)
+                        mock_extract.assert_called_once()
+                        extract_args, _ = mock_extract.call_args
+                        assert extract_args[0] == [fake_chunk]
+                        assert extract_args[0][0].text == real_text
 
 
 class TestClose:

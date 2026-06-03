@@ -139,6 +139,64 @@ class TestFileEventParsing:
         assert doc.source_metadata["relative_path"] == "README.md"
 
 
+# ── Index-only file parsing ───────────────────────────────────────
+
+
+class TestIndexOnlyFileParsing:
+    def _index_only_event(
+        self,
+        relative_path: str = "large_binary.bin",
+        size_bytes: int = 10_000_000,
+    ) -> dict:
+        return {
+            "id": "test-index-only",
+            "source_type": "repositories",
+            "source_id": f"repo:/repos/myproject:{relative_path}",
+            "operation": "created",
+            "mime_type": "application/octet-stream",
+            "text": "",
+            "source_modified_at": "2026-01-01T00:00:00Z",
+            "meta": {
+                "repo_name": "myproject",
+                "repo_path": "/repos/myproject",
+                "remote_url": "https://github.com/user/myproject",
+                "relative_path": relative_path,
+                "sha256": "deadbeef",
+                "size_bytes": size_bytes,
+                "index_only": True,
+            },
+        }
+
+    def test_index_only_sets_metadata_only_flag(self) -> None:
+        """Repository index-only files must set metadata_only=True so the pipeline skips LLM extraction."""
+        parser = RepositoryParser()
+        docs = parser.parse(self._index_only_event())
+        assert len(docs) == 1
+        assert docs[0].metadata_only is True
+
+    def test_index_only_text_is_synthetic_filename(self) -> None:
+        parser = RepositoryParser()
+        docs = parser.parse(self._index_only_event(relative_path="archive/data.bin"))
+        doc = docs[0]
+        assert "data.bin" in doc.text
+        assert "bin" in doc.text
+
+    def test_index_only_still_has_graph_hints(self) -> None:
+        """Index-only files still emit the CONTAINS graph hint for the repository relationship."""
+        parser = RepositoryParser()
+        docs = parser.parse(self._index_only_event())
+        doc = docs[0]
+        contains = [h for h in doc.graph_hints if h.predicate == "CONTAINS"]
+        assert len(contains) == 1
+
+    def test_regular_content_file_not_metadata_only(self) -> None:
+        """Regular text files must NOT have metadata_only=True — they go through full extraction."""
+        parser = RepositoryParser()
+        docs = parser.parse(_file_event())
+        assert len(docs) == 1
+        assert docs[0].metadata_only is False
+
+
 # ── Commit event parsing ─────────────────────────────────────────
 
 

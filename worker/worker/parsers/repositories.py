@@ -231,6 +231,7 @@ class RepositoryParser(BaseParser):
                         "repo_path": repo_path,
                         "relative_path": relative_path,
                     },
+                    metadata_only=True,
                 )
             ]
 
