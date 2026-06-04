@@ -2,6 +2,9 @@
 .claude/
 .logs/
 .beads/
+
+# Polecat session-stamped CLAUDE.md — gc regenerates this per session (`gc prime`); not for the repo.
+CLAUDE.md
 __pycache__/
 *.pyc
 *.egg-info/
